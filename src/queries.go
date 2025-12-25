@@ -1,4 +1,4 @@
-package database
+import hirevec
 
 type QueryTemplate string
 

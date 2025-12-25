@@ -1,21 +1,21 @@
-package main
+package hirevecbackend
 
 import (
 	"database/sql"
 	"net/http"
 	"time"
 
-	hirevec "github.com/akvachan/hirevec-backend" 
+	"github.com/akvachan/hirevec-backend/src"
 	_ "github.com/jackc/pgx/v5"
 )
 
 func main() {
 	hirevecDatabase, _ := sql.Open("postgres", "user=myname dbname=dbname sslmode=disable")
 	defer hirevecDatabase.Close()
-	hirevec.database.HirevecDatabase = hirevecDatabase
+	chan
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET api/v0/positions/{id}", hirevec.api.GetPosition)
+	mux.HandleFunc("GET api/v0/positions/{id}", api.GetPosition)
 	mux.HandleFunc("GET api/v0/candidates/{id}", api.GetCandidate)
 	mux.HandleFunc("GET api/v0/matches/{id}", api.GetMatch)
 	mux.HandleFunc("GET api/v0/likes/{id}", api.GetLike)
