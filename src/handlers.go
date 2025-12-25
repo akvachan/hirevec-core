@@ -1,14 +1,10 @@
-package hirevec 
+package hirevec
 
 import (
 	"errors"
 	"log/slog"
 	"net/http"
-
-	"hirevec/database"
 )
-
-var hirevecDatabase = database.HirevecDatabase
 
 func validateID(id string) error {
 	if id == "" {
@@ -25,8 +21,8 @@ func GetPosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := database.GetPositionByID
-	rows, err := hirevecDatabase.Query(query, id)
+	query := GetPositionByID
+	rows, err := HirevecDatabase.Query(query, id)
 	if err != nil {
 		slog.Error("could not perform a query")
 	}

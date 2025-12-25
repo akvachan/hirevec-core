@@ -1,4 +1,4 @@
-package hirevec  
+package hirevec
 
 const (
 	Bit      int64 = 1

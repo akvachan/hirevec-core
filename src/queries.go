@@ -1,4 +1,4 @@
-import hirevec
+package hirevec
 
 type QueryTemplate string
 
