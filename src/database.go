@@ -1,4 +1,4 @@
-package hirevec  
+package hirevec
 
 import "database/sql"
 

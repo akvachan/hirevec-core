@@ -21,7 +21,8 @@ func GetPosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := GetPositionByID
+	query := GetPositionByIDQuery
+
 	rows, err := HirevecDatabase.Query(query, id)
 	if err != nil {
 		slog.Error("could not perform a query")
@@ -29,12 +30,7 @@ func GetPosition(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	for rows.Next() {
-		var positionID int
-		var title string
-		var description string
-		var company string
-
-		if err := rows.Scan(&positionID, &title, &description, &company); err != nil {
+		if err := rows.Scan(&position); err != nil {
 			slog.Error("could not extract all needed columns")
 		}
 	}
