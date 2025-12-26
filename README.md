@@ -43,6 +43,20 @@
     - No read / sent / other types of ping feedback in chat
     - No ability to lookup profiles, candidates or positions manually
 
+## Tasks tracking system
+In order to create a task:
+1. Go to a place in code where something needs to be done and type: `\\ TODO ./todos/DDMMYY-hhmmss-Title.md`.
+2. `cp` from `./todos/templates/Todo.md` to `./todos/DDMMYY-hhmmss-Title.md`
+3. `open ./todos/DDMMYY-hhmmss-Title.md`
+4. Fill out info in `{{}}`
+5. After task is done, set `status: Done` and remove the comment from the code.
+
+## Installation
+- Development setup with a hot-reload:
+```
+make watch
+```
+
 ## DB tables
 
 ### Positions
