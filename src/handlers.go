@@ -6,6 +6,7 @@ import (
 	"net/http"
 )
 
+// TODO ./todos/261225-135914-ImplementBasicHandlers.md
 func validateID(id string) error {
 	if id == "" {
 		return errors.New("id cannot be empty")
