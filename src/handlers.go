@@ -1,49 +1,85 @@
+// Copyright (c) 2025 Arsenii Kvachan. All Rights Reserved. MIT License.
+
 package hirevec
 
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 )
 
-// TODO ./todos/261225-135914-ImplementBasicHandlers.md
 func validateID(id string) error {
-	if id == "" {
-		return errors.New("id cannot be empty")
+	if len(id) > 10 {
+		return errors.New("id out of range")
 	}
 	return nil
 }
 
-func GetPosition(w http.ResponseWriter, r *http.Request) {
-	slog.Info("running GetPosition endpoint...")
+// TODO ./todos/261225-135914-ImplementBasicHandlers.md
 
+func GetPosition(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if err := validateID(id); err != nil {
-		slog.Error("could not extract id from the path")
+		slog.Error("query failed", "err", err)
+		WriteResponse(w, http.StatusBadRequest, APIResponse{Error: "invalid id"})
 		return
 	}
 
 	query := GetPositionByIDQuery
-
-	rows, err := HirevecDatabase.Query(query, id)
-	if err != nil {
-		slog.Error("could not perform a query")
+	var result json.RawMessage
+	err := HirevecDatabase.QueryRow(query, id).Scan(&result)
+	if len(result) == 0 {
+		WriteResponse(w, http.StatusNotFound, APIResponse{Error: "position not found"})
 		return
 	}
-	defer rows.Close()
-
-	var jsonBuildObject json.RawMessage
-	for rows.Next() {
-		if err := rows.Scan(&jsonBuildObject); err != nil {
-			slog.Error(fmt.Sprintf("could not extract all needed columns: %v", err))
-			return
-		}
+	if err != nil {
+		slog.Error("query failed", "err", err)
+		WriteResponse(w, http.StatusInternalServerError, APIResponse{Error: "internal server error"})
+		return
 	}
 
-	WriteResponse(w, http.StatusOK, APIResponse{Data: jsonBuildObject})
+	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
+}
+
+func GetPositions(w http.ResponseWriter, r *http.Request) {
+	limit := PageSizeDefaultLimit
+	if l := r.URL.Query().Get("limit"); l != "" {
+		parsed, err := strconv.Atoi(l)
+		if err != nil || parsed <= 0 {
+			slog.Error("query failed", "err", err)
+			WriteResponse(w, http.StatusBadRequest, APIResponse{Error: "invalid limit"})
+			return
+		}
+		if parsed > PageSizeMaxLimit {
+			parsed = PageSizeMaxLimit
+		}
+		limit = parsed
+	}
+
+	offset := 0
+	if o := r.URL.Query().Get("offset"); o != "" {
+		parsed, err := strconv.Atoi(o)
+		if err != nil || parsed < 0 {
+			slog.Error("query failed", "err", err)
+			WriteResponse(w, http.StatusBadRequest, APIResponse{Error: "invalid offset"})
+			return
+		}
+		offset = parsed
+	}
+
+	query := GetPositionsQuery
+	var result json.RawMessage
+	err := HirevecDatabase.QueryRow(query, limit, offset).Scan(&result)
+	if err != nil {
+		slog.Error("query failed", "err", err)
+		WriteResponse(w, http.StatusInternalServerError, APIResponse{Error: "internal server error"})
+		return
+	}
+
+	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
 }
 
 func GetCandidate(w http.ResponseWriter, r *http.Request) {}

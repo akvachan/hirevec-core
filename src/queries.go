@@ -1,18 +1,19 @@
+// Copyright (c) 2025 Arsenii Kvachan. All Rights Reserved. MIT License.
+
 package hirevec
 
-type QueryTemplate string
+var GetPositionByIDQuery string = `
+	SELECT COALESCE(json_agg(t), '[]'::json)
+	FROM hirevec.general.positions t
+	WHERE t.position_id = $1
+`
 
-var GetPositionQuery = func() string {
-
-	return ` 
-	select
-			json_build_object(
-					'position_id', json_agg(t.position_id),
-					'title', json_agg(t.title),
-					'description', json_agg(t.description),
-					'company', json_agg(t.company)
-			)
-	from hirevec.general.positions as t 
-	where position_id = $1;
-	`
-}
+var GetPositionsQuery string = `
+	SELECT COALESCE(json_agg(t), '[]'::json)
+	FROM (
+		SELECT *
+		FROM hirevec.general.positions
+		ORDER BY position_id
+		LIMIT $1 OFFSET $2
+	) t
+`

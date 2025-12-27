@@ -2,6 +2,6 @@
 
 package hirevec
 
-import "database/sql"
+import "net/http"
 
-var HirevecDatabase *sql.DB
+var HirevecServer *http.Server
