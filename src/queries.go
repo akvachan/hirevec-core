@@ -17,3 +17,19 @@ var GetPositionsQuery string = `
 		LIMIT $1 OFFSET $2
 	) t
 `
+
+var GetCandidateByIDQuery string = `
+	SELECT COALESCE(json_agg(t), '[]'::json)
+	FROM hirevec.general.candidates t
+	WHERE t.candidate_id = $1
+`
+
+var GetCandidatesQuery string = `
+	SELECT COALESCE(json_agg(t), '[]'::json)
+	FROM (
+		SELECT *
+		FROM hirevec.general.candidates
+		ORDER BY candidate_id 
+		LIMIT $1 OFFSET $2
+	) t
+`

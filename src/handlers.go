@@ -82,7 +82,68 @@ func GetPositions(w http.ResponseWriter, r *http.Request) {
 	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
 }
 
-func GetCandidate(w http.ResponseWriter, r *http.Request) {}
+func GetCandidate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	if err := validateID(id); err != nil {
+		slog.Error("query failed", "err", err)
+		WriteResponse(w, http.StatusBadRequest, APIResponse{Error: "invalid id"})
+		return
+	}
+
+	query := GetCandidateByIDQuery
+	var result json.RawMessage
+	err := HirevecDatabase.QueryRow(query, id).Scan(&result)
+	if len(result) == 0 {
+		WriteResponse(w, http.StatusNotFound, APIResponse{Error: "candidate not found"})
+		return
+	}
+	if err != nil {
+		slog.Error("query failed", "err", err)
+		WriteResponse(w, http.StatusInternalServerError, APIResponse{Error: "internal server error"})
+		return
+	}
+
+	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
+}
+
+func GetCandidates(w http.ResponseWriter, r *http.Request) {
+	limit := PageSizeDefaultLimit
+	if l := r.URL.Query().Get("limit"); l != "" {
+		parsed, err := strconv.Atoi(l)
+		if err != nil || parsed <= 0 {
+			slog.Error("query failed", "err", err)
+			WriteResponse(w, http.StatusBadRequest, APIResponse{Error: "invalid limit"})
+			return
+		}
+		if parsed > PageSizeMaxLimit {
+			parsed = PageSizeMaxLimit
+		}
+		limit = parsed
+	}
+
+	offset := 0
+	if o := r.URL.Query().Get("offset"); o != "" {
+		parsed, err := strconv.Atoi(o)
+		if err != nil || parsed < 0 {
+			slog.Error("query failed", "err", err)
+			WriteResponse(w, http.StatusBadRequest, APIResponse{Error: "invalid offset"})
+			return
+		}
+		offset = parsed
+	}
+
+	query := GetCandidatesQuery
+	var result json.RawMessage
+	err := HirevecDatabase.QueryRow(query, limit, offset).Scan(&result)
+	if err != nil {
+		slog.Error("query failed", "err", err)
+		WriteResponse(w, http.StatusInternalServerError, APIResponse{Error: "internal server error"})
+		return
+	}
+
+	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
+}
 
 func GetMatch(w http.ResponseWriter, r *http.Request) {}
 

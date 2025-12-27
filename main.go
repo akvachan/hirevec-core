@@ -30,6 +30,7 @@ func main() {
 	router.HandleFunc("GET /api/v0/positions/{id}", hirevec.GetPosition)
 	router.HandleFunc("GET /api/v0/positions/", hirevec.GetPositions)
 	router.HandleFunc("GET /api/v0/candidates/{id}", hirevec.GetCandidate)
+	router.HandleFunc("GET /api/v0/candidates/", hirevec.GetCandidates)
 	router.HandleFunc("GET /api/v0/matches/{id}", hirevec.GetMatch)
 	router.HandleFunc("GET /api/v0/likes/{id}", hirevec.GetLike)
 	router.HandleFunc("GET /api/v0/dislikes/{id}", hirevec.GetDislike)
