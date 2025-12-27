@@ -19,7 +19,7 @@ func validateID(id string) error {
 
 // TODO ./todos/261225-135914-ImplementBasicHandlers.md
 
-func GetPosition(w http.ResponseWriter, r *http.Request) {
+func GetPositionHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if err := validateID(id); err != nil {
@@ -44,7 +44,7 @@ func GetPosition(w http.ResponseWriter, r *http.Request) {
 	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
 }
 
-func GetPositions(w http.ResponseWriter, r *http.Request) {
+func GetPositionsHandler(w http.ResponseWriter, r *http.Request) {
 	limit := PageSizeDefaultLimit
 	if l := r.URL.Query().Get("limit"); l != "" {
 		parsed, err := strconv.Atoi(l)
@@ -82,7 +82,7 @@ func GetPositions(w http.ResponseWriter, r *http.Request) {
 	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
 }
 
-func GetCandidate(w http.ResponseWriter, r *http.Request) {
+func GetCandidateHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if err := validateID(id); err != nil {
@@ -107,7 +107,7 @@ func GetCandidate(w http.ResponseWriter, r *http.Request) {
 	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
 }
 
-func GetCandidates(w http.ResponseWriter, r *http.Request) {
+func GetCandidatesHandler(w http.ResponseWriter, r *http.Request) {
 	limit := PageSizeDefaultLimit
 	if l := r.URL.Query().Get("limit"); l != "" {
 		parsed, err := strconv.Atoi(l)
@@ -145,22 +145,30 @@ func GetCandidates(w http.ResponseWriter, r *http.Request) {
 	WriteResponse(w, http.StatusOK, APIResponse{Data: result})
 }
 
-func GetMatch(w http.ResponseWriter, r *http.Request) {}
+func GetMatchHandler(w http.ResponseWriter, r *http.Request) {}
 
-func GetLike(w http.ResponseWriter, r *http.Request) {}
+func GetLikeHandler(w http.ResponseWriter, r *http.Request) {}
 
-func GetDislike(w http.ResponseWriter, r *http.Request) {}
+func GetDislikeHandler(w http.ResponseWriter, r *http.Request) {}
 
-func GetSwipe(w http.ResponseWriter, r *http.Request) {}
+func GetSwipeHandler(w http.ResponseWriter, r *http.Request) {}
 
-func CreatePosition(w http.ResponseWriter, r *http.Request) {}
+func CreatePositionHandler(w http.ResponseWriter, r *http.Request) {}
 
-func CreateCandidate(w http.ResponseWriter, r *http.Request) {}
+func CreateCandidateHandler(w http.ResponseWriter, r *http.Request) {}
 
-func CreateMatch(w http.ResponseWriter, r *http.Request) {}
+func CreateMatchHandler(w http.ResponseWriter, r *http.Request) {}
 
-func CreateLike(w http.ResponseWriter, r *http.Request) {}
+func CreateLikeHandler(w http.ResponseWriter, r *http.Request) {}
 
-func CreateDislike(w http.ResponseWriter, r *http.Request) {}
+func CreateDislikeHandler(w http.ResponseWriter, r *http.Request) {}
 
-func CreateSwipe(w http.ResponseWriter, r *http.Request) {}
+func CreateSwipeHandler(w http.ResponseWriter, r *http.Request) {}
+
+// MainHandler is a function that assembles all routes and applies all middleware
+func MainHandler() http.Handler {
+	mainRouter := RegisterRoutes()
+	mainHandler := MaxBytesMiddleware(mainRouter)
+	mainHandler = LoggingMiddleware()(mainHandler)
+	return mainHandler
+}

@@ -8,15 +8,20 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path"
 
 	hirevec "github.com/akvachan/hirevec-backend/src"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func main() {
-	path := path.Join(".env")
-	hirevec.LoadDotEnv(path)
+	hirevec.HirevecLogger = slog.New(
+		slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		}),
+	)
+	slog.SetDefault(hirevec.HirevecLogger)
+
+	hirevec.LoadDotEnv(".env")
 	url := os.Getenv("DATABASE_URL")
 
 	database, err := sql.Open("pgx", url)
@@ -26,26 +31,9 @@ func main() {
 	}
 	defer database.Close()
 
-	router := http.NewServeMux()
-	router.HandleFunc("GET /api/v0/positions/{id}", hirevec.GetPosition)
-	router.HandleFunc("GET /api/v0/positions/", hirevec.GetPositions)
-	router.HandleFunc("GET /api/v0/candidates/{id}", hirevec.GetCandidate)
-	router.HandleFunc("GET /api/v0/candidates/", hirevec.GetCandidates)
-	router.HandleFunc("GET /api/v0/matches/{id}", hirevec.GetMatch)
-	router.HandleFunc("GET /api/v0/likes/{id}", hirevec.GetLike)
-	router.HandleFunc("GET /api/v0/dislikes/{id}", hirevec.GetDislike)
-	router.HandleFunc("GET /api/v0/swipes/{id}", hirevec.GetSwipe)
-	router.HandleFunc("POST /api/v0/positions/", hirevec.CreatePosition)
-	router.HandleFunc("POST /api/v0/candidates/", hirevec.CreateCandidate)
-	router.HandleFunc("POST /api/v0/matches/", hirevec.CreateMatch)
-	router.HandleFunc("POST /api/v0/likes/", hirevec.CreateLike)
-	router.HandleFunc("POST /api/v0/dislikes/", hirevec.CreateDislike)
-	router.HandleFunc("POST /api/v0/swipes/", hirevec.CreateSwipe)
-	handler := http.MaxBytesHandler(router, hirevec.MaxBytesHandler)
-
 	server := &http.Server{
 		Addr:         hirevec.Addr,
-		Handler:      handler,
+		Handler:      hirevec.MainHandler(),
 		ReadTimeout:  hirevec.ReadTimeout,
 		WriteTimeout: hirevec.WriteTimout,
 	}
