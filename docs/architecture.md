@@ -101,7 +101,6 @@ erDiagram
     }
 
     MATCHES {
-        int id PK
         int candidate_id FK
         int position_id FK
         timestamp timestamp
