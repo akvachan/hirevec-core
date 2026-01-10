@@ -29,7 +29,7 @@
 | description | TEXT  | NOT NULL    |
 | company     | TEXT  |             |
 
-## Candidates' reactions
+### Candidates' reactions
 | Column         | Type                | Constraints                |
 | -------------  | ------------------- | -------------------------- |
 | candidate\_id  | INT                 | PK, FK, ON DELETE CASCADE  |
@@ -37,7 +37,7 @@
 | reaction\_type | ENUM(like, dislike) | NOT NULL                   |
 | created\_at    | TIMESTAMP           | NOT NULL, DEFAULT `NOW()`  |
 
-## Recrutiers' reactions
+### Recrutiers' reactions
 | Column         | Type                | Constraints                |
 | -------------  | ------------------- | -------------------------- |
 | recruiter\_id  | INT                 | PK, FK, ON DELETE CASCADE  |
@@ -46,14 +46,14 @@
 | reaction\_type | ENUM(like, dislike) | NOT NULL                   |
 | created\_at    | TIMESTAMP           | NOT NULL, DEFAULT `NOW()`  |
 
-## Matches
+### Matches
 | Column        | Type      | Constraints                   |
 | ------------  | --------- | ----------------------------- |
 | candidate\_id | INT       | PK, FK, ON DELETE CASCADE     |
 | position\_id  | INT       | PK, FK, ON DELETE CASCADE     |
 | timestamp     | TIMESTAMP | NOT NULL, DEFAULT `NOW()`     |
 
-
+### ER Diagram
 ```mermaid
 ---
 config:
