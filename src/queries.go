@@ -1,11 +1,11 @@
-// Copyright (c) 2025 Arsenii Kvachan. All Rights Reserved. MIT License.
+// Copyright (c) 2026 Arsenii Kvachan. All Rights Reserved. MIT License.
 
 package hirevec
 
 var GetPositionByIDQuery string = `
 	SELECT COALESCE(json_agg(t), '[]'::json)
 	FROM hirevec.general.positions t
-	WHERE t.position_id = $1
+	WHERE t.id = $1
 `
 
 var GetPositionsQuery string = `
@@ -13,7 +13,7 @@ var GetPositionsQuery string = `
 	FROM (
 		SELECT *
 		FROM hirevec.general.positions
-		ORDER BY position_id
+		ORDER BY id
 		LIMIT $1 OFFSET $2
 	) t
 `
@@ -21,7 +21,7 @@ var GetPositionsQuery string = `
 var GetCandidateByIDQuery string = `
 	SELECT COALESCE(json_agg(t), '[]'::json)
 	FROM hirevec.general.candidates t
-	WHERE t.candidate_id = $1
+	WHERE t.id = $1
 `
 
 var GetCandidatesQuery string = `
@@ -29,7 +29,7 @@ var GetCandidatesQuery string = `
 	FROM (
 		SELECT *
 		FROM hirevec.general.candidates
-		ORDER BY candidate_id 
+		ORDER BY id 
 		LIMIT $1 OFFSET $2
 	) t
 `

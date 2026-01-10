@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Arsenii Kvachan. All Rights Reserved. MIT License.
+// Copyright (c) 2026 Arsenii Kvachan. All Rights Reserved. MIT License.
 
 package tests
 
@@ -10,7 +10,7 @@ import (
 
 type GetPositionsSuccessResponse struct {
 	Data []struct {
-		PositionID  int    `json:"position_id"`
+		PositionID  int    `json:"id"`
 		Title       string `json:"title"`
 		Description string `json:"description"`
 		Company     string `json:"company"`

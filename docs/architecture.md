@@ -1,48 +1,125 @@
 ## DB tables
 
-### Positions
-Primary key: `position_id`
-Fields: `title`, `company`, `description`
+### Users
+| Column     | Type         | Constraints      |
+| ---------- | ------------ | ---------------- |
+| id         | INT          | PK               |
+| email      | VARCHAR(512) | NOT NULL, UNIQUE |
+| user\_name | VARCHAR(64)  | NOT NULL, UNIQUE |
+| full\_name | VARCHAR(128) | NOT NULL         |
 
 ### Candidates
-Primary key: `candidate_id`
-Fields: `first_name`, `second_name`, `about`
+| Column   | Type | Constraints                                  |
+| -------- | ---- | -------------------------------------------- |
+| id       | INT  | PK                                           |
+| user\_id | INT  | NOT NULL, FK, ON DELETE CASCADE              |
+| about    | TEXT | NOT NULL                                     |
 
-### Matches
-Composite key: `position_id`, `candidate_id`
-Fields: `unix_timestamp`
+### Recruiters
+| Column   | Type | Constraints                                  |
+| -------- | ---- | -------------------------------------------- |
+| id       | INT  | PK                                           |
+| user\_id | INT  | NOT NULL, FK, ON DELETE CASCADE              |
 
-### Likes
-Composite key: `position_id`, `candidate_id`
-Fields: `unix_timestamp`
+### Positions
+| Column      | Type  | Constraints |
+|-------------|------ |-------------|
+| id          | INT   | PK          |
+| title       | TEXT  | NOT NULL    |
+| description | TEXT  | NOT NULL    |
+| company     | TEXT  |             |
 
-### Dislikes
-Composite key: `position_id`, `candidate_id`
-Fields: `unix_timestamp`
+## Candidates' reactions
+| Column         | Type                | Constraints                |
+| -------------  | ------------------- | -------------------------- |
+| candidate\_id  | INT                 | PK, FK, ON DELETE CASCADE  |
+| position\_id   | INT                 | PK, FK, ON DELETE CASCADE  |
+| reaction\_type | ENUM(like, dislike) | NOT NULL                   |
+| created\_at    | TIMESTAMP           | NOT NULL, DEFAULT `NOW()`  |
 
-## In-memory storage (HashSet)
+## Recrutiers' reactions
+| Column         | Type                | Constraints                |
+| -------------  | ------------------- | -------------------------- |
+| recruiter\_id  | INT                 | PK, FK, ON DELETE CASCADE  |
+| position\_id   | INT                 | PK, FK, ON DELETE CASCADE  |
+| candidate\_id  | INT                 | PK, FK, ON DELETE CASCADE  |
+| reaction\_type | ENUM(like, dislike) | NOT NULL                   |
+| created\_at    | TIMESTAMP           | NOT NULL, DEFAULT `NOW()`  |
 
-### Swipes
-- On swipe, store key (string) `candidate_id/position_id`.
-- If `candidate_id/position_id` indexable in HashSet, write to the `Matches` table.
-- Report the (no) match in the response.
+## Matches
+| Column        | Type      | Constraints               |
+| ------------  | --------- | ------------------------- |
+| id            | INT       | PK                        |
+| candidate\_id | INT       | FK, ON DELETE CASCADE     |
+| recruiter\_id | INT       | FK, ON DELETE CASCADE     |
+| position\_id  | INT       | FK, ON DELETE CASCADE     |
+| timestamp     | TIMESTAMP | NOT NULL, DEFAULT `NOW()` |
 
-## Backend
-- `GET` and `CREATE` endpoints for all DB tables.
-- `GET` and `CREATE` endpoints for in-memory storage.
-- Query param to get unswiped candidate.
-- Query param to get random candidate.
-- Query param to get unswiped position.
-- Query param to get random position.
-- Query param to load user swipes (Likes table) into in-memory storage.
-## UI
 
-### 1st screen
-- Welcome: "Who are you?" -> "Recruiter", "Candidate".
-- If "Candidate" -> Show `CandidateView`.
-- If "Recruiter" -> Show `RecruiterView`.
+```mermaid
+---
+config:
+  layout: elk
+---
+erDiagram
 
-### 2nd screen
-- On `CandidateView` or `RecruiterView`.
-- If clicked `Yes`, validate the match and inform the use, provide next `CandidateCard` or `PositionCard`
-- If clicked `No`, just provide next `CandidateCard` or `PositionCard`.
+    USERS {
+        int id PK
+        varchar email
+        varchar user_name
+        varchar full_name
+    }
+
+    CANDIDATES {
+        int id PK
+        int user_id FK
+        text about
+    }
+
+    RECRUITERS {
+        int id PK
+        int user_id FK
+    }
+
+    POSITIONS {
+        int id PK
+        text company
+        text description
+    }
+
+    CANDIDATES_REACTIONS {
+        int candidate_id PK, FK
+        int position_id PK, FK
+        enum reaction_type
+        timestamp created_at
+    }
+
+    RECRUITERS_REACTIONS {
+        int recruiter_id PK, FK
+        int position_id PK, FK
+        int candidate_id PK, FK
+        enum reaction_type
+        timestamp created_at
+    }
+
+    MATCHES {
+        int id PK
+        int candidate_id FK
+        int recruiter_id FK
+        int position_id FK
+        timestamp timestamp
+    }
+    USERS ||--o| CANDIDATES : "has"
+    USERS ||--o| RECRUITERS : "has"
+
+    CANDIDATES ||--o{ CANDIDATES_REACTIONS : "reacts"
+    POSITIONS  ||--o{ CANDIDATES_REACTIONS : "receives"
+
+    RECRUITERS ||--o{ RECRUITERS_REACTIONS : "reacts"
+    POSITIONS  ||--o{ RECRUITERS_REACTIONS : "context"
+    CANDIDATES ||--o{ RECRUITERS_REACTIONS : "target"
+
+    CANDIDATES ||--o{ MATCHES : "matched"
+    RECRUITERS ||--o{ MATCHES : "matched"
+    POSITIONS  ||--o{ MATCHES : "matched"
+```

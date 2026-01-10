@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2025 Arsenii Kvachan
+Copyright (c) 2026 Arsenii Kvachan
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
