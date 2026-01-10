@@ -49,9 +49,7 @@
 ## Matches
 | Column        | Type      | Constraints               |
 | ------------  | --------- | ------------------------- |
-| id            | INT       | PK                        |
 | candidate\_id | INT       | FK, ON DELETE CASCADE     |
-| recruiter\_id | INT       | FK, ON DELETE CASCADE     |
 | position\_id  | INT       | FK, ON DELETE CASCADE     |
 | timestamp     | TIMESTAMP | NOT NULL, DEFAULT `NOW()` |
 
@@ -105,7 +103,6 @@ erDiagram
     MATCHES {
         int id PK
         int candidate_id FK
-        int recruiter_id FK
         int position_id FK
         timestamp timestamp
     }
@@ -120,6 +117,5 @@ erDiagram
     CANDIDATES ||--o{ RECRUITERS_REACTIONS : "target"
 
     CANDIDATES ||--o{ MATCHES : "matched"
-    RECRUITERS ||--o{ MATCHES : "matched"
     POSITIONS  ||--o{ MATCHES : "matched"
 ```
