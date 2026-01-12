@@ -3,14 +3,11 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
-	"time"
 
 	hirevec "github.com/akvachan/hirevec-backend/src"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -52,19 +49,6 @@ func main() {
 		WriteTimeout: hirevec.WriteTimout,
 	}
 	hirevec.HirevecServer = server
-	defer server.Close()
-
 	slog.Info(fmt.Sprintf("server listening on %v", server.Addr))
-	go func() {
-		_ = server.ListenAndServe()
-	}()
-
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
-
-	<-stop
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = server.Shutdown(ctx)
+	hirevec.GracefulShutdown(server)
 }
