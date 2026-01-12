@@ -4,7 +4,7 @@ run:
 	go run .
 
 watch:
-	watchexec -e go -r -c -- make run
+	watchexec -e go -r -c --delay-run=11 --stop-timeout=11 -- make run
 
 test:
 	go test -v ./tests

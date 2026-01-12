@@ -49,5 +49,5 @@ func main() {
 	}
 	hirevec.HirevecServer = server
 	slog.Info(fmt.Sprintf("server listening on %v", server.Addr))
-	hirevec.GracefulShutdown(server)
+	_ = server.ListenAndServe()
 }
