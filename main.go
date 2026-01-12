@@ -29,7 +29,12 @@ func main() {
 	slog.SetDefault(hirevec.HirevecLogger)
 
 	// Set up database
-	database, err := sql.Open("pgx", os.Getenv("DEV_DATABASE_URL"))
+	dsn := os.Getenv("DEV_DATABASE_URL")
+	if dsn == "" {
+		fmt.Println("DEV_DATABASE_URL is not set")
+		os.Exit(1)
+	}
+	database, err := sql.Open("pgx", dsn)
 	if err != nil {
 		slog.Error(fmt.Sprintf("unable to connect to database: %v", err))
 		os.Exit(1)
