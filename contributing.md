@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS general.matches (
 );
 ```
 
-## Installation
+## Run server
 - Inside the root of the repository:
 ```
 make 
