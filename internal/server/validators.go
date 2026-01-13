@@ -1,10 +1,18 @@
 // Copyright (c) 2026 Arsenii Kvachan. All Rights Reserved. MIT License.
 
-package hirevec
+// Package server implements basic routing, middleware, handlers and validation
+package server
 
 import (
 	"errors"
 	"strconv"
+
+	"github.com/akvachan/hirevec-backend/internal/models"
+)
+
+const (
+	pageSizeDefaultLimit = 50
+	pageSizeMaxLimit     = 100
 )
 
 func validateSerialID(strID string) (int, error) {
@@ -53,9 +61,9 @@ func validateOffset(strOffset string) (int, error) {
 	return offset, nil
 }
 
-func validateReactionType(rtype ReactionType) (string, error) {
+func validateReactionType(rtype models.ReactionType) (string, error) {
 	switch rtype {
-	case like, dislike:
+	case models.Like, models.Dislike:
 		return string(rtype), nil
 	default:
 		return "", errors.New("invalid reaction type")

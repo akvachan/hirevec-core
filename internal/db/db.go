@@ -1,10 +1,18 @@
 // Copyright (c) 2026 Arsenii Kvachan. All Rights Reserved. MIT License.
 
-package hirevec
+// Package db implement queries for the database
+package db
 
-import "encoding/json"
+import (
+	"database/sql"
+	"encoding/json"
 
-func selectPositionByID(outJSON *json.RawMessage, id int) error {
+	"github.com/akvachan/hirevec-backend/internal/models"
+)
+
+var HirevecDatabase *sql.DB
+
+func SelectPositionByID(outJSON *json.RawMessage, id int) error {
 	return HirevecDatabase.QueryRow(
 		`
 		SELECT row_to_json(t) 
@@ -15,7 +23,7 @@ func selectPositionByID(outJSON *json.RawMessage, id int) error {
 	).Scan(outJSON)
 }
 
-func selectPositions(outJSON *json.RawMessage, p paginator) error {
+func SelectPositions(outJSON *json.RawMessage, p models.Paginator) error {
 	return HirevecDatabase.QueryRow(
 		`
 		SELECT COALESCE(json_agg(t), '[]'::json)
@@ -31,7 +39,7 @@ func selectPositions(outJSON *json.RawMessage, p paginator) error {
 	).Scan(outJSON)
 }
 
-func selectCandidateByID(outJSON *json.RawMessage, id int) error {
+func SelectCandidateByID(outJSON *json.RawMessage, id int) error {
 	return HirevecDatabase.QueryRow(
 		`
 		SELECT row_to_json(t) 
@@ -42,7 +50,7 @@ func selectCandidateByID(outJSON *json.RawMessage, id int) error {
 	).Scan(outJSON)
 }
 
-func selectCandidates(outJSON *json.RawMessage, p paginator) error {
+func SelectCandidates(outJSON *json.RawMessage, p models.Paginator) error {
 	return HirevecDatabase.QueryRow(
 		`
 		SELECT COALESCE(json_agg(t), '[]'::json)
@@ -58,7 +66,7 @@ func selectCandidates(outJSON *json.RawMessage, p paginator) error {
 	).Scan(outJSON)
 }
 
-func insertCandidateReaction(r candidateReaction) error {
+func InsertCandidateReaction(r models.CandidateReaction) error {
 	_, err := HirevecDatabase.Exec(
 		`
 		INSERT INTO general.candidates_reactions (
@@ -75,7 +83,7 @@ func insertCandidateReaction(r candidateReaction) error {
 	return err
 }
 
-func insertRecruiterReaction(r recruiterReaction) error {
+func InsertRecruiterReaction(r models.RecruiterReaction) error {
 	_, err := HirevecDatabase.Exec(
 		`
 		INSERT INTO general.recruiters_reactions (
@@ -84,7 +92,7 @@ func insertRecruiterReaction(r recruiterReaction) error {
 			candidate_id,
 			reaction_type
 		)
-		VALUES ($1, $2, $3);
+		VALUES ($1, $2, $3, $4);
 		`,
 		r.RecruiterID,
 		r.PositionID,
@@ -94,10 +102,10 @@ func insertRecruiterReaction(r recruiterReaction) error {
 	return err
 }
 
-func insertMatch(m match) error {
+func InsertMatch(m models.Match) error {
 	_, err := HirevecDatabase.Exec(
 		`
-		INSERT INTO matches (
+		INSERT INTO general.matches (
 			candidate_id,
 			position_id
 		)

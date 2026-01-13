@@ -1,11 +1,23 @@
 // Copyright (c) 2026 Arsenii Kvachan. All Rights Reserved. MIT License.
 
-package hirevec
+// Package server implements basic routing, middleware, handlers and validation
+package server
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 )
+
+const (
+	bit      int64 = 1
+	kilobyte int64 = bit * 1024
+	megabyte int64 = kilobyte * 1024
+)
+
+const maxBytesHandler = 1 * megabyte
+
+var HirevecLogger *slog.Logger
 
 // responseWriter is a struct that is used as a place where ServeHTTP can write data to.
 type responseWriter struct {

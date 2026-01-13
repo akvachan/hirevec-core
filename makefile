@@ -1,7 +1,7 @@
 .PHONY: run watch test test-watch
 
 run:
-	go run .
+	go run ./cmd/server/main.go
 
 watch:
 	watchexec -e go -r -c --delay-run=11 --stop-timeout=11 -- make run

@@ -8,14 +8,22 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
-	hirevec "github.com/akvachan/hirevec-backend/src"
+	hirevecDB "github.com/akvachan/hirevec-backend/internal/db"
+	hirevecServer "github.com/akvachan/hirevec-backend/internal/server"
+	hirevecUtils "github.com/akvachan/hirevec-backend/internal/utils"
 	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+const (
+	ReadTimeout = 2 * time.Second
+	WriteTimout = 2 * time.Second
 )
 
 func main() {
 	// Set up environment variables
-	hirevec.LoadDotEnv(".dev.env")
+	hirevecUtils.LoadDotEnv(".dev.env")
 	dsn := os.Getenv("DEV_DATABASE_URL")
 	if dsn == "" {
 		fmt.Println("DEV_DATABASE_URL is not set")
@@ -23,12 +31,12 @@ func main() {
 	}
 
 	// Set up logger
-	hirevec.HirevecLogger = slog.New(
+	hirevecServer.HirevecLogger = slog.New(
 		slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level: slog.LevelInfo,
 		}),
 	)
-	slog.SetDefault(hirevec.HirevecLogger)
+	slog.SetDefault(hirevecServer.HirevecLogger)
 
 	// Set up database
 	database, err := sql.Open("pgx", dsn)
@@ -36,18 +44,18 @@ func main() {
 		slog.Error(fmt.Sprintf("unable to connect to database: %v", err))
 		os.Exit(1)
 	}
-	hirevec.HirevecDatabase = database
+	hirevecDB.HirevecDatabase = database
 	defer database.Close()
 
 	// Set up server
 	addr := "localhost:8080"
 	server := &http.Server{
 		Addr:         addr,
-		Handler:      hirevec.GetMainHandler(),
-		ReadTimeout:  hirevec.ReadTimeout,
-		WriteTimeout: hirevec.WriteTimout,
+		Handler:      hirevecServer.GetMainHandler(),
+		ReadTimeout:  ReadTimeout,
+		WriteTimeout: WriteTimout,
 	}
-	hirevec.HirevecServer = server
+	hirevecServer.HirevecServer = server
 	slog.Info(fmt.Sprintf("server listening on %v", server.Addr))
 	_ = server.ListenAndServe()
 }

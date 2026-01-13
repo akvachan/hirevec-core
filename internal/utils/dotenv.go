@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan. All Rights Reserved. MIT License.
 
-package hirevec
+// Package utils implements miscellaneous helpful routines
+package utils
 
 import (
 	"bufio"

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Arsenii Kvachan. All Rights Reserved. MIT License.
 
-package hirevec
+package server
 
 import (
 	"database/sql"
@@ -8,6 +8,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+
+	"github.com/akvachan/hirevec-backend/internal/db"
+	"github.com/akvachan/hirevec-backend/internal/models"
 )
 
 type SuccessAPIResponse struct {
@@ -86,7 +89,7 @@ func handleGetPosition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result json.RawMessage
-	err = selectPositionByID(&result, id)
+	err = db.SelectPositionByID(&result, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeFailResponse(w, http.StatusNotFound, "position not found")
 		return
@@ -114,7 +117,7 @@ func handleGetPositions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result json.RawMessage
-	err = selectPositions(&result, paginator{Limit: limit, Offset: offset})
+	err = db.SelectPositions(&result, models.Paginator{Limit: limit, Offset: offset})
 	if err != nil {
 		slog.Error("query failed", "err", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
@@ -132,7 +135,7 @@ func handleGetCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result json.RawMessage
-	err = selectCandidateByID(&result, id)
+	err = db.SelectCandidateByID(&result, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeFailResponse(w, http.StatusNotFound, "not found")
 		return
@@ -160,7 +163,7 @@ func handleGetCandidates(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var result json.RawMessage
-	err = selectCandidates(&result, paginator{Limit: limit, Offset: offset})
+	err = db.SelectCandidates(&result, models.Paginator{Limit: limit, Offset: offset})
 	if err != nil {
 		slog.Error("query failed", "err", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
@@ -171,7 +174,7 @@ func handleGetCandidates(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePostCandidateReaction(w http.ResponseWriter, r *http.Request) {
-	var req CandidatesReactionRequest
+	var req models.PostCandidatesReactionRequest
 
 	if err := decodeJSON(r, &req); err != nil {
 		writeFailResponse(w, http.StatusBadRequest, "malformed request")
@@ -196,7 +199,7 @@ func handlePostCandidateReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = insertCandidateReaction(candidateReaction{CandidateID: cid, PositionID: pid, ReactionType: rtype})
+	err = db.InsertCandidateReaction(models.CandidateReaction{CandidateID: cid, PositionID: pid, ReactionType: rtype})
 	if err != nil {
 		slog.Error("query failed", "err", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
@@ -207,7 +210,7 @@ func handlePostCandidateReaction(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePostRecruiterReaction(w http.ResponseWriter, r *http.Request) {
-	var req RecruitersReactionRequest
+	var req models.PostRecruitersReactionRequest
 
 	if err := decodeJSON(r, &req); err != nil {
 		writeFailResponse(w, http.StatusBadRequest, "malformed request")
@@ -238,7 +241,7 @@ func handlePostRecruiterReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = insertRecruiterReaction(recruiterReaction{RecruiterID: rid, CandidateID: cid, PositionID: pid, ReactionType: rtype})
+	err = db.InsertRecruiterReaction(models.RecruiterReaction{RecruiterID: rid, CandidateID: cid, PositionID: pid, ReactionType: rtype})
 	if err != nil {
 		slog.Error("query failed", "err", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
@@ -249,7 +252,7 @@ func handlePostRecruiterReaction(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlePostMatch(w http.ResponseWriter, r *http.Request) {
-	var req MatchRequest
+	var req models.PostMatchRequest
 
 	if err := decodeJSON(r, &req); err != nil {
 		writeFailResponse(w, http.StatusBadRequest, "malformed request")
@@ -268,7 +271,7 @@ func handlePostMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = insertMatch(match{CandidateID: cid, PositionID: pid})
+	err = db.InsertMatch(models.Match{CandidateID: cid, PositionID: pid})
 	if err != nil {
 		slog.Error("query failed", "err", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
