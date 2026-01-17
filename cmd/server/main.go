@@ -3,9 +3,11 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -14,11 +16,6 @@ import (
 	hirevecServer "github.com/akvachan/hirevec-backend/internal/server"
 	hirevecUtils "github.com/akvachan/hirevec-backend/internal/utils"
 	_ "github.com/jackc/pgx/v5/stdlib"
-)
-
-const (
-	ReadTimeout = 2 * time.Second
-	WriteTimout = 2 * time.Second
 )
 
 func main() {
@@ -48,15 +45,32 @@ func main() {
 	defer database.Close()
 
 	// Set up server
-	addr := "localhost:8080"
+	ongoingCtx, stopOngoing := context.WithCancel(context.Background())
+	defer stopOngoing()
+
 	server := &http.Server{
-		Addr:         addr,
+		Addr:         "localhost:8080",
 		Handler:      hirevecServer.GetMainHandler(),
-		ReadTimeout:  ReadTimeout,
-		WriteTimeout: WriteTimout,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
+		BaseContext: func(_ net.Listener) context.Context {
+			return ongoingCtx
+		},
 	}
 	hirevecServer.HirevecServer = server
-	slog.Info(fmt.Sprintf("server listening on %v", server.Addr))
-	_ = server.ListenAndServe()
-}
 
+	err = hirevecServer.RunHTTPServer(
+		context.Background(),
+		server,
+		hirevecServer.ShutdownConfig{
+			ReadinessDelay: 5 * time.Second,
+			GracePeriod:    5 * time.Second,
+			ForcePeriod:    2 * time.Second,
+		},
+	)
+
+	stopOngoing()
+	if err != nil {
+		slog.Error("Server exited with error", "err", err)
+	}
+}

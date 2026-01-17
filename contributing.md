@@ -1,5 +1,19 @@
-## Setup PGSQL
+## Run server
+- Setup development PGSQL database
+- Inside the root of the repository:
+```
+go run cmd/server/main.go
+```
 
+## Tests
+- Setup test PGSQL database, refer to [this](setup-pgsql) section
+- Run tests with:
+```
+cd tests/
+go test -v
+```
+
+## Setup PGSQL
 Use this set of SQL queries to create development and test DBs:
 ```sql
 CREATE DATABASE <db_name>;
@@ -49,18 +63,3 @@ CREATE TABLE IF NOT EXISTS general.matches (
 );
 ```
 
-## Run server
-- Inside the root of the repository:
-```
-make 
-```
-- Development setup with a hot-reload (Optional):
-```
-make watch
-```
-
-## Unit Tests
-- Run unit tests with:
-```
-make test
-```
