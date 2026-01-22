@@ -21,7 +21,10 @@ import (
 
 func main() {
 	// Set up environment variables
-	hirevecUtils.LoadDotEnv(".dev.env")
+	err := hirevecUtils.LoadDotEnv(".dev.env")
+	if err != nil {
+		slog.Error(fmt.Sprintf("environment variables could not be loaded: %v", err))
+	}
 	dsn := os.Getenv("DEV_DB_URL")
 	if dsn == "" {
 		fmt.Println("DEV_DB_URL is not set")

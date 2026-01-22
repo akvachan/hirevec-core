@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Arsenii Kvachan. MIT License.
 
+// Package server implements the HTTP transport layer, providing RESTful endpoints.
 package server
 
 import (
@@ -13,55 +14,62 @@ import (
 	"github.com/akvachan/hirevec-backend/internal/models"
 )
 
-type SuccessAPIResponse struct {
-	Status string `json:"status"`
+// successAPIResponse represents a successful JSend-style response.
+type successAPIResponse struct {
+	Status string `json:"status"` // Always "success"
 	Data   any    `json:"data,omitempty"`
 }
 
-type ErrorAPIResponse struct {
-	Status  string `json:"status"`
+// errorAPIResponse represents a critical server error response.
+type errorAPIResponse struct {
+	Status  string `json:"status"` // Always "error"
 	Message string `json:"message"`
 }
 
-type FailAPIResponse struct {
-	Status  string `json:"status"`
+// failAPIResponse represents a client-side validation failure response.
+type failAPIResponse struct {
+	Status  string `json:"status"` // Always "fail"
 	Message any    `json:"message"`
 }
 
+// writeSuccessResponse helper writes a JSON success response with the provided HTTP status and data.
 func writeSuccessResponse(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(
-		SuccessAPIResponse{
+		successAPIResponse{
 			Status: "success",
 			Data:   data,
 		},
 	)
 }
 
+// writeErrorResponse helper writes a JSON error response for server-side issues.
 func writeErrorResponse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	_ = json.NewEncoder(w).Encode(
-		ErrorAPIResponse{
+		errorAPIResponse{
 			Status:  "error",
 			Message: message,
 		},
 	)
 }
 
+// writeFailResponse helper writes a JSON failure response for invalid client input.
 func writeFailResponse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(
-		FailAPIResponse{
+		failAPIResponse{
 			Status:  "fail",
 			Message: message,
 		},
 	)
 }
 
+// decodeJSON reads the request body and decodes it into outData,
+// enforcing strict field matching and checking for trailing data.
 func decodeJSON(r *http.Request, outData any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -74,10 +82,12 @@ func decodeJSON(r *http.Request, outData any) error {
 	return nil
 }
 
+// handleHealth provides a simple liveness check for the server.
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, nil)
 }
 
+// handleGetPosition retrieves a specific position by the "id" path parameter.
 func handleGetPosition(w http.ResponseWriter, r *http.Request) {
 	id, err := validateSerialID(r.PathValue("id"))
 	if err != nil {
@@ -100,6 +110,7 @@ func handleGetPosition(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, result)
 }
 
+// handleGetPositions retrieves a list of positions using limit and offset query parameters.
 func handleGetPositions(w http.ResponseWriter, r *http.Request) {
 	limit, err := validateLimit(r.URL.Query().Get("limit"))
 	if err != nil {
@@ -124,6 +135,7 @@ func handleGetPositions(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, result)
 }
 
+// handleGetCandidate retrieves a specific candidate by the "id" path parameter.
 func handleGetCandidate(w http.ResponseWriter, r *http.Request) {
 	id, err := validateSerialID(r.PathValue("id"))
 	if err != nil {
@@ -146,6 +158,7 @@ func handleGetCandidate(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, result)
 }
 
+// handleGetCandidates retrieves a list of candidates using limit and offset query parameters.
 func handleGetCandidates(w http.ResponseWriter, r *http.Request) {
 	limit, err := validateLimit(r.URL.Query().Get("limit"))
 	if err != nil {
@@ -170,6 +183,7 @@ func handleGetCandidates(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusOK, result)
 }
 
+// handlePostCandidateReaction processes a candidate's reaction to a position.
 func handlePostCandidateReaction(w http.ResponseWriter, r *http.Request) {
 	var req models.PostCandidateReactionRequest
 
@@ -206,6 +220,7 @@ func handlePostCandidateReaction(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusCreated, nil)
 }
 
+// handlePostRecruiterReaction processes a recruiter's reaction to a candidate for a specific position.
 func handlePostRecruiterReaction(w http.ResponseWriter, r *http.Request) {
 	var req models.PostRecruiterReactionRequest
 
@@ -248,6 +263,7 @@ func handlePostRecruiterReaction(w http.ResponseWriter, r *http.Request) {
 	writeSuccessResponse(w, http.StatusCreated, nil)
 }
 
+// handlePostMatch manually creates a match record between a candidate and a position.
 func handlePostMatch(w http.ResponseWriter, r *http.Request) {
 	var req models.PostMatchRequest
 

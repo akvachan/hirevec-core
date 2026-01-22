@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Arsenii Kvachan. MIT License.
+
+// Package server implements the HTTP transport layer, providing RESTful endpoints.
 package server
 
 import (
@@ -9,14 +12,22 @@ import (
 	"time"
 )
 
+// HirevecServer holds the active instance of the HTTP server.
 var HirevecServer *http.Server
 
+// ShutdownConfig defines the timing parameters for a controlled server exit.
 type ShutdownConfig struct {
+	// ReadinessDelay is the time to wait after a shutdown signal.
 	ReadinessDelay time.Duration
-	GracePeriod    time.Duration
-	ForcePeriod    time.Duration
+
+	// GracePeriod is the maximum time allowed for existing active requests to complete.
+	GracePeriod time.Duration
+
+	// ForcePeriod is a final timeout used if the graceful shutdown fails.
+	ForcePeriod time.Duration
 }
 
+// RunHTTPServer starts the HTTP server in a background goroutine and manages its lifecycle.
 func RunHTTPServer(
 	ctx context.Context,
 	server *http.Server,

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Arsenii Kvachan. MIT License.
 
-// Package utils implements miscellaneous helpful routines
+// Package utils implements miscellaneous helpful routines.
 package utils
 
 import (
@@ -9,6 +9,11 @@ import (
 	"strings"
 )
 
+// LoadDotEnv reads a configuration file at the specified path and loads
+// its contents into the process's environment variables.
+//
+// The file should follow the KEY=VALUE format. The function ignores empty lines,
+// lines starting with '#', and handles optional quotes around values.
 func LoadDotEnv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -31,6 +36,7 @@ func LoadDotEnv(path string) error {
 
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
+
 		value = strings.Trim(value, `"'`)
 
 		err = os.Setenv(key, value)

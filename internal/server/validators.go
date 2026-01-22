@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Arsenii Kvachan. MIT License.
 
-// Package server implements basic routing, middleware, handlers and validation
+// Package server implements the HTTP transport layer, providing RESTful endpoints.
 package server
 
 import (
@@ -11,10 +11,16 @@ import (
 )
 
 const (
+	// pageSizeDefaultLimit is used when the client does not provide a limit parameter.
 	pageSizeDefaultLimit = 50
-	pageSizeMaxLimit     = 100
+
+	// pageSizeMaxLimit prevents clients from requesting excessively large datasets.
+	pageSizeMaxLimit = 100
 )
 
+// validateSerialID converts a string ID to a positive integer.
+//
+// It returns an error if the string is not an integer or if the ID is non-positive.
 func validateSerialID(strID string) (int, error) {
 	id, err := strconv.Atoi(strID)
 	if err != nil {
@@ -26,6 +32,11 @@ func validateSerialID(strID string) (int, error) {
 	return id, nil
 }
 
+// validateLimit parses the limit query parameter.
+//
+// It returns an error if the limit is not zero or a positive integer.
+//
+// It automatically caps the limit to the maximum limit allowed.
 func validateLimit(strLimit string) (int, error) {
 	if strLimit == "" {
 		return pageSizeDefaultLimit, nil
@@ -46,6 +57,9 @@ func validateLimit(strLimit string) (int, error) {
 	return limit, nil
 }
 
+// validateOffset parses the offset query parameter for pagination.
+//
+// It returns an error if the offset is not zero or a positive integer.
 func validateOffset(strOffset string) (int, error) {
 	if strOffset == "" {
 		return 0, nil
@@ -61,6 +75,9 @@ func validateOffset(strOffset string) (int, error) {
 	return offset, nil
 }
 
+// validateReactionType checks if the provided reaction matches the allowed models.
+//
+// It returns an error if reaction type is not valid.
 func validateReactionType(rtype models.ReactionType) (string, error) {
 	switch rtype {
 	case models.Positive, models.Negative:

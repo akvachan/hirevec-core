@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Arsenii Kvachan. MIT License.
 
-// Package db implement queries for the database
+// Package db implements queries for the database.
 package db
 
 import (
@@ -10,8 +10,10 @@ import (
 	"github.com/akvachan/hirevec-backend/internal/models"
 )
 
+// HirevecDatabase is the global database connection pool.
 var HirevecDatabase *sql.DB
 
+// SelectPositionByID retrieves a single position from the database by its unique identifier and scans the result as a JSON object into outJSON.
 func SelectPositionByID(outJSON *json.RawMessage, id int) error {
 	return HirevecDatabase.QueryRow(
 		`
@@ -23,6 +25,7 @@ func SelectPositionByID(outJSON *json.RawMessage, id int) error {
 	).Scan(outJSON)
 }
 
+// SelectPositions retrieves a paginated list of all positions, ordered by ID.
 func SelectPositions(outJSON *json.RawMessage, p models.Paginator) error {
 	return HirevecDatabase.QueryRow(
 		`
@@ -39,6 +42,7 @@ func SelectPositions(outJSON *json.RawMessage, p models.Paginator) error {
 	).Scan(outJSON)
 }
 
+// SelectCandidateByID retrieves a single candidate's details by their ID and scans the result as a JSON object into outJSON.
 func SelectCandidateByID(outJSON *json.RawMessage, id int) error {
 	return HirevecDatabase.QueryRow(
 		`
@@ -50,6 +54,7 @@ func SelectCandidateByID(outJSON *json.RawMessage, id int) error {
 	).Scan(outJSON)
 }
 
+// SelectCandidates retrieves a paginated list of candidates, ordered by ID.
 func SelectCandidates(outJSON *json.RawMessage, p models.Paginator) error {
 	return HirevecDatabase.QueryRow(
 		`
@@ -66,6 +71,7 @@ func SelectCandidates(outJSON *json.RawMessage, p models.Paginator) error {
 	).Scan(outJSON)
 }
 
+// InsertCandidateReaction records a candidate's interest or reaction to a specific job position.
 func InsertCandidateReaction(r models.CandidateReaction) error {
 	_, err := HirevecDatabase.Exec(
 		`
@@ -83,6 +89,7 @@ func InsertCandidateReaction(r models.CandidateReaction) error {
 	return err
 }
 
+// InsertRecruiterReaction records a recruiter's reaction to a specific candidate for a position.
 func InsertRecruiterReaction(r models.RecruiterReaction) error {
 	_, err := HirevecDatabase.Exec(
 		`
@@ -102,6 +109,7 @@ func InsertRecruiterReaction(r models.RecruiterReaction) error {
 	return err
 }
 
+// InsertMatch creates a new match record between a candidate and a position when mutual interest is established.
 func InsertMatch(m models.Match) error {
 	_, err := HirevecDatabase.Exec(
 		`
