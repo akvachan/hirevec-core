@@ -6,6 +6,7 @@ package utils
 
 import (
 	"bufio"
+	"log/slog"
 	"os"
 	"strings"
 )
@@ -20,7 +21,13 @@ func LoadDotEnv(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		err := f.Close()
+		if err != nil {
+			slog.Error("could not properly close file")
+			os.Exit(0)
+		}
+	}()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

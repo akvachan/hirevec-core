@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/akvachan/hirevec-backend/internal/auth"
@@ -72,41 +71,66 @@ type authErrorResponse struct {
 }
 
 func WriteSuccessResponse(w http.ResponseWriter, status int, data any) {
+	err := json.NewEncoder(w).Encode(successResponse{Status: "success", Data: data})
+	if err != nil {
+		slog.Error("could not encode response data")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(successResponse{Status: "success", Data: data})
 }
 
 func WriteErrorResponse(w http.ResponseWriter, status int, message string) {
+	err := json.NewEncoder(w).Encode(errorResponse{Status: "error", Message: message})
+	if err != nil {
+		slog.Error("could not encode response data")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(errorResponse{Status: "error", Message: message})
 }
 
 func WriteFailResponse(w http.ResponseWriter, status int, data any) {
+	err := json.NewEncoder(w).Encode(failResponse{Status: "fail", Data: data})
+	if err != nil {
+		slog.Error("could not encode response data")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(failResponse{Status: "fail", Data: data})
 }
 
 func WriteAuthSuccessResponse(w http.ResponseWriter, data any) {
+	err := json.NewEncoder(w).Encode(data)
+	if err != nil {
+		slog.Error("could not encode response data")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(data)
 }
 
 func WriteAuthErrorResponse(w http.ResponseWriter, errorCode authErrorCode, errorDescription string, errorURI string) {
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.WriteHeader(http.StatusBadRequest)
-	json.NewEncoder(w).Encode(authErrorResponse{
+	err := json.NewEncoder(w).Encode(authErrorResponse{
 		Error:            errorCode,
 		ErrorDescription: errorDescription,
 		ErrorURI:         errorURI,
 	})
+	if err != nil {
+		slog.Error("could not encode response data")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.WriteHeader(http.StatusBadRequest)
 }
 
 func decodeRequestBody[T any](r *http.Request) (*T, error) {
@@ -132,7 +156,7 @@ func GetPosition(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse, err := db.GetPosition(id)
 	if errors.Is(err, sql.ErrNoRows) {
-		WriteFailResponse(w, http.StatusBadRequest, map[string]string{"id": "position not found"})
+		WriteFailResponse(w, http.StatusNotFound, map[string]string{"id": "position not found"})
 		return
 	}
 	if err != nil {
@@ -212,11 +236,7 @@ func GetCandidates(w http.ResponseWriter, r *http.Request) {
 }
 
 func CreateCandidateReaction(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseUint(r.PathValue("id"), 10, 32)
-	if id == 0 {
-		WriteFailResponse(w, http.StatusBadRequest, map[string]string{"id": "invalid id"})
-		return
-	}
+	cid, err := ValidateSerialID(r.PathValue("id"))
 	if err != nil {
 		WriteFailResponse(w, http.StatusBadRequest, map[string]string{"id": "invalid id"})
 		return
@@ -238,7 +258,7 @@ func CreateCandidateReaction(w http.ResponseWriter, r *http.Request) {
 
 	if err := db.CreateCandidateReaction(
 		db.CandidateReaction{
-			CandidateID:  uint32(id),
+			CandidateID:  uint32(cid),
 			PositionID:   req.PositionID,
 			ReactionType: req.ReactionType,
 		},
@@ -660,6 +680,7 @@ func finishOAuthFlow(w http.ResponseWriter, user db.User) {
 	isValidProvider := userProvider.IsValid()
 	if !isValidProvider {
 		WriteAuthErrorResponse(w, invalidRequest, "invalid provider", "")
+		return
 	}
 
 	var userID uint32

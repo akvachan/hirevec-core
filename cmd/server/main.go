@@ -47,7 +47,12 @@ func main() {
 		os.Exit(1)
 	}
 	hirevecDB.HirevecDatabase = database
-	defer database.Close()
+	defer func() {
+		if err := database.Close(); err != nil {
+			slog.Error(fmt.Sprintf("could not proprely close database connection: %v", err))
+			os.Exit(1)
+		}
+	}()
 
 	// Set up server
 	ongoingCtx, stopOngoing := context.WithCancel(context.Background())

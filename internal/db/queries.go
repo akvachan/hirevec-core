@@ -102,7 +102,11 @@ func CreateUser(user User) (userID uint32, err error) {
 	}
 
 	suffix := make([]byte, 2)
-	rand.Read(suffix)
+	_, err = rand.Read(suffix)
+	if err != nil {
+		return 0, errors.New("could not generate a random suffix")
+	}
+
 	userName := fmt.Sprintf("%s_%s_%s",
 		strings.ToLower(user.FirstName),
 		strings.ToLower(user.LastName),
