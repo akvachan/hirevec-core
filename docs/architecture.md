@@ -1,33 +1,37 @@
-## DB tables
+## DB Tables
 
-### Users
-| Column     | Type         | Constraints      |
-| ---------- | ------------ | ---------------- |
-| id         | INT          | PK               |
-| email      | VARCHAR(512) | NOT NULL, UNIQUE |
-| user\_name | VARCHAR(64)  | NOT NULL, UNIQUE |
-| full\_name | VARCHAR(128) | NOT NULL         |
+### general.users
+|      Column      |            Type             | Collation | Nullable |      Default      |
+|------------------|-----------------------------|-----------|----------|-------------------|
+| email            | character varying(512)      |           | not null |                   |
+| full_name        | character varying(128)      |           | not null |                   |
+| user_name        | character varying(64)       |           | not null |                   |
+| id               | uuid                        |           | not null | gen_random_uuid() |
+| provider         | character varying(50)       |           | not null |                   |
+| provider_user_id | character varying(255)      |           | not null |                   |
+| created_at       | timestamp without time zone |           |          | now()             |
+| updated_at       | timestamp without time zone |           |          | now()             |
 
-### Candidates
-| Column   | Type | Constraints                                  |
-| -------- | ---- | -------------------------------------------- |
-| id       | INT  | PK                                           |
-| user\_id | INT  | NOT NULL, FK, ON DELETE CASCADE              |
-| about    | TEXT | NOT NULL                                     |
+### general.candidates
+| Column  |  Type   | Collation | Nullable |                         Default                          |
+|---------|---------|-----------|----------|----------------------------------------------------------|
+| id      | integer |           | not null | nextval('general.candidates_candidate_id_seq'::regclass) |
+| about   | text    |           | not null |                                                          |
+| user_id | uuid    |           | not null |                                                          |
 
-### Recruiters
-| Column   | Type | Constraints                                  |
-| -------- | ---- | -------------------------------------------- |
-| id       | INT  | PK                                           |
-| user\_id | INT  | NOT NULL, FK, ON DELETE CASCADE              |
+### general.recruiters
+| Column  |  Type   | Collation | Nullable |                    Default                     |
+|---------|---------|-----------|----------|------------------------------------------------|
+| id      | integer |           | not null | nextval('general.recruiters_id_seq'::regclass) |
+| user_id | uuid    |           | not null |                                                |
 
-### Positions
-| Column      | Type  | Constraints |
-|-------------|------ |-------------|
-| id          | INT   | PK          |
-| title       | TEXT  | NOT NULL    |
-| description | TEXT  | NOT NULL    |
-| company     | TEXT  |             |
+### general.positions
+|   Column    |          Type          | Collation | Nullable |                        Default                         |
+|-------------|------------------------|-----------|----------|--------------------------------------------------------|
+| id          | integer                |           | not null | nextval('general.positions_position_id_seq'::regclass) |
+| title       | character varying(127) |           | not null |                                                        |
+| description | text                   |           | not null |                                                        |
+| company     | character varying(127) |           |          |                                                        |
 
 ### general.reaction_type_enum
 | Name               | Size | Elements |
@@ -59,6 +63,16 @@
 | candidate\_id | INT       | PK, FK, ON DELETE CASCADE     |
 | position\_id  | INT       | PK, FK, ON DELETE CASCADE     |
 | timestamp     | TIMESTAMP | NOT NULL, DEFAULT `NOW()`     |
+
+## general.refresh_tokens
+|   Column   |            Type             | Collation | Nullable |      Default      |
+|------------|-----------------------------|-----------|----------|-------------------|
+| id         | uuid                        |           | not null | gen_random_uuid() |
+| user_id    | uuid                        |           | not null |                   |
+| token_hash | character varying(255)      |           | not null |                   |
+| expires_at | timestamp without time zone |           | not null |                   |
+| created_at | timestamp without time zone |           |          | now()             |
+| revoked    | boolean                     |           |          | false             |
 
 ## ER Diagram
 

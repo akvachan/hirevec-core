@@ -1,15 +1,20 @@
-## Run server
+## Run Server
 - Setup development PGSQL database, refer to [this](#setup-pgsql) section.
 - Inside the root of the repository:
 ```
 go run cmd/server/main.go
 ```
 
-## Tests
+## Unit Tests
+```
+go test ./internal -v
+```
+
+## Integration Tests
 - Setup test PGSQL database, refer to [this](#setup-pgsql) section.
 - Run tests with:
 ```
-cd tests/
+cd test
 go test -v
 ```
 
@@ -19,19 +24,30 @@ Use this set of SQL queries to create development and test DBs:
 CREATE DATABASE <db_name>;
 CREATE SCHEMA IF NOT EXISTS general;
 CREATE TABLE IF NOT EXISTS general.users (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(512) NOT NULL UNIQUE,
-    user_name VARCHAR(64) NOT NULL UNIQUE,
-    full_name VARCHAR(128) NOT NULL
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider VARCHAR(50) NOT NULL,
+    provider_user_id VARCHAR(255) NOT NULL,
+    email VARCHAR(255),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(provider, provider_user_id)
+);
+CREATE TABLE IF NOT EXISTS general.refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES generla.users(id) ON DELETE CASCADE,
+    token_hash VARCHAR(255) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    revoked BOOLEAN DEFAULT FALSE,
 );
 CREATE TABLE IF NOT EXISTS general.candidates (
     id SERIAL PRIMARY KEY,
-    user_id INT NOT NULL REFERENCES general.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES general.users(id) ON DELETE CASCADE,
     about TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS general.recruiters (
     id SERIAL PRIMARY KEY,
-    user_id INT NOT NULL REFERENCES general.users(id) ON DELETE CASCADE
+    user_id UUID NOT NULL REFERENCES general.users(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS general.positions (
     id SERIAL PRIMARY KEY,
@@ -61,5 +77,14 @@ CREATE TABLE IF NOT EXISTS general.matches (
     timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
     PRIMARY KEY (candidate_id, position_id)
 );
+CREATE TABLE IF NOT EXISTS general.refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash VARCHAR(255) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    revoked BOOLEAN DEFAULT FALSE,
+    INDEX idx_user_id (user_id),
+    INDEX idx_token_hash (token_hash)
+);
 ```
-

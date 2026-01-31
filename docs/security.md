@@ -1,16 +1,29 @@
-## Basic Auth
+## Authentication
 
-1. Client sends email and password over HTTPS to the login endpoint.
-2. Server verifies the password and creates a session record with a new refresh token ID.
-3. Server generates an access token (PASETO) signed with the current private key and includes a kid.
-4. Server generates a refresh token (PASETO local) containing the refresh token ID and user ID.
-5. Server returns both tokens to the client in a JSON response.
-6. Client stores the access token in memory and the refresh token in secure storage.
-7. Client sends the access token in the Authorization header for API requests.
-8. Server verifies the access token signature using the public key identified by kid and checks expiry.
-9. When the access token expires, the client sends the refresh token to the refresh endpoint.
-10. Server verifies the refresh token, checks the session record is active, then issues a new access token.
-11. Server rotates the refresh token by issuing a new refresh token, updating the session record, and revoking the old one.
-12. Server rotates the signing key pair periodically and publishes the new public key in a key endpoint.
-13. Client fetches the public key endpoint periodically.
-14. Server rejects any token signed with a revoked key or using a missing kid.
+- The server implements OAuth2.0 Authorization Code Flow with PKCE. Developers should familiarize themselves with [rfc6749](https://www.rfc-editor.org/rfc/rfc6749).
+- TLS version used: 1.3.
+- Token schema used: PASETO.
+- Our primary client is a native application.
+- Client identifiers are issued by the database as UUIDs.
+- Client authentication is fully passwordless, a provider's SSO is used. Following providers are supported:
+    - Google
+    - Apple
+- There are no plans to support password-based client authentication.
+- Server uses scope-based authorization with higher-lever roles:
+    - Roles: Recruiter (role:recruiter), Candidate (role:candidate)
+    - Tiers: Free (tier:free), Premium (tier:premium)
+    - There are 10 simple rules: 
+        1. All roles can access public OAuth2 endpoints.
+        2. Recruiters can only access candidate endpoints and recruiter reaction endpoints.
+        3. Candidates can only access position endpoints and candidate reaction endpoints.
+        4. Free tier has a limit of 60 candidates or positions and 60 reactions per day.
+        5. Premium tier has limit of 120 candidates or positions and 120 reactions per day.
+        6. Upon each reaction a match/nomatch is sent back to client, client can fetch up to 60 matches per hour that relate to him and only him.
+        7. Candidates and recruiters can access their personal records and their personal profile deletion endpoint.
+        8. Recruiters can request their positions.
+        9. Free tier recruiters can create up to 10 positions per day.
+        10. Premium tier recruiters can create up to 30 positions per day.
+    - It is a responsibility of the client to cache the items.
+    - Currently **only** free tier is implemented.
+    - Premium tier will need additional endpoints for promotion and billing.
+    - Upon promotion from the free tier to a premium tier the client is issued entirely new access and refresh token.

@@ -5,85 +5,89 @@
 package server
 
 import (
-	"errors"
+	"html"
+	"regexp"
 	"strconv"
-
-	"github.com/akvachan/hirevec-backend/internal/models"
+	"strings"
 )
 
 const (
-	// pageSizeDefaultLimit is used when the client does not provide a limit parameter.
-	pageSizeDefaultLimit = 50
+	// PageSizeDefaultLimit is used when the client does not provide a limit parameter.
+	PageSizeDefaultLimit = 50
 
-	// pageSizeMaxLimit prevents clients from requesting excessively large datasets.
-	pageSizeMaxLimit = 100
+	// PageSizeMaxLimit prevents clients from requesting excessively large datasets.
+	PageSizeMaxLimit = 100
 )
 
-// validateSerialID converts a string ID to a positive integer.
+// ValidateSerialID converts a string ID to a positive integer.
 //
 // It returns an error if the string is not an integer or if the ID is non-positive.
-func validateSerialID(strID string) (int, error) {
-	id, err := strconv.Atoi(strID)
+func ValidateSerialID(strID string) (uint32, error) {
+	id, err := strconv.ParseUint(strID, 10, 32)
 	if err != nil {
-		return 0, errors.New("id must be an integer")
+		return 0, ErrCouldNotParseSerialID
 	}
-	if id <= 0 {
-		return 0, errors.New("id must be a positive integer")
+	if id == 0 {
+		return 0, ErrNotPositiveSerialID
 	}
-	return id, nil
+	return uint32(id), nil
 }
 
-// validateLimit parses the limit query parameter.
+// ValidateLimit parses the limit query parameter.
 //
 // It returns an error if the limit is not zero or a positive integer.
 //
 // It automatically caps the limit to the maximum limit allowed.
-func validateLimit(strLimit string) (int, error) {
+func ValidateLimit(strLimit string) (uint8, error) {
 	if strLimit == "" {
-		return pageSizeDefaultLimit, nil
+		return PageSizeDefaultLimit, nil
 	}
 
-	limit, err := strconv.Atoi(strLimit)
+	limit, err := strconv.ParseUint(strLimit, 10, 8)
 	if err != nil {
-		return 0, errors.New("limit must be an integer")
+		return 0, ErrCouldNotParseLimit
 	}
 
-	if limit <= 0 {
-		return 0, errors.New("limit must be a positive integer")
-	}
-	if limit > pageSizeMaxLimit {
-		limit = pageSizeMaxLimit
+	if limit > PageSizeMaxLimit {
+		limit = PageSizeMaxLimit
 	}
 
-	return limit, nil
+	return uint8(limit), nil
 }
 
-// validateOffset parses the offset query parameter for pagination.
+// ValidateOffset parses the offset query parameter for pagination.
 //
 // It returns an error if the offset is not zero or a positive integer.
-func validateOffset(strOffset string) (int, error) {
+func ValidateOffset(strOffset string) (uint8, error) {
 	if strOffset == "" {
 		return 0, nil
 	}
 
-	offset, err := strconv.Atoi(strOffset)
+	offset, err := strconv.ParseUint(strOffset, 10, 8)
 	if err != nil {
-		return 0, errors.New("offset must be an integer")
+		return 0, ErrCouldNotParseOffset
 	}
-	if offset < 0 {
-		return 0, errors.New("offset must be zero or a positive integer")
-	}
-	return offset, nil
+
+	return uint8(offset), nil
 }
 
-// validateReactionType checks if the provided reaction matches the allowed models.
-//
-// It returns an error if reaction type is not valid.
-func validateReactionType(rtype models.ReactionType) (string, error) {
-	switch rtype {
-	case models.Positive, models.Negative:
-		return string(rtype), nil
-	default:
-		return "", errors.New("invalid reaction type")
+func ValidateName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+
+	reTags := regexp.MustCompile(`<[^>]*>`)
+	name = reTags.ReplaceAllString(name, "")
+
+	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
+	if !reValid.MatchString(name) {
+		return "", ErrNameHasForbiddenChars
 	}
+
+	if len(name) < 1 {
+		return "", ErrNameTooShort
+	}
+	if len(name) > 128 {
+		return "", ErrNameTooLong
+	}
+
+	return html.EscapeString(name), nil
 }

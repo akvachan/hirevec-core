@@ -7,6 +7,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -21,36 +22,55 @@ type router struct {
 type apiVersion uint8
 
 const (
-	// NoVersion is a sentinel value used to indicate that a route should not have a /vN/ segment in its URL.
-	NoVersion apiVersion = 0
+	// Unversioned is a sentinel value used to indicate that a route should not have a /vN/ segment in its URL.
+	Unversioned apiVersion = 0
 
-	// v1 represents the initial development version of the API.
-	v1 apiVersion = 1
+	// V1 represents the initial development version of the API.
+	V1 apiVersion = 1
 )
 
-// route defines the configuration for a single API endpoint.
-type route struct {
-	// An HTTP method (GET, POST, PATCH, PUT).
-	method string
-
-	// An HTTP path without leading or trailing slashes.
-	path string
-
-	// API version the route belongs to.
-	apiVersion apiVersion
-
-	// Handler function.
-	handler http.HandlerFunc
-
-	// A slice of middleware.
-	middleware []middleware
-
-	// A short explanation of the endpoint for documentation purposes.
-	description string
+func (v apiVersion) IsValid() bool {
+	switch v {
+	case Unversioned:
+		return true
+	case V1:
+		return true
+	default:
+		return false
+	}
 }
 
-// newRouter initializes a new router with a specific prefix and mounts it onto the provided root mux.
-func newRouter(rootMux *http.ServeMux, prefix string) *router {
+var allowedMethods = []string{
+	http.MethodDelete,
+	http.MethodGet,
+	http.MethodPost,
+	http.MethodPut,
+	http.MethodPatch,
+}
+
+// Route defines the configuration for a single API endpoint.
+type Route struct {
+	// An HTTP Method (GET, POST, PATCH, PUT).
+	Methods []string
+
+	// An HTTP Path without leading or trailing slashes.
+	Path string
+
+	// API version the route belongs to.
+	APIVersion apiVersion
+
+	// Handler function.
+	Handler http.HandlerFunc
+
+	// A slice of Middleware.
+	Middleware []Middleware
+
+	// A short explanation of the endpoint for documentation purposes.
+	Description string
+}
+
+// NewRouter initializes a new router with a specific prefix and mounts it onto the provided root mux.
+func NewRouter(rootMux *http.ServeMux, prefix string) *router {
 	if strings.HasPrefix(prefix, "/") {
 		panic("prefix cannot have a leading / (slash)")
 	}
@@ -65,94 +85,151 @@ func newRouter(rootMux *http.ServeMux, prefix string) *router {
 	return r
 }
 
-// addRoutes registers multiple route definitions with the router.
+// AddRoutes registers multiple route definitions with the router.
 //
-// It constructs the final URL pattern following the format: METHOD /prefix/vN/path.
-func (r *router) addRoutes(routes ...route) {
+// It constructs the final URL pattern following the format: METHOD /prefix/vN/path or /prefix/path if Unversioned is provided.
+func (r *router) AddRoutes(routes ...Route) {
 	for _, route := range routes {
-		if route.handler == nil {
-			panic("handler cannot be nil")
+		for _, method := range route.Methods {
+			if route.Handler == nil {
+				panic("handler cannot be nil")
+			}
+			if strings.HasPrefix(route.Path, "/") {
+				panic("path cannot have a leading / (slash)")
+			}
+			if strings.HasSuffix(route.Path, "/") {
+				panic("path cannot have a trailing / (slash)")
+			}
+			if route.Description == "" {
+				panic("description cannot be empty")
+			}
+			if !slices.Contains(allowedMethods, method) {
+				panic(fmt.Sprintf("method %v not allowed, allowed methods:  %v", method, allowedMethods))
+			}
+			if !route.APIVersion.IsValid() {
+				panic("API version %v not allowed, allowed versions: V1, Unversioned")
+			}
+			var pattern string
+			if route.APIVersion == Unversioned {
+				pattern = fmt.Sprintf("%s /%s/%s", method, r.prefix, route.Path)
+			} else {
+				pattern = fmt.Sprintf("%s /%s/v%d/%s", method, r.prefix, route.APIVersion, route.Path)
+			}
+			handler := Chain(route.Handler, route.Middleware...)
+			r.mux.Handle(pattern, handler)
 		}
-		if strings.HasPrefix(route.path, "/") {
-			panic("path cannot have a leading / (slash)")
-		}
-		if strings.HasSuffix(route.path, "/") {
-			panic("path cannot have a trailing / (slash)")
-		}
-		if route.description == "" {
-			panic("description cannot be empty")
-		}
-		var pattern string
-		if route.apiVersion == NoVersion {
-			pattern = fmt.Sprintf("%s /%s/%s", route.method, r.prefix, route.path)
-		} else {
-			pattern = fmt.Sprintf("%s /%s/v%d/%s", route.method, r.prefix, route.apiVersion, route.path)
-		}
-		handler := chain(route.handler, route.middleware...)
-		r.mux.Handle(pattern, handler)
 	}
 }
 
 // GetRootRouter assembles the complete application routing tree.
 func GetRootRouter() *http.ServeMux {
 	rootMux := http.NewServeMux()
-	apiRouter := newRouter(rootMux, "api")
-	apiRouter.addRoutes(
-		route{
-			method:     http.MethodGet,
-			path:       "health",
-			apiVersion: v1,
-			handler:    handleHealth,
-			middleware: append(
-				middlewareGroupPublic,
-				middlewareRateLimit(60, time.Minute),
+	apiRouter := NewRouter(rootMux, "api")
+	apiRouter.AddRoutes(
+		// Route{
+		// 	Methods:    []string{http.MethodGet},
+		// 	Path:       "health",
+		// 	APIVersion: V1,
+		// 	Handler:    CheckHealth,
+		// 	 append(
+		// 		GroupPublic,
+		// 		RateLimit(60, time.Minute),
+		// 	),
+		// 	Description: "Health check endpoint",
+		// },
+
+		// OAuth endpoints
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "auth/keys",
+			APIVersion: V1,
+			Handler:    GetPublicKeys,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Minute),
 			),
-			description: "Health check endpoint",
+			Description: "Get server public keys",
 		},
-		route{
-			method:     http.MethodGet,
-			path:       "positions",
-			apiVersion: v1,
-			handler:    handleGetPositions,
-			middleware: append(
-				middlewareGroupProtected,
-				middlewareRateLimit(60, time.Minute),
+		Route{
+			Methods:    []string{http.MethodPost},
+			Path:       "oauth2/token",
+			APIVersion: V1,
+			Handler:    TokenEndpoint,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Minute),
 			),
-			description: "List all positions",
+			Description: "Get new access token",
 		},
-		route{
-			method:     http.MethodGet,
-			path:       "positions/{id}",
-			apiVersion: v1,
-			handler:    handleGetPosition,
-			middleware: append(
-				middlewareGroupProtected,
-				middlewareRateLimit(120, time.Minute),
+		Route{
+			Methods:    []string{http.MethodGet, http.MethodPost},
+			Path:       "oauth2/login/{provider}",
+			APIVersion: V1,
+			Handler:    Login,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Hour),
 			),
-			description: "Get position by ID",
+			Description: "Authorize via provider",
 		},
-		route{
-			method:     http.MethodGet,
-			path:       "candidates",
-			apiVersion: v1,
-			handler:    handleGetCandidates,
-			middleware: append(
-				middlewareGroupProtected,
-				middlewareRateLimit(60, time.Minute),
+		Route{
+			Methods:    []string{http.MethodGet, http.MethodPost},
+			Path:       "oauth2/callback/{provider}",
+			APIVersion: V1,
+			Handler:    RedirectionEndpoint,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Minute),
 			),
-			description: "List all candidates",
+			Description: "Internal OAuth callback",
 		},
-		route{
-			method:     http.MethodGet,
-			path:       "candidates/{id}",
-			apiVersion: v1,
-			handler:    handleGetCandidate,
-			middleware: append(
-				middlewareGroupProtected,
-				middlewareRateLimit(120, time.Minute),
+
+		// Protected resources
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "positions",
+			APIVersion: V1,
+			Handler:    GetPositions,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Hour),
 			),
-			description: "Get candidate by ID",
+			Description: "List all positions",
+		},
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "positions/{id}",
+			APIVersion: V1,
+			Handler:    GetPosition,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Minute),
+			),
+			Description: "Get position by ID",
+		},
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "candidates/{id}",
+			APIVersion: V1,
+			Handler:    GetCandidate,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Minute),
+			),
+			Description: "Get candidate by ID",
+		},
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "candidates",
+			APIVersion: V1,
+			Handler:    GetCandidates,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Hour),
+			),
+			Description: "List all candidates",
 		},
 	)
+
 	return rootMux
 }

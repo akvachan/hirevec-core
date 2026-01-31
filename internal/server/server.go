@@ -16,6 +16,9 @@ import (
 // HirevecServer holds the active instance of the HTTP server.
 var HirevecServer *http.Server
 
+// HirevecLogger is the global structured logger for the server package.
+var HirevecLogger *slog.Logger
+
 // ShutdownConfig defines the timing parameters for a controlled server exit.
 type ShutdownConfig struct {
 	// ReadinessDelay is the time to wait after a shutdown signal.
@@ -76,4 +79,117 @@ func RunHTTPServer(
 
 	slog.Info("HTTP server shut down gracefully")
 	return nil
+}
+
+// GetRootRouter assembles the complete application routing tree.
+func GetRootRouter() *http.ServeMux {
+	rootMux := http.NewServeMux()
+	apiRouter := NewRouter(rootMux, "api")
+	apiRouter.AddRoutes(
+		// Route{
+		// 	Methods:    []string{http.MethodGet},
+		// 	Path:       "health",
+		// 	APIVersion: V1,
+		// 	Handler:    CheckHealth,
+		// 	 append(
+		// 		GroupPublic,
+		// 		RateLimit(60, time.Minute),
+		// 	),
+		// 	Description: "Health check endpoint",
+		// },
+
+		// OAuth endpoints
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "auth/keys",
+			APIVersion: V1,
+			Handler:    GetPublicKeys,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Minute),
+			),
+			Description: "Get server public keys",
+		},
+		Route{
+			Methods:    []string{http.MethodPost},
+			Path:       "oauth2/token",
+			APIVersion: V1,
+			Handler:    TokenEndpoint,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Minute),
+			),
+			Description: "Get new access token",
+		},
+		Route{
+			Methods:    []string{http.MethodGet, http.MethodPost},
+			Path:       "oauth2/login/{provider}",
+			APIVersion: V1,
+			Handler:    Login,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Hour),
+			),
+			Description: "Authorize via provider",
+		},
+		Route{
+			Methods:    []string{http.MethodGet, http.MethodPost},
+			Path:       "oauth2/callback/{provider}",
+			APIVersion: V1,
+			Handler:    RedirectionEndpoint,
+			Middleware: append(
+				GroupPublic,
+				RateLimit(60, time.Minute),
+			),
+			Description: "Internal OAuth callback",
+		},
+
+		// Protected resources
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "positions",
+			APIVersion: V1,
+			Handler:    GetPositions,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Hour),
+			),
+			Description: "List all positions",
+		},
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "positions/{id}",
+			APIVersion: V1,
+			Handler:    GetPosition,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Minute),
+			),
+			Description: "Get position by ID",
+		},
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "candidates/{id}",
+			APIVersion: V1,
+			Handler:    GetCandidate,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Minute),
+			),
+			Description: "Get candidate by ID",
+		},
+		Route{
+			Methods:    []string{http.MethodGet},
+			Path:       "candidates",
+			APIVersion: V1,
+			Handler:    GetCandidates,
+			Middleware: append(
+				GroupProtected,
+				RateLimit(60, time.Hour),
+			),
+			Description: "List all candidates",
+		},
+	)
+
+	return rootMux
 }

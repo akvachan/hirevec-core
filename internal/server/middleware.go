@@ -5,41 +5,48 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/akvachan/hirevec-backend/internal/auth"
 )
 
-// HirevecLogger is the global structured logger for the server package.
-var HirevecLogger *slog.Logger
+type contextKey string
+
+const (
+	contextKeyUserID contextKey = "user_id"
+	contextKeyClaims contextKey = "claims"
+)
 
 var (
-	// middlewareGroupPublic defines the standard stack for all endpoints, including logging, safety, and rate limiting.
-	middlewareGroupPublic = []middleware{
-		middlewareLogging,
-		middlewareErrorHandling,
-		middlewareMaxBytes,
+	// GroupPublic defines the standard stack for all endpoints, including logging, safety, and rate limiting.
+	GroupPublic = []Middleware{
+		ErrorHandling,
+		Logging,
+		MaxBytes,
 	}
 
-	// middlewareGroupProtected adds authentication and authorization layers to the public middleware stack for restricted endpoints.
-	middlewareGroupProtected = append(
-		middlewareGroupPublic,
-		middlewareAuthentication,
-		middlewareAuthorization,
+	// GroupProtected adds authentication and authorization layers to the public middleware stack for restricted endpoints.
+	GroupProtected = append(
+		GroupPublic,
+		Auth,
 	)
 )
 
-// middleware represents a function that wraps an http.Handler to provide pre-processing or post-processing logic.
-type middleware func(http.Handler) http.Handler
+// Middleware represents a function that wraps an http.Handler to provide pre-processing or post-processing logic.
+type Middleware func(http.Handler) http.Handler
 
-// chain takes a base handler and applies a slice of middlewares in order.
+// Chain takes a base handler and applies a slice of middlewares in order.
 //
 // Middlewares are wrapped such that the first middleware in the slice
 // is the outermost layer of the onion.
-func chain(handler http.HandlerFunc, middlewares ...middleware) http.Handler {
+func Chain(handler http.HandlerFunc, middlewares ...Middleware) http.Handler {
 	wrapped := http.Handler(handler)
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		wrapped = middlewares[i](wrapped)
@@ -59,102 +66,94 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// middlewareErrorHandling recovers from panics within the request lifecycle and returns a 500 Internal Server Error to the client.
-func middlewareErrorHandling(next http.Handler) http.Handler {
+// ErrorHandling recovers from panics within the request lifecycle and returns a 500 Internal Server Error to the client.
+func ErrorHandling(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				HirevecLogger.Error("error occurred: %v", err)
-				writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
+				slog.Error("error occurred: %v", err)
+				WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			}
 		}()
 		next.ServeHTTP(w, r)
 	})
 }
 
-// middlewareAuthentication verifies the identity of the user making the request.
-func middlewareAuthentication(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// TODO
-		next.ServeHTTP(w, r)
-	})
+// GetUserID retrieves userID from context.
+func GetUserID(ctx context.Context) (uint32, bool) {
+	userID, ok := ctx.Value(contextKeyUserID).(uint32)
+	return userID, ok
 }
 
-// middlewareAuthorization ensures the authenticated user has permission to access the requested resource.
-func middlewareAuthorization(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// TODO
-		next.ServeHTTP(w, r)
-	})
+// GetClaims retrieves claims from context.
+func GetClaims(ctx context.Context) (*auth.AccessTokenClaims, bool) {
+	claims, ok := ctx.Value(contextKeyClaims).(*auth.AccessTokenClaims)
+	return claims, ok
 }
 
-// middlewareRateLimit implements a simple in-memory request throttler based on the remote IP address.
-func middlewareRateLimit(maxRequests int, window time.Duration) middleware {
-	return func(next http.Handler) http.Handler {
-		type client struct {
-			count int
-			reset time.Time
+// Auth verifies the identity and permissions of the user making the request.
+func Auth(next http.Handler) http.Handler {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		bearer, found := strings.CutPrefix(authHeader, "Bearer ")
+		if !found || bearer == "" {
+			WriteFailResponse(w, http.StatusUnauthorized, map[string]string{"authorization": "invalid or missing authorization header"})
+			return
 		}
-		var (
-			mu      sync.RWMutex
-			clients = make(map[string]*client)
-		)
 
-		stopCleanup := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(window)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					mu.Lock()
-					now := time.Now()
-					for ip, c := range clients {
-						if now.After(c.reset) {
-							delete(clients, ip)
-						}
-					}
-					mu.Unlock()
-				case <-stopCleanup:
-					return
-				}
-			}
-		}()
+		claims, err := auth.ParseAccessToken(bearer)
+		if err != nil {
+			WriteFailResponse(w, http.StatusUnauthorized, map[string]string{"token": "invalid token"})
+			return
+		}
 
+		ctx := context.WithValue(r.Context(), contextKeyUserID, claims.UserID)
+		ctx = context.WithValue(ctx, contextKeyClaims, claims)
+
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+	return http.HandlerFunc(handler)
+}
+
+// RateLimit implements a simple in-memory request throttler based on the remote IP address.
+func RateLimit(maxRequests int, window time.Duration) func(http.Handler) http.Handler {
+	type client struct {
+		count int
+		reset time.Time
+	}
+
+	var (
+		mu      sync.Mutex
+		clients = make(map[string]*client)
+	)
+
+	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ip := getClientIP(r)
-			if ip == "" {
-				writeErrorResponse(w, http.StatusBadRequest, "invalid remote address")
-				return
-			}
-
-			now := time.Now()
+			now := time.Now().UTC()
 
 			mu.Lock()
 			c, exists := clients[ip]
+
 			if !exists || now.After(c.reset) {
-				c = &client{
-					count: 1,
-					reset: now.Add(window),
-				}
+				c = &client{count: 0, reset: now.Add(window)}
 				clients[ip] = c
-			} else {
-				c.count++
 			}
-			count := c.count
+
+			c.count++
+			currentCount := c.count
 			resetAt := c.reset
 			mu.Unlock()
 
-			remaining := maxRequests - count
-
+			remaining := maxRequests - currentCount
 			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(maxRequests))
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(max(0, remaining)))
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
 
 			if remaining < 0 {
-				retryAfter := max(int(time.Until(resetAt).Seconds()), 0)
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				writeErrorResponse(w, http.StatusTooManyRequests, "too many requests")
+				retryAfter := int(time.Until(resetAt).Seconds())
+				w.Header().Set("Retry-After", strconv.Itoa(max(0, retryAfter)))
+				WriteErrorResponse(w, http.StatusTooManyRequests, "too many requests")
 				return
 			}
 
@@ -200,15 +199,14 @@ func parseFirstIP(xff string) string {
 	return ""
 }
 
-// middlewareLogging records structured information about the HTTP request, including method, path, response status, and processing time.
-func middlewareLogging(next http.Handler) http.Handler {
+// Logging records structured information about the HTTP request, including method, path, response status, and processing time.
+func Logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &responseWriter{ResponseWriter: w}
-
+		rec := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 
-		HirevecLogger.Info(
+		slog.Info(
 			"request",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -218,11 +216,8 @@ func middlewareLogging(next http.Handler) http.Handler {
 	})
 }
 
-// middlewareMaxBytes limits the maximum size of the request body to 1MB to prevent denial-of-service attacks via large payloads.
-func middlewareMaxBytes(next http.Handler) http.Handler {
+// MaxBytes limits the maximum size of the request body to 1MB to prevent denial-of-service attacks via large payloads.
+func MaxBytes(next http.Handler) http.Handler {
 	const megabyte = 1_000_000
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.MaxBytesHandler(next, megabyte).ServeHTTP(w, r)
-	})
+	return http.MaxBytesHandler(next, megabyte)
 }
