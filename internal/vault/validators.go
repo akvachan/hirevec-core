@@ -4,11 +4,29 @@
 // Package vault deals with authentication and authorization.
 package vault
 
-// import "errors"
+import (
+	"html"
+	"regexp"
+	"strings"
+)
 
-// func ValidateProvider(provider string) (bool, error) {
-// 	if provider != "apple" && provider != "google" {
-// 		return false, errors.New("invalid provider")
-// 	}
-// 	return true, nil
-// }
+func ValidateName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+
+	reTags := regexp.MustCompile(`<[^>]*>`)
+	name = reTags.ReplaceAllString(name, "")
+
+	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
+	if !reValid.MatchString(name) {
+		return "", ErrNameHasForbiddenChars
+	}
+
+	if len(name) < 1 {
+		return "", ErrNameTooShort
+	}
+	if len(name) > 128 {
+		return "", ErrNameTooLong
+	}
+
+	return html.EscapeString(name), nil
+}

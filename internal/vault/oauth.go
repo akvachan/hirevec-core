@@ -25,7 +25,7 @@ type OIDCConfig struct {
 }
 
 // CreateStateToken creates and stores a state token
-func (v vault) CreateStateToken() (string, error) {
+func (v VaultImpl) CreateStateToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -40,7 +40,7 @@ func (v vault) CreateStateToken() (string, error) {
 }
 
 // ValidateAndDeleteStateToken checks if state exists and deletes it (one-time use)
-func (v vault) ValidateAndDeleteStateToken(state string) bool {
+func (v VaultImpl) ValidateAndDeleteStateToken(state string) bool {
 	stateStore.mu.Lock()
 	defer stateStore.mu.Unlock()
 
@@ -53,7 +53,7 @@ func (v vault) ValidateAndDeleteStateToken(state string) bool {
 	return !time.Now().After(expiry)
 }
 
-func (v vault) CleanupExpiredStateTokens() {
+func (v VaultImpl) CleanupExpiredStateTokens() {
 	stateStore.mu.Lock()
 	defer stateStore.mu.Unlock()
 
@@ -65,7 +65,7 @@ func (v vault) CleanupExpiredStateTokens() {
 	}
 }
 
-func (v vault) CreateAuthCodeURL(state string, verifier string, provider string) (string, error) {
+func (v VaultImpl) CreateAuthCodeURL(state string, verifier string, provider string) (string, error) {
 	var config *oauth2.Config
 
 	switch provider {
@@ -81,43 +81,43 @@ func (v vault) CreateAuthCodeURL(state string, verifier string, provider string)
 	return url, nil
 }
 
-func (v vault) ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
+func (v VaultImpl) ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
 	tok, err := v.GoogleOIDCConfig.OAuth2Config.Exchange(
 		ctx,
 		code,
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
 	if err != nil {
-		return "", ErrTokenExchangeFailed(err)
+		return "", ErrFailedToExchangeToken(err)
 	}
 
 	rawIDToken, ok := tok.Extra("id_token").(string)
 	if !ok {
-		return "", ErrMissingIDToken
+		return "", ErrIDTokenRequired
 	}
 
 	return rawIDToken, nil
 }
 
-func (v vault) ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
+func (v VaultImpl) ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
 	tok, err := v.AppleOIDCConfig.OAuth2Config.Exchange(
 		ctx,
 		code,
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
 	if err != nil {
-		return "", ErrTokenExchangeFailed(err)
+		return "", ErrFailedToExchangeToken(err)
 	}
 
 	rawIDToken, ok := tok.Extra("id_token").(string)
 	if !ok {
-		return "", ErrMissingIDToken
+		return "", ErrIDTokenRequired
 	}
 
 	return rawIDToken, nil
 }
 
-func (v vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (*models.User, error) {
+func (v VaultImpl) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (*models.User, error) {
 	idToken, err := v.GoogleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return nil, ErrInvalidIDToken
@@ -139,17 +139,32 @@ func (v vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken strin
 		return nil, ErrEmailNotVerified
 	}
 
+	name, err := ValidateName(claims.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	firstName, err := ValidateName(claims.GivenName)
+	if err != nil {
+		return nil, err
+	}
+
+	lastName, err := ValidateName(claims.FamilyName)
+	if err != nil {
+		return nil, err
+	}
+
 	return &models.User{
 		Provider:       models.Google,
 		ProviderUserID: claims.Sub,
 		Email:          claims.Email,
-		FirstName:      claims.GivenName,
-		LastName:       claims.FamilyName,
-		FullName:       claims.Name,
+		FirstName:      firstName,
+		LastName:       lastName,
+		FullName:       name,
 	}, nil
 }
 
-func (v vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (*models.User, error) {
+func (v VaultImpl) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (*models.User, error) {
 	idToken, err := v.AppleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return nil, ErrInvalidIDToken

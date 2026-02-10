@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -24,46 +25,58 @@ const (
 
 type ServerConfig struct {
 	Host         string
+	Port         uint16
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	GracePeriod  time.Duration
 }
 
 func Run(ctx context.Context, c ServerConfig, s store.Store, v vault.Vault) error {
-	server := newServer(ctx, c, s, v)
+	server, err := newServer(ctx, c, s, v)
+	if err != nil {
+		return err
+	}
 
-	ln, err := net.Listen("tcp", c.Host)
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%v", c.Host, c.Port))
 	if err != nil {
 		return ErrFailedToBindAddress(c.Host, err)
 	}
 
-	errCh := startServer(server, ln)
-
-	return waitAndShutdown(ctx, server, errCh, c.GracePeriod)
+	return waitAndShutdown(ctx, server, startServer(server, listener), c.GracePeriod)
 }
 
-func newServer(ctx context.Context, c ServerConfig, s store.Store, v vault.Vault) *http.Server {
+func newServer(ctx context.Context, c ServerConfig, s store.Store, v vault.Vault) (*http.Server, error) {
+	if err := AssembleTree(s, v); err != nil {
+		slog.Error(
+			"failed to assemble route tree",
+			"err", err,
+		)
+		return nil, ErrFailedToAssembleRouteTree(err)
+	}
 	return &http.Server{
 		Addr:         c.Host,
-		Handler:      AssembleTree(s, v),
 		ReadTimeout:  c.ReadTimeout,
 		WriteTimeout: c.WriteTimeout,
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
-		BaseContext: func(_ net.Listener) context.Context {
-			return ctx
-		},
-	}
+		BaseContext:  func(_ net.Listener) context.Context { return ctx },
+	}, nil
 }
 
 func startServer(server *http.Server, ln net.Listener) chan error {
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("HTTP server starting", "addr", server.Addr)
+		slog.Info(
+			"HTTP server starting",
+			"addr", server.Addr,
+		)
 		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
-	slog.Info("HTTP server ready", "addr", server.Addr)
+	slog.Info(
+		"HTTP server ready",
+		"addr", server.Addr,
+	)
 	return errCh
 }
 
@@ -78,7 +91,10 @@ func waitAndShutdown(ctx context.Context, server *http.Server, errCh chan error,
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
 	defer cancel()
 
-	slog.Info("starting graceful shutdown", "timeout", gracePeriod)
+	slog.Info(
+		"starting graceful shutdown",
+		"timeout", gracePeriod,
+	)
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("graceful shutdown failed, forcing close", "err", err)
 		server.Close()

@@ -5,9 +5,9 @@ package store
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -16,23 +16,20 @@ import (
 )
 
 // GetPosition retrieves a single position from the database by its unique identifier.
-func (s store) GetPosition(positionID uint32) (json.RawMessage, error) {
-	var j json.RawMessage
-	err := s.Postgres.QueryRow(
+func (s StoreImpl) GetPosition(id uint32) (j json.RawMessage, err error) {
+	return j, s.Postgres.QueryRow(
 		`
 		SELECT row_to_json(t) 
 		FROM general.positions t
 		WHERE t.id = $1
 		`,
-		positionID,
+		id,
 	).Scan(&j)
-	return j, err
 }
 
 // GetPositions retrieves a paginated list of all positions, ordered by ID.
-func (s store) GetPositions(p models.Paginator) (json.RawMessage, error) {
-	var j json.RawMessage
-	err := s.Postgres.QueryRow(
+func (s StoreImpl) GetPositions(p models.Paginator) (j json.RawMessage, err error) {
+	return j, s.Postgres.QueryRow(
 		`
 		SELECT COALESCE(json_agg(t), '[]'::json)
 		FROM (
@@ -45,27 +42,23 @@ func (s store) GetPositions(p models.Paginator) (json.RawMessage, error) {
 		p.Limit,
 		p.Offset,
 	).Scan(&j)
-	return j, err
 }
 
 // GetCandidate retrieves a single candidate's details by their ID.
-func (s store) GetCandidate(candidateID uint32) (json.RawMessage, error) {
-	var j json.RawMessage
-	err := s.Postgres.QueryRow(
+func (s StoreImpl) GetCandidate(id uint32) (j json.RawMessage, err error) {
+	return j, s.Postgres.QueryRow(
 		`
 		SELECT row_to_json(t) 
 		FROM general.candidates t
 		WHERE t.id = $1
 		`,
-		candidateID,
+		id,
 	).Scan(&j)
-	return j, err
 }
 
 // GetCandidates retrieves a paginated list of candidates, ordered by ID.
-func (s store) GetCandidates(p models.Paginator) (json.RawMessage, error) {
-	var j json.RawMessage
-	err := s.Postgres.QueryRow(
+func (s StoreImpl) GetCandidates(p models.Paginator) (j json.RawMessage, err error) {
+	return j, s.Postgres.QueryRow(
 		`
 		SELECT COALESCE(json_agg(t), '[]'::json)
 		FROM (
@@ -78,34 +71,61 @@ func (s store) GetCandidates(p models.Paginator) (json.RawMessage, error) {
 		p.Limit,
 		p.Offset,
 	).Scan(&j)
-	return j, err
 }
 
-// GetUserByProvider retrieves an existing user based on their provider details.
-func (s store) GetUserByProvider(provider string, providerUserID string) (userID uint32, err error) {
+// GetUserByProvider retrieves an existing user and his role based on their provider details.
+func (s StoreImpl) GetUserByProvider(provider models.Provider, providerUserID string) (userID string, roles []string, err error) {
+	var isCandidate, isRecruiter bool
+
 	err = s.Postgres.QueryRow(
 		`
-		SELECT id 
-		FROM general.users 
-		WHERE provider = $1 
-		AND provider_user_id = $2
-		`,
+        SELECT
+            u.id,
+            EXISTS (
+                SELECT 1 FROM general.candidates c WHERE c.user_id = u.id
+            ) AS is_candidate,
+            EXISTS (
+                SELECT 1 FROM general.recruiters r WHERE r.user_id = u.id
+            ) AS is_recruiter
+        FROM general.users u
+        WHERE u.provider = $1
+          AND u.provider_user_id = $2
+        `,
 		provider,
 		providerUserID,
-	).Scan(&userID)
-	return userID, err
+	).Scan(&userID, &isCandidate, &isRecruiter)
+
+	if err == sql.ErrNoRows {
+		return "", nil, ErrUserDoesNotExist
+	}
+	if err != nil {
+		return "", nil, err
+	}
+
+	if isCandidate {
+		roles = append(roles, "candidate")
+	}
+	if isRecruiter {
+		roles = append(roles, "recruiter")
+	}
+
+	if len(roles) == 0 {
+		return userID, nil, ErrUserDoesNotHaveARole
+	}
+
+	return userID, roles, nil
 }
 
 // CreateUser generates a unique username and inserts a new user record.
-func (s store) CreateUser(user models.User) (userID uint32, err error) {
+func (s StoreImpl) CreateUser(user models.User) (userID string, err error) {
 	if user.FirstName == "" || user.LastName == "" || user.FullName == "" {
-		return 0, errors.New("empty names provided")
+		return "", ErrNamesRequired
 	}
 
 	suffix := make([]byte, 2)
 	_, err = rand.Read(suffix)
 	if err != nil {
-		return 0, errors.New("could not generate a random suffix")
+		return "", ErrFailedToGenerateUsernameSuffix(err)
 	}
 
 	userName := fmt.Sprintf("%s_%s_%s",
@@ -136,7 +156,7 @@ func (s store) CreateUser(user models.User) (userID uint32, err error) {
 }
 
 // CreateCandidateReaction records a candidate's interest or reaction to a specific job position.
-func (s store) CreateCandidateReaction(r models.CandidateReaction) error {
+func (s StoreImpl) CreateCandidateReaction(r models.CandidateReaction) error {
 	_, err := s.Postgres.Exec(
 		`
 		INSERT INTO general.candidates_reactions (
@@ -153,8 +173,24 @@ func (s store) CreateCandidateReaction(r models.CandidateReaction) error {
 	return err
 }
 
+// CreateCandidate creates a candidate
+func (s StoreImpl) CreateCandidate(r models.Candidate) error {
+	_, err := s.Postgres.Exec(
+		`
+		INSERT INTO general.candidate (
+			user_id,
+			about
+		)
+		VALUES ($1, $2)
+		`,
+		r.UserID,
+		r.About,
+	)
+	return err
+}
+
 // CreateRecruiterReaction records a recruiter's reaction to a specific candidate for a position.
-func (s store) CreateRecruiterReaction(r models.RecruiterReaction) error {
+func (s StoreImpl) CreateRecruiterReaction(r models.RecruiterReaction) error {
 	_, err := s.Postgres.Exec(
 		`
 		INSERT INTO general.recruiters_reactions (
@@ -174,7 +210,7 @@ func (s store) CreateRecruiterReaction(r models.RecruiterReaction) error {
 }
 
 // CreateMatch creates a new match record between a candidate and a position when mutual interest is established.
-func (s store) CreateMatch(m models.Match) error {
+func (s StoreImpl) CreateMatch(m models.Match) error {
 	_, err := s.Postgres.Exec(
 		`
 		INSERT INTO general.matches (
@@ -190,8 +226,8 @@ func (s store) CreateMatch(m models.Match) error {
 }
 
 // ValidateActiveSession checks if the JTI exists and is not expired.
-func (s store) ValidateActiveSession(jti string) (isSessionRevoked bool, err error) {
-	err = s.Postgres.QueryRow(
+func (s StoreImpl) ValidateActiveSession(jti string) (isSessionRevoked bool, err error) {
+	return isSessionRevoked, s.Postgres.QueryRow(
 		`
 		SELECT revoked 
 	 	FROM general.refresh_tokens 
@@ -200,11 +236,10 @@ func (s store) ValidateActiveSession(jti string) (isSessionRevoked bool, err err
 		`,
 		jti,
 	).Scan(&isSessionRevoked)
-	return isSessionRevoked, err
 }
 
 // CreateRefreshToken creates a new refresh token record.
-func (s store) CreateRefreshToken(userID uint32, expiresAt time.Time) (jti string, err error) {
+func (s StoreImpl) CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error) {
 	err = s.Postgres.QueryRow(
 		`
 		INSERT INTO general.refresh_tokens (

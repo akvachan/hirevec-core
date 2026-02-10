@@ -1,29 +1,29 @@
 ## Authentication
 
-- The server implements OAuth2.0 Authorization Code Flow with PKCE. Developers should familiarize themselves with [rfc6749](https://www.rfc-editor.org/rfc/rfc6749).
-- TLS version used: 1.3.
-- Token schema used: PASETO.
+- The server implements OAuth2.0 Authorization Code Flow with OIDC and PKCE. Developers should familiarize themselves with [rfc6749](https://www.rfc-editor.org/rfc/rfc6749).
+- We use PASETO (Platform-Agnostic Security Tokens) for access and refresh tokens, which are more secure and easier to implement than JWTs. Developers should familiarize themselves with [PASETO](https://paseto.io/).
 - Our primary client is a native application.
-- Client identifiers are issued by the database as UUIDs.
+- User identifiers are issued by the database as UUIDs.
 - Client authentication is fully passwordless, a provider's SSO is used. Following providers are supported:
     - Google
     - Apple
-- There are no plans to support password-based client authentication.
-- Server uses scope-based authorization with higher-lever roles:
-    - Roles: Recruiter (role:recruiter), Candidate (role:candidate)
-    - Tiers: Free (tier:free), Premium (tier:premium)
-    - There are 10 simple rules: 
-        1. All roles can access public OAuth2 endpoints.
-        2. Recruiters can only access candidate endpoints and recruiter reaction endpoints.
-        3. Candidates can only access position endpoints and candidate reaction endpoints.
-        4. Free tier has a limit of 60 candidates or positions and 60 reactions per day.
-        5. Premium tier has limit of 120 candidates or positions and 120 reactions per day.
-        6. Upon each reaction a match/nomatch is sent back to client, client can fetch up to 60 matches per hour that relate to him and only him.
-        7. Candidates and recruiters can access their personal records and their personal profile deletion endpoint.
-        8. Recruiters can request their positions.
-        9. Free tier recruiters can create up to 10 positions per day.
-        10. Premium tier recruiters can create up to 30 positions per day.
-    - It is a responsibility of the client to cache the items.
-    - Currently **only** free tier is implemented.
-    - Premium tier will need additional endpoints for promotion and billing.
-    - Upon promotion from the free tier to a premium tier the client is issued entirely new access and refresh token.
+- Anyone can access authentication endpoint (currently `/api/v1/auth/login/{provider}`) to obtain an access and refresh tokens. 
+- After successful authentication:
+    - If the user already has a profile, the client is issued a pair of access and refresh tokens with the appropriate scopes based on their profile type (candidate or recruiter).
+    - If the user does not have a profile, the client is issued a short-lived onboarding access token (24 hours) with the `candidates:write`, `recruiters:write` scope, which allows them to create one candidte and one recruiter profile. 
+    - If the onboarding access token expires before the user creates a profile, they can simply authenticate again to obtain a new registration access token.
+- After profile creation, the client is issued a pair of access and refresh tokens with the appropriate scopes based on their profile type (candidate or recruiter).
+- Server uses scope-based authorization:
+    - Scopes: 
+        - `role:recruiter`: Recruiter role
+        - `role:candidate`: Candidate role
+    - After profile creation, the client can  a new access token that will contain the following scopes based on the profile type:
+        - `role:recruiter` has following permissions:
+            - Can access "candidates" with the method GET
+            - Can access "positions"  with the method GET
+            - Can access "recruiters/reactions" with the method POST if id == claims.UserID
+        - For candidates: `role:candidates` 
+    - Authentication and authorization are handled by middleware, so all protected endpoints will require a valid access token with the appropriate scopes.
+    - Handlers do not need to worry about authentication and authorization, they can assume that if the request reaches them, the user is authenticated and authorized to perform the action.
+- Refresh tokens are not stored in the DB, instead their JTI is stored. This way we can easily invalidate refresh tokens and guarantee that each refresh_token is unique. 
+- Access tokens have a lifespan of 15 minutes, refresh tokens have a lifespan of 30 days.

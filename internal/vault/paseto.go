@@ -5,9 +5,7 @@
 package vault
 
 import (
-	"errors"
-	"fmt"
-	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,14 +43,29 @@ type PublicPasetoKeys struct {
 }
 
 type RefreshTokenClaims struct {
-	UserID   uint32
+	UserID   string
 	Provider string
 	JTI      string
 }
 
 type AccessTokenClaims struct {
-	UserID   uint32
+	UserID   string
 	Provider string
+	Scope    string
+}
+
+type AccessToken struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   uint32 `json:"expires_in"`
+	Scope       string `json:"scope"`
+	UserID      string `json:"user_id"`
+}
+
+type RefreshToken struct {
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    uint32 `json:"expires_in"`
+	UserID       string `json:"user_id"`
 }
 
 type TokenPair struct {
@@ -61,150 +74,179 @@ type TokenPair struct {
 	ExpiresIn    uint32 `json:"expires_in"`
 	RefreshToken string `json:"refresh_token"`
 	Scope        string `json:"scope"`
+	UserID       string `json:"user_id"`
 }
 
-func (v vault) ParseAccessToken(tokenString string) (*AccessTokenClaims, error) {
+func (v VaultImpl) ParseAccessToken(tokenString string) (*AccessTokenClaims, error) {
 	parsedToken, err := v.AccessTokenParser.ParseV4Public(v.V4AsymetricPublicKey, tokenString, nil)
 	if err != nil {
-		return nil, errors.New("invalid access token")
+		return nil, ErrInvalidAccessToken
 	}
 
 	userID, err := parsedToken.GetSubject()
 	if err != nil {
-		return nil, errors.New("invalid subject")
-	}
-	id, err := strconv.ParseUint(userID, 10, 32)
-	if err != nil {
-		return nil, errors.New("could not parse user ID")
+		return nil, ErrInvalidSubject
 	}
 
 	provider, err := parsedToken.GetString("provider")
 	if err != nil {
-		return nil, errors.New("could not parse provider")
+		return nil, ErrFailedToParseProvider
 	}
 	if provider != "apple" && provider != "google" {
-		return nil, errors.New("invalid provider")
+		return nil, ErrInvalidProvider
+	}
+
+	scope, err := parsedToken.GetString("scope")
+	if err != nil {
+		return nil, ErrFailedToParseScope
 	}
 
 	return &AccessTokenClaims{
-		UserID:   uint32(id),
+		UserID:   userID,
 		Provider: provider,
+		Scope:    scope,
 	}, nil
 }
 
-func (v vault) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, error) {
+func (v VaultImpl) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, error) {
 	parsedToken, err := v.RefreshTokenParser.ParseV4Local(v.V4SymmetricKey, tokenString, nil)
 	if err != nil {
-		return nil, errors.New("invalid refresh token")
+		return nil, ErrInvalidRefreshToken
 	}
 
 	userID, err := parsedToken.GetSubject()
 	if err != nil || userID == "" {
-		return nil, errors.New("invalid subject")
-	}
-	id, err := strconv.ParseUint(userID, 10, 32)
-	if err != nil {
-		return nil, errors.New("could not parse user ID")
+		return nil, ErrInvalidSubject
 	}
 
 	provider, err := parsedToken.GetString("provider")
 	if err != nil {
-		return nil, errors.New("could not parse provider")
+		return nil, ErrFailedToParseProvider
 	}
 	if provider != "apple" && provider != "google" {
-		return nil, errors.New("invalid provider")
+		return nil, ErrInvalidProvider
 	}
 
 	tokenType, err := parsedToken.GetString("type")
 	if err != nil {
-		return nil, errors.New("could not parse type")
+		return nil, ErrFailedToParseTokenType
 	}
 	if tokenType != "refresh" {
-		return nil, errors.New("invalid token type")
+		return nil, ErrInvalidTokenType
 	}
 
 	jti, err := parsedToken.GetJti()
-	if err != nil {
-		return nil, errors.New("could not parse jti")
-	}
-	if jti == "" {
-		return nil, errors.New("invalid refresh token")
+	if err != nil || jti == "" {
+		return nil, ErrFailedToParseJTI
 	}
 
 	return &RefreshTokenClaims{
-		UserID:   uint32(id),
+		UserID:   userID,
 		Provider: provider,
 		JTI:      jti,
 	}, nil
 }
 
-func (v vault) GetPublicKey() []byte {
+func (v VaultImpl) GetPublicKey() []byte {
 	return v.V4AsymetricPublicKey.ExportBytes()
 }
 
-func (v vault) CreateAccessToken(userID uint32, provider string, scope string) (string, error) {
+func (v VaultImpl) CreateAccessToken(userID string, provider string, scope string) (*AccessToken, error) {
 	now := time.Now().UTC()
+
+	var expiration time.Duration
+	if scope == "onboarding" {
+		expiration = 24 * time.Hour
+	} else {
+		expiration = AccessTokenExpiration
+	}
 
 	token := paseto.NewToken()
 	token.SetAudience("hirevec-api")
 	token.SetIssuer("hirevec")
-	token.SetSubject(fmt.Sprintf("%d", userID))
-	token.SetExpiration(now.Add(AccessTokenExpiration))
+	token.SetSubject(userID)
+	token.SetExpiration(now.Add(expiration))
 	token.SetNotBefore(now)
 	token.SetIssuedAt(now)
 
 	if err := token.Set("token_type", accessToken); err != nil {
-		return "", errors.New("could not set token type")
+		return nil, ErrFailedToSetTokenType
 	}
 
 	if err := token.Set("provider", provider); err != nil {
-		return "", errors.New("could not set provider")
+		return nil, ErrFailedToSetProvider
 	}
 
 	token.SetString("scope", scope)
 
-	return token.V4Sign(v.V4AsymmetricSecretKey, nil), nil
+	return &AccessToken{
+		AccessToken: token.V4Sign(v.V4AsymmetricSecretKey, nil),
+		TokenType:   "Bearer",
+		ExpiresIn:   uint32(expiration.Abs().Seconds()),
+		Scope:       scope,
+		UserID:      userID,
+	}, nil
 }
 
-func (v vault) CreateRefreshToken(userID uint32, provider string, jti string) (string, error) {
+func (v VaultImpl) CreateRefreshToken(userID string, provider string, jti string) (*RefreshToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
 	token.SetAudience("hirevec-api")
 	token.SetIssuer("hirevec")
-	token.SetSubject(fmt.Sprintf("%d", userID))
+	token.SetSubject(userID)
 	token.SetExpiration(now.Add(RefreshTokenExpiration))
 	token.SetNotBefore(now)
 	token.SetIssuedAt(now)
 	token.SetJti(jti)
 
 	if err := token.Set("token_type", refreshToken); err != nil {
-		return "", errors.New("could not set token type")
+		return nil, ErrFailedToSetTokenType
 	}
 
 	if err := token.Set("provider", provider); err != nil {
-		return "", errors.New("could not set provider")
+		return nil, ErrFailedToSetProvider
 	}
 
-	return token.V4Encrypt(v.V4SymmetricKey, nil), nil
+	return &RefreshToken{
+		RefreshToken: token.V4Encrypt(v.V4SymmetricKey, nil),
+		ExpiresIn:    uint32(RefreshTokenExpiration.Abs().Seconds()),
+		UserID:       userID,
+	}, nil
 }
 
-func (v vault) CreateTokenPair(userID uint32, provider string, jti string, scope string) (TokenPair, error) {
+func (v VaultImpl) CreateTokenPair(userID string, provider string, jti string, scope string) (*TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, scope)
 	if err != nil {
-		return TokenPair{}, errors.New("could not create an access token")
+		return nil, ErrFailedToCreateAccessToken(err)
 	}
 
 	refreshToken, err := v.CreateRefreshToken(userID, provider, jti)
 	if err != nil {
-		return TokenPair{}, errors.New("could not create a refresh token")
+		return nil, ErrFailedToCreateRefreshToken(err)
 	}
 
-	return TokenPair{
-		AccessToken:  accessToken,
+	return &TokenPair{
+		AccessToken:  accessToken.AccessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    uint32(AccessTokenExpiration.Abs().Seconds()),
-		RefreshToken: refreshToken,
+		RefreshToken: refreshToken.RefreshToken,
 		Scope:        scope,
+		UserID:       userID,
 	}, nil
+}
+
+func (v VaultImpl) GetScopeForRoles(roles []string) (string, error) {
+	scopes := make([]string, 0, len(roles))
+
+	for _, r := range roles {
+		switch r {
+		case "candidate", "recruiter":
+			scopes = append(scopes, "role:"+r)
+		default:
+			return "", ErrInvalidRole
+		}
+	}
+
+	return strings.Join(scopes, " "), nil
 }

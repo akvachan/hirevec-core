@@ -51,6 +51,11 @@ var allowedMethods = []string{
 	http.MethodPatch,
 }
 
+var allowedAPIVersions = []apiVersion{
+	Unversioned,
+	V1,
+}
+
 // Route defines the configuration for a single API endpoint.
 type Route struct {
 	// An HTTP Method (GET, POST, PATCH, PUT).
@@ -60,7 +65,7 @@ type Route struct {
 	Path string
 
 	// API version the route belongs to.
-	APIVersion apiVersion
+	Version apiVersion
 
 	// Handler function.
 	Handler http.HandlerFunc
@@ -73,128 +78,157 @@ type Route struct {
 }
 
 // NewRouter initializes a new router with a specific prefix and mounts it onto the provided root mux.
-func NewRouter(rootMux *http.ServeMux, prefix string) *router {
-	if strings.HasPrefix(prefix, "/") {
-		panic("prefix cannot have a leading / (slash)")
-	}
-	if strings.HasSuffix(prefix, "/") {
-		panic("prefix cannot have a trailing / (slash)")
-	}
+func NewRouter(prefix string) *router {
+	prefix = strings.Trim(prefix, "/")
 	r := &router{
 		mux:    http.NewServeMux(),
 		prefix: prefix,
 	}
-	rootMux.Handle("/"+prefix+"/", r.mux)
+	http.DefaultServeMux.Handle("/"+prefix+"/", r.mux)
 	return r
 }
 
 // AddRoutes registers multiple route definitions with the router.
 //
 // It constructs the final URL pattern following the format: METHOD /prefix/vN/path or /prefix/path if Unversioned is provided.
-func (r *router) AddRoutes(routes ...Route) {
+func (r *router) AddRoutes(routes ...Route) error {
 	for _, route := range routes {
+		path := strings.Trim(route.Path, "/")
+
 		for _, method := range route.Methods {
 			if route.Handler == nil {
-				panic("handler cannot be nil")
-			}
-			if strings.HasPrefix(route.Path, "/") {
-				panic("path cannot have a leading / (slash)")
-			}
-			if strings.HasSuffix(route.Path, "/") {
-				panic("path cannot have a trailing / (slash)")
+				return ErrHandlerRequired(path)
 			}
 			if route.Description == "" {
-				panic("description cannot be empty")
+				return ErrDescriptionRequired(path)
 			}
 			if !slices.Contains(allowedMethods, method) {
-				panic(fmt.Sprintf("method %v not allowed, allowed methods:  %v", method, allowedMethods))
+				return ErrMethodNotAllowed(method, path)
 			}
-			if !route.APIVersion.IsValid() {
-				panic("API version %v not allowed, allowed versions: V1, Unversioned")
+			if !route.Version.IsValid() {
+				return ErrInvalidAPIVersion(path, route.Version)
 			}
+
 			var pattern string
-			if route.APIVersion == Unversioned {
-				pattern = fmt.Sprintf("%s /%s/%s", method, r.prefix, route.Path)
+			if route.Version == Unversioned {
+				pattern = fmt.Sprintf("%s /%s/%s", method, r.prefix, path)
 			} else {
-				pattern = fmt.Sprintf("%s /%s/v%d/%s", method, r.prefix, route.APIVersion, route.Path)
+				pattern = fmt.Sprintf("%s /%s/v%d/%s", method, r.prefix, route.Version, path)
 			}
 			handler := Chain(route.Handler, route.Middleware...)
 			r.mux.Handle(pattern, handler)
 		}
 	}
+	return nil
 }
 
 // AssembleTree assembles the complete application routing tree.
-func AssembleTree(localStore store.Store, localVault vault.Vault) *http.ServeMux {
-	rootMux := http.NewServeMux()
-	apiRouter := NewRouter(rootMux, "api")
+func AssembleTree(localStore store.Store, localVault vault.Vault) error {
+	apiRouter := NewRouter("api")
 
-	apiRouter.AddRoutes(
+	// A standard rate limiter for all endpoints.
+	standardRateLimiter := NewRateLimiter(60, time.Minute)
+
+	if err := apiRouter.AddRoutes(
 		Route{
 			Methods:     []string{http.MethodGet},
-			Path:        "oauth2/keys",
-			APIVersion:  V1,
+			Path:        "auth/keys",
+			Version:     V1,
 			Handler:     GetPublicKeys(localVault),
-			Middleware:  PublicMiddleware(RateLimiter{MaxRequests: 1000, Window: time.Hour}),
+			Middleware:  PublicMiddleware(standardRateLimiter),
 			Description: "Get server public keys",
 		},
 		Route{
 			Methods:     []string{http.MethodPost},
-			Path:        "oauth2/token",
-			APIVersion:  V1,
+			Path:        "auth/token",
+			Version:     V1,
 			Handler:     CreateAccessToken(localStore, localVault),
-			Middleware:  PublicMiddleware(RateLimiter{MaxRequests: 60, Window: time.Minute}),
+			Middleware:  PublicMiddleware(standardRateLimiter),
 			Description: "Get new access token",
 		},
 		Route{
 			Methods:     []string{http.MethodGet, http.MethodPost},
-			Path:        "oauth2/login/{provider}",
-			APIVersion:  V1,
+			Path:        "auth/login/{provider}",
+			Version:     V1,
 			Handler:     Login(localVault),
-			Middleware:  PublicMiddleware(RateLimiter{MaxRequests: 60, Window: time.Minute}),
+			Middleware:  PublicMiddleware(standardRateLimiter),
 			Description: "Authorize via provider",
 		},
 		Route{
 			Methods:     []string{http.MethodGet, http.MethodPost},
-			Path:        "oauth2/callback/{provider}",
-			APIVersion:  V1,
+			Path:        "auth/callback/{provider}",
+			Version:     V1,
 			Handler:     RedirectProvider(localStore, localVault),
-			Middleware:  PublicMiddleware(RateLimiter{MaxRequests: 60, Window: time.Minute}),
+			Middleware:  PublicMiddleware(standardRateLimiter),
 			Description: "Internal OAuth callback",
 		},
 		Route{
+			Methods:     []string{http.MethodPost},
+			Path:        "/me/reactions",
+			Version:     V1,
+			Handler:     CreateCandidate(localStore, localVault),
+			Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
+			Description: "Create a new candidate",
+		},
+		Route{
+			Methods:     []string{http.MethodPost},
+			Path:        "/me/matches",
+			Version:     V1,
+			Handler:     CreateCandidate(localStore, localVault),
+			Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
+			Description: "Create a new candidate",
+		},
+		Route{
+			Methods:     []string{http.MethodPost},
+			Path:        "candidates",
+			Version:     V1,
+			Handler:     CreateCandidate(localStore, localVault),
+			Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
+			Description: "Create a new candidate",
+		},
+		// Route{
+		// 	Methods:     []string{http.MethodPost},
+		// 	Path:        "recruiters",
+		// 	Version:     V1,
+		// 	Handler:     CreateRecruiter(localStore),
+		// 	Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
+		// 	Description: "Create a new recruiter",
+		// },
+		Route{
 			Methods:     []string{http.MethodGet},
 			Path:        "positions",
-			APIVersion:  V1,
+			Version:     V1,
 			Handler:     GetPositions(localStore),
-			Middleware:  ProtectedMiddleware(RateLimiter{MaxRequests: 60, Window: time.Minute}, localVault),
+			Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
 			Description: "List all positions",
 		},
 		Route{
 			Methods:     []string{http.MethodGet},
 			Path:        "positions/{id}",
-			APIVersion:  V1,
+			Version:     V1,
 			Handler:     GetPosition(localStore),
-			Middleware:  ProtectedMiddleware(RateLimiter{MaxRequests: 60, Window: time.Minute}, localVault),
+			Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
 			Description: "Get position by ID",
 		},
 		Route{
 			Methods:     []string{http.MethodGet},
 			Path:        "candidates/{id}",
-			APIVersion:  V1,
+			Version:     V1,
 			Handler:     GetCandidate(localStore),
-			Middleware:  ProtectedMiddleware(RateLimiter{MaxRequests: 60, Window: time.Minute}, localVault),
+			Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
 			Description: "Get candidate by ID",
 		},
 		Route{
 			Methods:     []string{http.MethodGet},
 			Path:        "candidates",
-			APIVersion:  V1,
+			Version:     V1,
 			Handler:     GetCandidates(localStore),
-			Middleware:  ProtectedMiddleware(RateLimiter{MaxRequests: 60, Window: time.Minute}, localVault),
+			Middleware:  ProtectedMiddleware(localVault, standardRateLimiter),
 			Description: "List all candidates",
 		},
-	)
+	); err != nil {
+		return ErrFailedToAddRoutes(err)
+	}
 
-	return rootMux
+	return nil
 }

@@ -1,16 +1,12 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: MIT
 
-// Package server implements the HTTP transport layer, providing RESTful endpoints.
 package server
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,207 +24,190 @@ const (
 type RateLimiter struct {
 	MaxRequests uint
 	Window      time.Duration
+	visitors    map[string]*visitor
+	mu          sync.RWMutex
 }
 
-// PublicMiddleware defines the standard stack for all endpoints, including logging, safety, and rate limiting.
-func PublicMiddleware(r RateLimiter) []Middleware {
-	if r.MaxRequests == 0 || r.Window == 0 {
-		slog.Warn("rate limiter max requests not set, defaulting to 100 per minute")
-		r.MaxRequests = 100
-		r.Window = time.Minute
+type visitor struct {
+	tokens     uint
+	lastRefill time.Time
+}
+
+func NewRateLimiter(maxRequests uint, window time.Duration) *RateLimiter {
+	rl := &RateLimiter{
+		MaxRequests: maxRequests,
+		Window:      window,
+		visitors:    make(map[string]*visitor),
 	}
+	go rl.cleanupVisitors()
+	return rl
+}
+
+func (rl *RateLimiter) cleanupVisitors() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		rl.mu.Lock()
+		for ip, v := range rl.visitors {
+			if time.Since(v.lastRefill) > rl.Window*2 {
+				delete(rl.visitors, ip)
+			}
+		}
+		rl.mu.Unlock()
+	}
+}
+
+func (rl *RateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	v, exists := rl.visitors[ip]
+
+	if !exists {
+		rl.visitors[ip] = &visitor{
+			tokens:     rl.MaxRequests - 1,
+			lastRefill: now,
+		}
+		return true
+	}
+
+	elapsed := now.Sub(v.lastRefill)
+	if elapsed >= rl.Window {
+		v.tokens = rl.MaxRequests
+		v.lastRefill = now
+	}
+
+	if v.tokens > 0 {
+		v.tokens--
+		return true
+	}
+
+	return false
+}
+
+func RateLimit(rl *RateLimiter) Middleware {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			ip := r.RemoteAddr
+			if forwardedFor := r.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+				ip = strings.Split(forwardedFor, ",")[0]
+			}
+
+			if !rl.allow(ip) {
+				WriteErrorResponse(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		}
+	}
+}
+
+func PublicMiddleware(rl *RateLimiter) []Middleware {
 	return []Middleware{
 		ErrorHandling,
 		Logging,
-		RateLimit(r.MaxRequests, r.Window),
+		RateLimit(rl),
 		MaxBytes,
 	}
 }
 
-// ProtectedMiddleware adds authentication and authorization layers to the public middleware stack for restricted endpoints.
-func ProtectedMiddleware(r RateLimiter, v vault.Vault) []Middleware {
-	if r.MaxRequests == 0 || r.Window == 0 {
-		slog.Warn("rate limiter max requests not set, defaulting to 100 per minute")
-		r.MaxRequests = 100
-		r.Window = time.Minute
-	}
+func ProtectedMiddleware(v vault.Vault, rl *RateLimiter) []Middleware {
 	return []Middleware{
 		ErrorHandling,
 		Logging,
-		RateLimit(r.MaxRequests, r.Window),
+		RateLimit(rl),
 		MaxBytes,
-		Auth(v),
+		Authentication(v),
+		Authorization,
 	}
 }
 
-// Middleware represents a function that wraps an http.Handler to provide pre-processing or post-processing logic.
-type Middleware func(http.Handler) http.Handler
+type Middleware func(http.HandlerFunc) http.HandlerFunc
 
-// Chain takes a base handler and applies a slice of middlewares in order.
-//
-// Middlewares are wrapped such that the first middleware in the slice
-// is the outermost layer of the onion.
-func Chain(handler http.HandlerFunc, middlewares ...Middleware) http.Handler {
-	wrapped := http.Handler(handler)
+func Chain(handler http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
+	wrapped := handler
 	for i := len(middlewares) - 1; i >= 0; i-- {
 		wrapped = middlewares[i](wrapped)
 	}
 	return wrapped
 }
 
-// responseWriter is a wrapper around http.ResponseWriter that captures the HTTP status code for logging purposes.
 type responseWriter struct {
 	http.ResponseWriter
 	status int
 }
 
-// WriteHeader captures the status code before sending it to the underlying ResponseWriter.
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-// ErrorHandling recovers from panics within the request lifecycle.
-func ErrorHandling(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func ErrorHandling(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				slog.Error("error occurred: %v", err)
+				slog.Error(
+					"panic recovered",
+					"err", err,
+				)
 				WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			}
 		}()
 		next.ServeHTTP(w, r)
-	})
+	}
 }
 
-// GetUserID retrieves userID from context.
-func GetUserID(ctx context.Context) (uint32, bool) {
-	userID, ok := ctx.Value(contextKeyUserID).(uint32)
+func GetUserID(ctx context.Context) (string, bool) {
+	userID, ok := ctx.Value(contextKeyUserID).(string)
 	return userID, ok
 }
 
-// GetClaims retrieves claims from context.
 func GetClaims(ctx context.Context) (*vault.AccessTokenClaims, bool) {
 	claims, ok := ctx.Value(contextKeyClaims).(*vault.AccessTokenClaims)
 	return claims, ok
 }
 
-// Auth verifies the identity and permissions of the user making the request.
-func Auth(v vault.Vault) Middleware {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func Authentication(v vault.Vault) Middleware {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 			bearer, found := strings.CutPrefix(authHeader, "Bearer ")
 			if !found || bearer == "" {
 				WriteUnauthorizedResponse(w, AuthInvalidClient, "Bearer token is required")
 				return
 			}
-
 			claims, err := v.ParseAccessToken(bearer)
 			if err != nil {
 				WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid access token")
 				return
 			}
-
 			ctx := context.WithValue(r.Context(), contextKeyUserID, claims.UserID)
 			ctx = context.WithValue(ctx, contextKeyClaims, claims)
-
 			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-}
-
-// RateLimit implements a simple in-memory request throttler based on the remote IP address.
-func RateLimit(maxRequests uint, window time.Duration) func(http.Handler) http.Handler {
-	type client struct {
-		count uint
-		reset time.Time
-	}
-
-	var (
-		mu      sync.Mutex
-		clients = make(map[string]*client)
-	)
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := getClientIP(r)
-			now := time.Now().UTC()
-
-			mu.Lock()
-			c, exists := clients[ip]
-
-			if !exists || now.After(c.reset) {
-				c = &client{count: 0, reset: now.Add(window)}
-				clients[ip] = c
-			}
-
-			c.count++
-			currentCount := c.count
-			resetAt := c.reset
-			mu.Unlock()
-
-			remaining := maxRequests - currentCount
-			w.Header().Set("X-RateLimit-Limit", fmt.Sprintf("%d", maxRequests))
-			w.Header().Set("X-RateLimit-Remaining", fmt.Sprintf("%d", max(0, remaining)))
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
-
-			if remaining == 0 {
-				retryAfter := int(time.Until(resetAt).Seconds())
-				w.Header().Set("Retry-After", strconv.Itoa(max(0, retryAfter)))
-				WriteErrorResponse(w, http.StatusTooManyRequests, "too many requests")
-				return
-			}
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// getClientIP extracts the real client IP, considering proxies
-func getClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if ip := parseFirstIP(xff); ip != "" {
-			return ip
 		}
 	}
-
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		if ip := net.ParseIP(xri); ip != nil {
-			return xri
-		}
-	}
-
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return ""
-	}
-	return ip
 }
 
-// parseFirstIP extracts the first valid IP from a comma-separated list
-func parseFirstIP(xff string) string {
-	for i := 0; i < len(xff); i++ {
-		if xff[i] == ',' {
-			if ip := net.ParseIP(xff[:i]); ip != nil {
-				return xff[:i]
-			}
-			break
+func Authorization(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r.Context())
+		if !ok {
+			WriteUnauthorizedResponse(w, AuthInvalidRequest, "missing claims in context")
+			return
 		}
+
+		next.ServeHTTP(w, r)
 	}
-	if ip := net.ParseIP(xff); ip != nil {
-		return xff
-	}
-	return ""
 }
 
-// Logging records structured information about the HTTP request, including method, path, response status, and processing time.
-func Logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func Logging(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &responseWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
-
 		slog.Info(
 			"request",
 			"method", r.Method,
@@ -236,11 +215,12 @@ func Logging(next http.Handler) http.Handler {
 			"status", rec.status,
 			"duration", time.Since(start),
 		)
-	})
+	}
 }
 
-// MaxBytes limits the maximum size of the request body to 1MB to prevent denial-of-service attacks via large payloads.
-func MaxBytes(next http.Handler) http.Handler {
-	const megabyte = 1_000_000
-	return http.MaxBytesHandler(next, megabyte)
+func MaxBytes(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1_000_000)
+		next.ServeHTTP(w, r)
+	}
 }

@@ -15,31 +15,37 @@ import (
 )
 
 type Store interface {
-	GetPosition(uint32) (json.RawMessage, error)
-	GetPositions(models.Paginator) (json.RawMessage, error)
-	GetCandidate(uint32) (json.RawMessage, error)
-	GetCandidates(models.Paginator) (json.RawMessage, error)
+	CreateCandidate(models.Candidate) error
 	CreateCandidateReaction(models.CandidateReaction) error
-	CreateRecruiterReaction(models.RecruiterReaction) error
 	CreateMatch(models.Match) error
-	ValidateActiveSession(string) (bool, error)
-	GetUserByProvider(string, string) (uint32, error)
-	CreateUser(models.User) (uint32, error)
-	CreateRefreshToken(uint32, time.Time) (string, error)
+	CreateRecruiterReaction(models.RecruiterReaction) error
+	CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error)
+	CreateUser(models.User) (userID string, err error)
+	GetCandidate(id uint32) (json.RawMessage, error)
+	GetCandidates(models.Paginator) (json.RawMessage, error)
+	GetPosition(id uint32) (json.RawMessage, error)
+	GetPositions(models.Paginator) (json.RawMessage, error)
+	GetUserByProvider(provider models.Provider, providerUserID string) (userID string, roles []string, err error)
+	ValidateActiveSession(jti string) (isSessionRevoked bool, err error)
 }
 
-type store struct {
+type StoreImpl struct {
 	Postgres *sql.DB
 }
 
 type StoreConfig struct {
-	DBConnString string
+	PostgresHost     string
+	PostgresPort     uint16
+	PostgresDB       string
+	PostgresUser     string
+	PostgresPassword string
 }
 
-func NewStore(c StoreConfig) (*store, error) {
-	database, err := sql.Open("pgx", c.DBConnString)
+func NewStore(c StoreConfig) (*StoreImpl, error) {
+	dbConnString := "postgresql://" + c.PostgresUser + ":" + c.PostgresPassword + "@" + c.PostgresHost + ":" + string(rune(c.PostgresPort)) + "/" + c.PostgresDB
+	database, err := sql.Open("pgx", dbConnString)
 	if err != nil {
-		return nil, ErrFailedToConnectToDB(err)
+		return nil, ErrFailedToConnectDB(err)
 	}
-	return &store{Postgres: database}, nil
+	return &StoreImpl{Postgres: database}, nil
 }

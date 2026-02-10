@@ -25,6 +25,10 @@ type createCandidateReactionBody struct {
 	ReactionType models.ReactionType `json:"reaction_type"`
 }
 
+type createCandidateBody struct {
+	About string `json:"about"`
+}
+
 type createRecruiterReactionBody struct {
 	PositionID   uint32              `json:"position_id"`
 	CandidateID  uint32              `json:"candidate_id"`
@@ -78,7 +82,10 @@ func writeJSON(w http.ResponseWriter, status int, data any, headers map[string]s
 	}
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		slog.Error("could not encode response data", "error", err)
+		slog.Error(
+			"could not encode response data",
+			"err", err,
+		)
 	}
 }
 
@@ -95,52 +102,61 @@ func WriteFailResponse(w http.ResponseWriter, status int, data any) {
 }
 
 func WriteAuthSuccessResponse(w http.ResponseWriter, data any) {
-	headers := map[string]string{
-		"Cache-Control": "no-store",
-		"Pragma":        "no-cache",
-	}
-	writeJSON(w, http.StatusOK, data, headers)
+	writeJSON(
+		w,
+		http.StatusOK,
+		data,
+		map[string]string{
+			"Cache-Control": "no-store",
+			"Pragma":        "no-cache",
+		},
+	)
 }
 
 func WriteAuthErrorResponse(w http.ResponseWriter, code authErrorCode, description string) {
-	headers := map[string]string{
-		"Cache-Control": "no-store",
-		"Pragma":        "no-cache",
-	}
-	response := authErrorResponse{
-		Error:            code,
-		ErrorDescription: description,
-	}
-	writeJSON(w, http.StatusBadRequest, response, headers)
+	writeJSON(
+		w,
+		http.StatusBadRequest,
+		authErrorResponse{
+			Error:            code,
+			ErrorDescription: description,
+		},
+		map[string]string{
+			"Cache-Control": "no-store",
+			"Pragma":        "no-cache",
+		},
+	)
 }
 
 func WriteUnauthorizedResponse(w http.ResponseWriter, code authErrorCode, description string) {
-	headers := map[string]string{
-		"WWW-Authenticate": "Bearer",
-	}
-	response := authErrorResponse{
-		Error:            code,
-		ErrorDescription: description,
-	}
-	writeJSON(w, http.StatusUnauthorized, response, headers)
+	writeJSON(
+		w,
+		http.StatusUnauthorized,
+		authErrorResponse{
+			Error:            code,
+			ErrorDescription: description,
+		},
+		map[string]string{
+			"WWW-Authenticate": "Bearer",
+		},
+	)
 }
 
-func decodeRequestBody[T any](r *http.Request) (*T, error) {
-	var data T
+func decodeRequestBody[T any](r *http.Request) (data *T, err error) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	err := dec.Decode(&data)
+	err = dec.Decode(data)
 	if err != nil {
 		return nil, ErrFailedToDecode
 	}
 	if dec.More() {
 		return nil, ErrExtraDataDecoded
 	}
-	return &data, err
+	return data, err
 }
 
 func GetPosition(s store.Store) http.HandlerFunc {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
 			WriteFailResponse(w, http.StatusBadRequest, map[string]string{"id": "invalid id"})
@@ -153,19 +169,20 @@ func GetPosition(s store.Store) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		WriteSuccessResponse(w, http.StatusOK, jsonResponse)
 	}
-
-	return handler
 }
 
 func GetPositions(s store.Store) http.HandlerFunc {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		limit, err := ValidateLimit(r.URL.Query().Get("limit"))
 		if err != nil {
 			WriteFailResponse(w, http.StatusBadRequest, map[string]string{"limit": "invalid limit"})
@@ -180,19 +197,20 @@ func GetPositions(s store.Store) http.HandlerFunc {
 
 		jsonResponse, err := s.GetPositions(models.Paginator{Limit: limit, Offset: offset})
 		if err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		WriteSuccessResponse(w, http.StatusOK, jsonResponse)
 	}
-
-	return handler
 }
 
 func GetCandidate(s store.Store) http.HandlerFunc {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
 			WriteFailResponse(w, http.StatusBadRequest, map[string]string{"id": "invalid id"})
@@ -205,19 +223,20 @@ func GetCandidate(s store.Store) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		WriteSuccessResponse(w, http.StatusOK, jsonResponse)
 	}
-
-	return handler
 }
 
 func GetCandidates(s store.Store) http.HandlerFunc {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		limit, err := ValidateLimit(r.URL.Query().Get("limit"))
 		if err != nil {
 			WriteFailResponse(w, http.StatusBadRequest, map[string]string{"limit": "invalid limit"})
@@ -232,19 +251,20 @@ func GetCandidates(s store.Store) http.HandlerFunc {
 
 		jsonResponse, err := s.GetCandidates(models.Paginator{Limit: limit, Offset: offset})
 		if err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		WriteSuccessResponse(w, http.StatusOK, jsonResponse)
 	}
-
-	return handler
 }
 
 func CreateCandidateReaction(s store.Store) http.HandlerFunc {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		cid, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
 			WriteFailResponse(w, http.StatusBadRequest, map[string]string{"id": "invalid id"})
@@ -272,19 +292,20 @@ func CreateCandidateReaction(s store.Store) http.HandlerFunc {
 				ReactionType: req.ReactionType,
 			},
 		); err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		WriteSuccessResponse(w, http.StatusCreated, nil)
 	}
-
-	return handler
 }
 
 func CreateRecruiterReaction(s store.Store) http.HandlerFunc {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		rid, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
 			WriteFailResponse(w, http.StatusBadRequest, map[string]string{"id": "invalid id"})
@@ -317,19 +338,64 @@ func CreateRecruiterReaction(s store.Store) http.HandlerFunc {
 				ReactionType: req.ReactionType,
 			},
 		); err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		WriteSuccessResponse(w, http.StatusCreated, nil)
 	}
+}
 
-	return handler
+func CreateCandidate(s store.Store, v vault.Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, err := decodeRequestBody[createCandidateBody](r)
+		if err != nil {
+			WriteErrorResponse(w, http.StatusBadRequest, "invalid request")
+			return
+		}
+		about, err := ValidateAbout(req.About)
+		if err != nil {
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
+			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		claims, ok := GetClaims(r.Context())
+		if !ok {
+			slog.Error(
+				"could not retrieve context",
+				"err", err,
+			)
+			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		if err := s.CreateCandidate(
+			models.Candidate{
+				UserID: claims.UserID,
+				About:  about,
+			}); err != nil {
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
+			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		createTokenPair(s, v, w, claims.UserID, claims.Provider, []string{"candidate"})
+	}
 }
 
 func CreateMatch(s store.Store) http.HandlerFunc {
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		req, err := decodeRequestBody[createMatchBody](r)
 		if err != nil {
 			WriteErrorResponse(w, http.StatusBadRequest, "invalid request")
@@ -345,15 +411,16 @@ func CreateMatch(s store.Store) http.HandlerFunc {
 		}
 
 		if err := s.CreateMatch(models.Match{CandidateID: req.CandidateID, PositionID: req.PositionID}); err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteErrorResponse(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		WriteSuccessResponse(w, http.StatusCreated, nil)
 	}
-
-	return handler
 }
 
 func GetPublicKeys(v vault.Vault) http.HandlerFunc {
@@ -389,7 +456,10 @@ func CreateAccessToken(s store.Store, v vault.Vault) http.HandlerFunc {
 
 		claims, err := v.ParseRefreshToken(req.RefreshToken)
 		if err != nil {
-			slog.Error("refresh token parsing failed", "err", err)
+			slog.Error(
+				"refresh token parsing failed",
+				"err", err,
+			)
 			WriteAuthErrorResponse(w, AuthInvalidGrant, "invalid refresh token")
 			return
 		}
@@ -400,19 +470,32 @@ func CreateAccessToken(s store.Store, v vault.Vault) http.HandlerFunc {
 				WriteAuthErrorResponse(w, AuthInvalidGrant, "invalid refresh token")
 				return
 			}
-			slog.Error("db validation failed", "err", err, "jti", claims.JTI)
+			slog.Error(
+				"db validation failed",
+				"err", err,
+				"jti", claims.JTI,
+			)
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 			return
 		}
 		if isRefreshTokenRevoked {
-			slog.Warn("revoked token reuse attempt", "jti", claims.JTI, "user_id", claims.UserID, "ip", r.RemoteAddr)
+			slog.Warn(
+				"revoked token reuse attempt",
+				"jti", claims.JTI,
+				"user_id", claims.UserID,
+				"ip", r.RemoteAddr,
+			)
 			WriteAuthErrorResponse(w, AuthInvalidGrant, "invalid refresh token")
 			return
 		}
 
 		accessToken, err := v.CreateAccessToken(claims.UserID, claims.Provider, "")
 		if err != nil {
-			slog.Error("token creation failed", "err", err, "user_id", claims.UserID)
+			slog.Error(
+				"token creation failed",
+				"err", err,
+				"user_id", claims.UserID,
+			)
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -427,7 +510,10 @@ func Login(v vault.Vault) http.HandlerFunc {
 
 		state, err := v.CreateStateToken()
 		if err != nil {
-			slog.Error("generation of state token failed", "err", err)
+			slog.Error(
+				"generation of state token failed",
+				"err", err,
+			)
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -463,7 +549,10 @@ func Login(v vault.Vault) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error("generation of auth code url failed", "err", err)
+			slog.Error(
+				"generation of auth code url failed",
+				"err", err,
+			)
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -478,16 +567,19 @@ func RedirectProvider(s store.Store, v vault.Vault) http.HandlerFunc {
 
 		switch provider {
 		case "google":
-			GoogleCallback(s, v, w, r)
+			googleCallback(s, v, w, r)
+			return
 		case "apple":
-			AppleCallback(s, v, w, r)
+			appleCallback(s, v, w, r)
+			return
 		default:
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid provider")
+			return
 		}
 	}
 }
 
-func GoogleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.Request) {
+func googleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -522,12 +614,15 @@ func GoogleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http
 	}
 
 	rawIDToken, err := v.ExchangeGoogleCodeForIDToken(ctx, code, verifierCookie)
-	if errors.Is(err, vault.ErrMissingIDToken) {
+	if errors.Is(err, vault.ErrIDTokenRequired) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "id_token is required")
 		return
 	}
 	if err != nil {
-		slog.Error("oauth token exchange failed", "err", err)
+		slog.Error(
+			"oauth token exchange failed",
+			"err", err,
+		)
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -546,15 +641,18 @@ func GoogleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http
 		return
 	}
 	if err != nil {
-		slog.Error("id_token verification failed", "err", err)
+		slog.Error(
+			"id_token verification failed",
+			"err", err,
+		)
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 		return
 	}
 
-	CreateTokenPair(s, v, w, user)
+	finishAuthFlow(s, v, w, *user)
 }
 
-func AppleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.Request) {
+func appleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -587,12 +685,15 @@ func AppleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.
 	}
 
 	rawIDToken, err := v.ExchangeAppleCodeForIDToken(ctx, code, verifierCookie)
-	if errors.Is(err, vault.ErrMissingIDToken) {
+	if errors.Is(err, vault.ErrIDTokenRequired) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "id_token is required")
 		return
 	}
 	if err != nil {
-		slog.Error("oauth token exchange failed", "err", err)
+		slog.Error(
+			"oauth token exchange failed",
+			"err", err,
+		)
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -607,43 +708,91 @@ func AppleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.
 		return
 	}
 	if err != nil {
-		slog.Error("id_token verification failed", "err", err)
+		slog.Error(
+			"id_token verification failed",
+			"err", err,
+		)
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 		return
 	}
 
-	CreateTokenPair(s, v, w, user)
+	finishAuthFlow(s, v, w, *user)
 }
 
-func CreateTokenPair(s store.Store, v vault.Vault, w http.ResponseWriter, user *models.User) {
-	provider, err := user.Provider.Raw()
-	if err != nil {
-		WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid provider")
-		return
-	}
+func finishAuthFlow(s store.Store, v vault.Vault, w http.ResponseWriter, user models.User) {
+	userID, roles, err := s.GetUserByProvider(user.Provider, user.ProviderUserID)
 
-	var userID uint32
-	userID, err = s.GetUserByProvider(provider, user.ProviderUserID)
-	if errors.Is(err, sql.ErrNoRows) {
-		userID, err = s.CreateUser(*user)
+	if errors.Is(err, store.ErrUserDoesNotExist) {
+		userID, err := s.CreateUser(user)
 		if err != nil {
+			slog.Error(
+				"query failed",
+				"err", err,
+			)
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 			return
 		}
+		createOnboardingToken(v, w, userID, user.Provider.Raw())
+		return
+	}
+	if errors.Is(err, store.ErrUserDoesNotHaveARole) {
+		createOnboardingToken(v, w, userID, user.Provider.Raw())
+		return
 	}
 	if err != nil {
+		slog.Error(
+			"query failed",
+			"err", err,
+		)
+		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
+		return
+	}
+
+	createTokenPair(s, v, w, userID, user.Provider.Raw(), roles)
+}
+
+func createOnboardingToken(v vault.Vault, w http.ResponseWriter, userID string, provider string) {
+	accessToken, err := v.CreateAccessToken(userID, provider, "onboarding")
+	if err != nil {
+		slog.Error(
+			"failed to create access token",
+			"err", err,
+		)
+		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
+		return
+	}
+	WriteAuthSuccessResponse(w, accessToken)
+}
+
+func createTokenPair(s store.Store, v vault.Vault, w http.ResponseWriter, userID string, provider string, roles []string) {
+	// TODO: refreshTokenInvalidation for the same device id / fingerprint
+
+	scope, err := v.GetScopeForRoles(roles)
+	if err != nil {
+		slog.Error(
+			"failed to get scope for roles",
+			"err", err,
+		)
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 		return
 	}
 
 	jti, err := s.CreateRefreshToken(userID, time.Now().UTC().Add(vault.RefreshTokenExpiration.Abs()))
 	if err != nil {
+		slog.Error(
+			"query failed",
+			"err", err,
+		)
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 		return
 	}
 
-	tokenPair, err := v.CreateTokenPair(userID, provider, jti, "")
+	tokenPair, err := v.CreateTokenPair(userID, provider, jti, scope)
 	if err != nil {
+		slog.Error(
+			"failed to create token pair",
+			"err", err,
+		)
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 		return
 	}

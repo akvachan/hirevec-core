@@ -28,7 +28,7 @@ func ValidateSerialID(strID string) (uint32, error) {
 		return 0, ErrFailedToParseSerialID
 	}
 	if id == 0 {
-		return 0, ErrNotPositiveSerialID
+		return 0, ErrInvalidID
 	}
 	return uint32(id), nil
 }
@@ -90,4 +90,25 @@ func ValidateName(name string) (string, error) {
 	}
 
 	return html.EscapeString(name), nil
+}
+
+func ValidateAbout(about string) (string, error) {
+	about = strings.TrimSpace(about)
+
+	reTags := regexp.MustCompile(`<[^>]*>`)
+	about = reTags.ReplaceAllString(about, "")
+
+	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
+	if !reValid.MatchString(about) {
+		return "", ErrAboutHasForbiddenChars 
+	}
+
+	if len(about) < 1 {
+		return "", ErrAboutTooShort 
+	}
+	if len(about) > 500 {
+		return "", ErrAboutTooLong 
+	}
+
+	return html.EscapeString(about), nil
 }

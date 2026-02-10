@@ -1,90 +1,29 @@
 ## Run Server
+- Setup environment variables, refer to [this](#environment-variables) section.
 - Setup development PGSQL database, refer to [this](#setup-pgsql) section.
-- Inside the root of the repository:
+- Run server with: 
 ```
 go run cmd/server
 ```
 
 ## Unit Tests
+- Run tests with:
 ```
 go test internal -v
 ```
 
-## Integration Tests
-- Setup test PGSQL database, refer to [this](#setup-pgsql) section.
-- Run tests with:
-```
-cd test
-go test -v
-```
-
-## Setup PGSQL
-Use this set of SQL queries to create development and test DBs:
-```sql
-CREATE DATABASE <db_name>;
-CREATE SCHEMA IF NOT EXISTS general;
-CREATE TABLE IF NOT EXISTS general.users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    provider VARCHAR(50) NOT NULL,
-    provider_user_id VARCHAR(255) NOT NULL,
-    email VARCHAR(255),
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(provider, provider_user_id)
-);
-CREATE TABLE IF NOT EXISTS general.refresh_tokens (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES generla.users(id) ON DELETE CASCADE,
-    token_hash VARCHAR(255) NOT NULL,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    revoked BOOLEAN DEFAULT FALSE,
-);
-CREATE TABLE IF NOT EXISTS general.candidates (
-    id SERIAL PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES general.users(id) ON DELETE CASCADE,
-    about TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS general.recruiters (
-    id SERIAL PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES general.users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS general.positions (
-    id SERIAL PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    company TEXT
-);
-CREATE TYPE general.reaction_type AS ENUM ('positive', 'negative', 'neutral');
-CREATE TABLE IF NOT EXISTS general.candidates_reactions (
-    candidate_id INT NOT NULL REFERENCES general.candidates(id) ON DELETE CASCADE,
-    position_id INT NOT NULL REFERENCES general.positions(id) ON DELETE CASCADE,
-    reaction_type reaction_type NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (candidate_id, position_id)
-);
-CREATE TABLE IF NOT EXISTS general.recruiters_reactions (
-    recruiter_id INT NOT NULL REFERENCES general.recruiters(id) ON DELETE CASCADE,
-    position_id INT NOT NULL REFERENCES general.positions(id) ON DELETE CASCADE,
-    candidate_id INT NOT NULL REFERENCES general.candidates(id) ON DELETE CASCADE,
-    reaction_type reaction_type NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (recruiter_id, position_id, candidate_id)
-);
-CREATE TABLE IF NOT EXISTS general.matches (
-    candidate_id INT NOT NULL REFERENCES general.candidates(id) ON DELETE CASCADE,
-    position_id INT NOT NULL REFERENCES general.positions(id) ON DELETE CASCADE,
-    timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (candidate_id, position_id)
-);
-CREATE TABLE IF NOT EXISTS general.refresh_tokens (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash VARCHAR(255) NOT NULL,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    revoked BOOLEAN DEFAULT FALSE,
-    INDEX idx_user_id (user_id),
-    INDEX idx_token_hash (token_hash)
-);
-```
+## Environment Variables
+- `APP_HOST`: Host for the server (default: `localhost`)
+- `APP_PORT`: Port for the server (default: `8080`)
+- `REQUEST_READ_TIMEOUT`: Request read timeout duration (default: `2000ms`)
+- `REQUEST_WRITE_TIMEOUT`: Request write timeout duration (default: `2000ms`)
+- `GRACE_PERIOD`: Grace period for server shutdown (default: `5000ms`)
+- `PGHOST`: PostgreSQL host (default: `localhost`)
+- `PGPORT`: PostgreSQL port (default: `5432`)
+- `PGDATABASE`: PostgreSQL database name (default: `hirevec`)
+- `PGUSER`: PostgreSQL user (create your own)
+- `PGPASSWORD`: PostgreSQL password (create your own)
+- `REDIS_URL`: Redis connection URL (default: `redis://localhost:6379/0`)
+- `LOG_LEVEL`: Log level (default: `ERROR`)
+- `SYMMETRIC_KEY`: Symmetric key for refresh tokens (create your own, must be 32 bytes)
+- `ASYMMETRIC_KEY`: Asymmetric key for access tokens (create your own, must be 64 bytes)

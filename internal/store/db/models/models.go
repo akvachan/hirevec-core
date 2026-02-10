@@ -11,24 +11,32 @@ const (
 	Google Provider = "google"
 )
 
-func (p Provider) Raw() (string, error) {
+func (p Provider) Raw() string {
 	if p == Apple {
-		return "apple", nil
+		return "apple"
 	}
 	if p == Google {
-		return "google", nil
+		return "google"
 	}
-	return "", ErrInvalidProvider
+	return ""
 }
 
 type User struct {
-	ID             uint32
 	Provider       Provider
 	ProviderUserID string
 	Email          string
 	FirstName      string
 	LastName       string
 	FullName       string
+}
+
+type Candidate struct {
+	UserID string
+	About  string
+}
+
+type Recruiter struct {
+	UserID string
 }
 
 // Paginator defines parameters for paginating database queries and API responses.
