@@ -5,9 +5,9 @@
 package store
 
 import (
-	"fmt"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -43,7 +43,14 @@ type StoreConfig struct {
 }
 
 func NewStore(c StoreConfig) (*StoreImpl, error) {
-	dbConnString := fmt.Sprintf("postgresql://%v:%v@%v:/%v", c.PostgresUser, c.PostgresPassword, c.PostgresHost, c.PostgresPort, c.PostgresDB)
+	dbConnString := fmt.Sprintf(
+		"postgresql://%s:%s@%s:%d/%s",
+		c.PostgresUser,
+		c.PostgresPassword,
+		c.PostgresHost,
+		c.PostgresPort,
+		c.PostgresDB,
+	)
 	database, err := sql.Open("pgx", dbConnString)
 	if err != nil {
 		return nil, ErrFailedToConnectDB(err)
