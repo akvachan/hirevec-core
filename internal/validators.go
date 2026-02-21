@@ -1,8 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: MIT
 
-// Package server implements the HTTP transport layer, providing RESTful endpoints.
-package server
+package hirevec
 
 import (
 	"html"
@@ -18,6 +17,27 @@ const (
 	// PageSizeMaxLimit prevents clients from requesting excessively large datasets.
 	PageSizeMaxLimit = 100
 )
+
+func ValidateName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+
+	reTags := regexp.MustCompile(`<[^>]*>`)
+	name = reTags.ReplaceAllString(name, "")
+
+	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
+	if !reValid.MatchString(name) {
+		return "", ErrNameHasForbiddenChars
+	}
+
+	if len(name) < 1 {
+		return "", ErrNameTooShort
+	}
+	if len(name) > 128 {
+		return "", ErrNameTooLong
+	}
+
+	return html.EscapeString(name), nil
+}
 
 // ValidateSerialID converts a string ID to a positive integer.
 //
@@ -71,27 +91,6 @@ func ValidateOffset(strOffset string) (uint8, error) {
 	return uint8(offset), nil
 }
 
-func ValidateName(name string) (string, error) {
-	name = strings.TrimSpace(name)
-
-	reTags := regexp.MustCompile(`<[^>]*>`)
-	name = reTags.ReplaceAllString(name, "")
-
-	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
-	if !reValid.MatchString(name) {
-		return "", ErrNameHasForbiddenChars
-	}
-
-	if len(name) < 1 {
-		return "", ErrNameTooShort
-	}
-	if len(name) > 128 {
-		return "", ErrNameTooLong
-	}
-
-	return html.EscapeString(name), nil
-}
-
 func ValidateAbout(about string) (string, error) {
 	about = strings.TrimSpace(about)
 
@@ -100,14 +99,14 @@ func ValidateAbout(about string) (string, error) {
 
 	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
 	if !reValid.MatchString(about) {
-		return "", ErrAboutHasForbiddenChars 
+		return "", ErrAboutHasForbiddenChars
 	}
 
 	if len(about) < 1 {
-		return "", ErrAboutTooShort 
+		return "", ErrAboutTooShort
 	}
 	if len(about) > 500 {
-		return "", ErrAboutTooLong 
+		return "", ErrAboutTooLong
 	}
 
 	return html.EscapeString(about), nil

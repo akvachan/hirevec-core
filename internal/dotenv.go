@@ -1,8 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: MIT
 
-// Package utils implements miscellaneous helpful routines.
-package utils
+package hirevec
 
 import (
 	"bufio"
@@ -11,11 +10,6 @@ import (
 	"strings"
 )
 
-// Loadenv reads a configuration file at the specified path and loads
-// its contents into the process's environment variables.
-//
-// The file should follow the KEY=VALUE format. The function ignores empty lines,
-// lines starting with '#', and handles optional quotes around values.
 func Loadenv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {

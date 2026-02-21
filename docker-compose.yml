@@ -1,23 +1,61 @@
 services:
-  postgres:
-    image: postgres:18.1
-    container_name: hirevec_postgres 
+  backend:
+    build: 
+      context: .
+      dockerfile: backend.dockerfile
+    container_name: hirevec-backend
     restart: unless-stopped
 
+    ports:
+      - "${PORT}:${PORT}"
+
     environment:
-      POSTGRES_DB: ${PG_DB}
-      POSTGRES_USER: ${PG_USER}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      PROTOCOL: ${PROTOCOL}
+      HOST: 0.0.0.0 
+      PORT: ${PORT}
+      REQUEST_READ_TIMEOUT: ${REQUEST_READ_TIMEOUT}
+      REQUEST_WRITE_TIMEOUT: ${REQUEST_WRITE_TIMEOUT}
+      GRACE_PERIOD: ${GRACE_PERIOD}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      LOG_LEVEL: ${LOG_LEVEL}
+      SYMMETRIC_KEY: ${SYMMETRIC_KEY}
+      ASYMMETRIC_KEY: ${ASYMMETRIC_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      APPLE_CLIENT_ID: ${APPLE_CLIENT_ID}
+      APPLE_CLIENT_SECRET: ${APPLE_CLIENT_SECRET}
+
+    depends_on:
+      - db
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- ${PROTOCOL}://${HOST}:${PORT}/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db:
+    image: postgres:17.8-trixie
+    container_name: hirevec-db
+    restart: unless-stopped
 
     ports:
-      - "${PG_PORT}:5432"
+      - "${POSTGRES_PORT}:5432"
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - deployment/dev-init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./db/init/init.sql:/docker-entrypoint-initdb.d/init.sql
 
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PG_USER} -d ${PG_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -1,8 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: MIT
 
-// Package server implements the HTTP transport layer, providing RESTful endpoints.
-package server
+package hirevec
 
 import (
 	"context"
@@ -13,69 +12,65 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/akvachan/hirevec-backend/internal/store"
-	"github.com/akvachan/hirevec-backend/internal/store/db/models"
-	"github.com/akvachan/hirevec-backend/internal/vault"
-
 	"golang.org/x/oauth2"
 )
 
-type createCandidateReactionBody struct {
-	PositionID   uint32              `json:"position_id"`
-	ReactionType models.ReactionType `json:"reaction_type"`
+type CreateCandidateReactionBody struct {
+	PositionID   uint32       `json:"position_id"`
+	ReactionType ReactionType `json:"reaction_type"`
 }
 
-type createCandidateBody struct {
+type CreateCandidateBody struct {
 	About string `json:"about"`
 }
 
-type createRecruiterReactionBody struct {
-	PositionID   uint32              `json:"position_id"`
-	CandidateID  uint32              `json:"candidate_id"`
-	ReactionType models.ReactionType `json:"reaction_type"`
+type CreateRecruiterReactionBody struct {
+	PositionID   uint32       `json:"position_id"`
+	CandidateID  uint32       `json:"candidate_id"`
+	ReactionType ReactionType `json:"reaction_type"`
 }
 
-type createMatchBody struct {
+type CreateMatchBody struct {
 	PositionID  uint32 `json:"position_id"`
 	CandidateID uint32 `json:"candidate_id"`
 }
 
-type createTokenBody struct {
+type CreateTokenBody struct {
 	GrantType    string `json:"grant_type"`
 	RefreshToken string `json:"refresh_token"`
 }
 
-type successResponse struct {
+type SuccessResponse struct {
 	Status string `json:"status"`
 	Data   any    `json:"data,omitempty"`
 }
 
-type errorResponse struct {
+type ErrorResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
 }
 
-type failResponse struct {
+type FailResponse struct {
 	Status string `json:"status"`
 	Data   any    `json:"data"`
 }
 
-type authErrorCode string
+type AuthErrorCode string
 
 const (
-	AuthInvalidRequest       authErrorCode = "invalid_request"
-	AuthInvalidGrant         authErrorCode = "invalid_grant"
-	AuthInvalidClient        authErrorCode = "invalid_client"
-	AuthUnsupportedGrantType authErrorCode = "unsupported_grant_type"
+	AuthInvalidRequest       AuthErrorCode = "invalid_request"
+	AuthInvalidGrant         AuthErrorCode = "invalid_grant"
+	AuthInvalidClient        AuthErrorCode = "invalid_client"
+	AuthUnsupportedGrantType AuthErrorCode = "unsupported_grant_type"
 )
 
-type authErrorResponse struct {
-	Error            authErrorCode `json:"error"`
+type AuthErrorResponse struct {
+	Error            AuthErrorCode `json:"error"`
 	ErrorDescription string        `json:"error_description,omitempty"`
 	ErrorURI         string        `json:"error_uri,omitempty"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, data any, headers map[string]string) {
+func WriteJSON(w http.ResponseWriter, status int, data any, headers map[string]string) {
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
 	for key, value := range headers {
 		w.Header().Set(key, value)
@@ -90,19 +85,19 @@ func writeJSON(w http.ResponseWriter, status int, data any, headers map[string]s
 }
 
 func WriteSuccessResponse(w http.ResponseWriter, status int, data any) {
-	writeJSON(w, status, successResponse{Status: "success", Data: data}, nil)
+	WriteJSON(w, status, SuccessResponse{Status: "success", Data: data}, nil)
 }
 
 func WriteErrorResponse(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, errorResponse{Status: "error", Message: message}, nil)
+	WriteJSON(w, status, ErrorResponse{Status: "error", Message: message}, nil)
 }
 
 func WriteFailResponse(w http.ResponseWriter, status int, data any) {
-	writeJSON(w, status, failResponse{Status: "fail", Data: data}, nil)
+	WriteJSON(w, status, FailResponse{Status: "fail", Data: data}, nil)
 }
 
 func WriteAuthSuccessResponse(w http.ResponseWriter, data any) {
-	writeJSON(
+	WriteJSON(
 		w,
 		http.StatusOK,
 		data,
@@ -113,11 +108,11 @@ func WriteAuthSuccessResponse(w http.ResponseWriter, data any) {
 	)
 }
 
-func WriteAuthErrorResponse(w http.ResponseWriter, code authErrorCode, description string) {
-	writeJSON(
+func WriteAuthErrorResponse(w http.ResponseWriter, code AuthErrorCode, description string) {
+	WriteJSON(
 		w,
 		http.StatusBadRequest,
-		authErrorResponse{
+		AuthErrorResponse{
 			Error:            code,
 			ErrorDescription: description,
 		},
@@ -128,11 +123,11 @@ func WriteAuthErrorResponse(w http.ResponseWriter, code authErrorCode, descripti
 	)
 }
 
-func WriteUnauthorizedResponse(w http.ResponseWriter, code authErrorCode, description string) {
-	writeJSON(
+func WriteUnauthorizedResponse(w http.ResponseWriter, code AuthErrorCode, description string) {
+	WriteJSON(
 		w,
 		http.StatusUnauthorized,
-		authErrorResponse{
+		AuthErrorResponse{
 			Error:            code,
 			ErrorDescription: description,
 		},
@@ -142,7 +137,7 @@ func WriteUnauthorizedResponse(w http.ResponseWriter, code authErrorCode, descri
 	)
 }
 
-func decodeRequestBody[T any](r *http.Request) (data *T, err error) {
+func DecodeRequestBody[T any](r *http.Request) (data *T, err error) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	err = dec.Decode(data)
@@ -155,7 +150,7 @@ func decodeRequestBody[T any](r *http.Request) (data *T, err error) {
 	return data, err
 }
 
-func GetPosition(s store.Store) http.HandlerFunc {
+func GetPosition(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
@@ -181,7 +176,7 @@ func GetPosition(s store.Store) http.HandlerFunc {
 	}
 }
 
-func GetPositions(s store.Store) http.HandlerFunc {
+func GetPositions(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit, err := ValidateLimit(r.URL.Query().Get("limit"))
 		if err != nil {
@@ -195,7 +190,7 @@ func GetPositions(s store.Store) http.HandlerFunc {
 			return
 		}
 
-		jsonResponse, err := s.GetPositions(models.Paginator{Limit: limit, Offset: offset})
+		jsonResponse, err := s.GetPositions(Paginator{Limit: limit, Offset: offset})
 		if err != nil {
 			slog.Error(
 				"query failed",
@@ -209,7 +204,7 @@ func GetPositions(s store.Store) http.HandlerFunc {
 	}
 }
 
-func GetCandidate(s store.Store) http.HandlerFunc {
+func GetCandidate(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
@@ -235,7 +230,7 @@ func GetCandidate(s store.Store) http.HandlerFunc {
 	}
 }
 
-func GetCandidates(s store.Store) http.HandlerFunc {
+func GetCandidates(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit, err := ValidateLimit(r.URL.Query().Get("limit"))
 		if err != nil {
@@ -249,7 +244,7 @@ func GetCandidates(s store.Store) http.HandlerFunc {
 			return
 		}
 
-		jsonResponse, err := s.GetCandidates(models.Paginator{Limit: limit, Offset: offset})
+		jsonResponse, err := s.GetCandidates(Paginator{Limit: limit, Offset: offset})
 		if err != nil {
 			slog.Error(
 				"query failed",
@@ -263,7 +258,7 @@ func GetCandidates(s store.Store) http.HandlerFunc {
 	}
 }
 
-func CreateCandidateReaction(s store.Store) http.HandlerFunc {
+func CreateCandidateReaction(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cid, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
@@ -271,7 +266,7 @@ func CreateCandidateReaction(s store.Store) http.HandlerFunc {
 			return
 		}
 
-		req, err := decodeRequestBody[createCandidateReactionBody](r)
+		req, err := DecodeRequestBody[CreateCandidateReactionBody](r)
 		if err != nil {
 			WriteErrorResponse(w, http.StatusBadRequest, "invalid request")
 			return
@@ -286,7 +281,7 @@ func CreateCandidateReaction(s store.Store) http.HandlerFunc {
 		}
 
 		if err := s.CreateCandidateReaction(
-			models.CandidateReaction{
+			CandidateReaction{
 				CandidateID:  uint32(cid),
 				PositionID:   req.PositionID,
 				ReactionType: req.ReactionType,
@@ -304,7 +299,7 @@ func CreateCandidateReaction(s store.Store) http.HandlerFunc {
 	}
 }
 
-func CreateRecruiterReaction(s store.Store) http.HandlerFunc {
+func CreateRecruiterReaction(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rid, err := ValidateSerialID(r.PathValue("id"))
 		if err != nil {
@@ -312,7 +307,7 @@ func CreateRecruiterReaction(s store.Store) http.HandlerFunc {
 			return
 		}
 
-		req, err := decodeRequestBody[createRecruiterReactionBody](r)
+		req, err := DecodeRequestBody[CreateRecruiterReactionBody](r)
 		if err != nil {
 			WriteErrorResponse(w, http.StatusBadRequest, "invalid request")
 			return
@@ -331,7 +326,7 @@ func CreateRecruiterReaction(s store.Store) http.HandlerFunc {
 		}
 
 		if err := s.CreateRecruiterReaction(
-			models.RecruiterReaction{
+			RecruiterReaction{
 				RecruiterID:  rid,
 				CandidateID:  req.CandidateID,
 				PositionID:   req.PositionID,
@@ -350,9 +345,9 @@ func CreateRecruiterReaction(s store.Store) http.HandlerFunc {
 	}
 }
 
-func CreateCandidate(s store.Store, v vault.Vault) http.HandlerFunc {
+func CreateCandidate(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := decodeRequestBody[createCandidateBody](r)
+		req, err := DecodeRequestBody[CreateCandidateBody](r)
 		if err != nil {
 			WriteErrorResponse(w, http.StatusBadRequest, "invalid request")
 			return
@@ -378,7 +373,7 @@ func CreateCandidate(s store.Store, v vault.Vault) http.HandlerFunc {
 		}
 
 		if err := s.CreateCandidate(
-			models.Candidate{
+			Candidate{
 				UserID: claims.UserID,
 				About:  about,
 			}); err != nil {
@@ -390,13 +385,13 @@ func CreateCandidate(s store.Store, v vault.Vault) http.HandlerFunc {
 			return
 		}
 
-		createTokenPair(s, v, w, claims.UserID, claims.Provider, []string{"candidate"})
+		CreateTokenPair(s, v, w, claims.UserID, claims.Provider, []string{"candidate"})
 	}
 }
 
-func CreateMatch(s store.Store) http.HandlerFunc {
+func CreateMatch(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := decodeRequestBody[createMatchBody](r)
+		req, err := DecodeRequestBody[CreateMatchBody](r)
 		if err != nil {
 			WriteErrorResponse(w, http.StatusBadRequest, "invalid request")
 			return
@@ -410,7 +405,7 @@ func CreateMatch(s store.Store) http.HandlerFunc {
 			return
 		}
 
-		if err := s.CreateMatch(models.Match{CandidateID: req.CandidateID, PositionID: req.PositionID}); err != nil {
+		if err := s.CreateMatch(Match{CandidateID: req.CandidateID, PositionID: req.PositionID}); err != nil {
 			slog.Error(
 				"query failed",
 				"err", err,
@@ -423,24 +418,24 @@ func CreateMatch(s store.Store) http.HandlerFunc {
 	}
 }
 
-func GetPublicKeys(v vault.Vault) http.HandlerFunc {
+func GetPublicKeys(v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		publicKey := v.GetPublicKey()
 
-		keys := []vault.PasetoKey{
+		keys := []PasetoKey{
 			{
 				Version: 4,
 				Kid:     1,
 				Key:     publicKey,
 			},
 		}
-		WriteSuccessResponse(w, http.StatusOK, vault.PublicPasetoKeys{Keys: keys})
+		WriteSuccessResponse(w, http.StatusOK, PublicPasetoKeys{Keys: keys})
 	}
 }
 
-func CreateAccessToken(s store.Store, v vault.Vault) http.HandlerFunc {
+func CreateAccessToken(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := decodeRequestBody[createTokenBody](r)
+		req, err := DecodeRequestBody[CreateTokenBody](r)
 		if err != nil {
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid request body")
 			return
@@ -504,7 +499,7 @@ func CreateAccessToken(s store.Store, v vault.Vault) http.HandlerFunc {
 	}
 }
 
-func Login(v vault.Vault) http.HandlerFunc {
+func Login(v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provider := r.PathValue("provider")
 
@@ -544,7 +539,7 @@ func Login(v vault.Vault) http.HandlerFunc {
 		})
 
 		url, err := v.CreateAuthCodeURL(state, verifier, provider)
-		if errors.Is(err, vault.ErrInvalidProvider) {
+		if errors.Is(err, ErrInvalidProvider) {
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid provider")
 			return
 		}
@@ -561,16 +556,16 @@ func Login(v vault.Vault) http.HandlerFunc {
 	}
 }
 
-func RedirectProvider(s store.Store, v vault.Vault) http.HandlerFunc {
+func RedirectProvider(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provider := r.PathValue("provider")
 
 		switch provider {
 		case "google":
-			googleCallback(s, v, w, r)
+			GoogleCallback(s, v, w, r)
 			return
 		case "apple":
-			appleCallback(s, v, w, r)
+			AppleCallback(s, v, w, r)
 			return
 		default:
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid provider")
@@ -579,7 +574,7 @@ func RedirectProvider(s store.Store, v vault.Vault) http.HandlerFunc {
 	}
 }
 
-func googleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.Request) {
+func GoogleCallback(s Store, v Vault, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -605,7 +600,7 @@ func googleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http
 		return
 	}
 
-	deleteCookies(w, []string{"oauth_state", "oauth_verifier"})
+	DeleteCookies(w, []string{"oauth_state", "oauth_verifier"})
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -614,7 +609,7 @@ func googleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http
 	}
 
 	rawIDToken, err := v.ExchangeGoogleCodeForIDToken(ctx, code, verifierCookie)
-	if errors.Is(err, vault.ErrIDTokenRequired) {
+	if errors.Is(err, ErrIDTokenRequired) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "id_token is required")
 		return
 	}
@@ -628,15 +623,15 @@ func googleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http
 	}
 
 	user, err := v.VerifyAndParseGoogleIDToken(ctx, rawIDToken)
-	if errors.Is(err, vault.ErrInvalidIDToken) {
+	if errors.Is(err, ErrInvalidIDToken) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid id_token")
 		return
 	}
-	if errors.Is(err, vault.ErrFailedToParseClaims) {
+	if errors.Is(err, ErrFailedToParseClaims) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "failed to parse claims")
 		return
 	}
-	if errors.Is(err, vault.ErrEmailNotVerified) {
+	if errors.Is(err, ErrEmailNotVerified) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "email not verified")
 		return
 	}
@@ -649,10 +644,10 @@ func googleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http
 		return
 	}
 
-	finishAuthFlow(s, v, w, *user)
+	FinishAuthFlow(s, v, w, *user)
 }
 
-func appleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.Request) {
+func AppleCallback(s Store, v Vault, w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -685,7 +680,7 @@ func appleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.
 	}
 
 	rawIDToken, err := v.ExchangeAppleCodeForIDToken(ctx, code, verifierCookie)
-	if errors.Is(err, vault.ErrIDTokenRequired) {
+	if errors.Is(err, ErrIDTokenRequired) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "id_token is required")
 		return
 	}
@@ -699,11 +694,11 @@ func appleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.
 	}
 
 	user, err := v.VerifyAndParseAppleIDToken(ctx, rawIDToken, r.FormValue("user"))
-	if errors.Is(err, vault.ErrInvalidIDToken) {
+	if errors.Is(err, ErrInvalidIDToken) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid id_token")
 		return
 	}
-	if errors.Is(err, vault.ErrFailedToParseClaims) {
+	if errors.Is(err, ErrFailedToParseClaims) {
 		WriteAuthErrorResponse(w, AuthInvalidRequest, "failed to parse claims")
 		return
 	}
@@ -716,13 +711,13 @@ func appleCallback(s store.Store, v vault.Vault, w http.ResponseWriter, r *http.
 		return
 	}
 
-	finishAuthFlow(s, v, w, *user)
+	FinishAuthFlow(s, v, w, *user)
 }
 
-func finishAuthFlow(s store.Store, v vault.Vault, w http.ResponseWriter, user models.User) {
+func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	userID, roles, err := s.GetUserByProvider(user.Provider, user.ProviderUserID)
 
-	if errors.Is(err, store.ErrUserDoesNotExist) {
+	if errors.Is(err, ErrUserDoesNotExist) {
 		userID, err := s.CreateUser(user)
 		if err != nil {
 			slog.Error(
@@ -732,11 +727,11 @@ func finishAuthFlow(s store.Store, v vault.Vault, w http.ResponseWriter, user mo
 			WriteAuthErrorResponse(w, AuthInvalidRequest, "internal server error")
 			return
 		}
-		createOnboardingToken(v, w, userID, user.Provider.Raw())
+		CreateOnboardingToken(v, w, userID, user.Provider.Raw())
 		return
 	}
-	if errors.Is(err, store.ErrUserDoesNotHaveARole) {
-		createOnboardingToken(v, w, userID, user.Provider.Raw())
+	if errors.Is(err, ErrUserDoesNotHaveARole) {
+		CreateOnboardingToken(v, w, userID, user.Provider.Raw())
 		return
 	}
 	if err != nil {
@@ -748,10 +743,10 @@ func finishAuthFlow(s store.Store, v vault.Vault, w http.ResponseWriter, user mo
 		return
 	}
 
-	createTokenPair(s, v, w, userID, user.Provider.Raw(), roles)
+	CreateTokenPair(s, v, w, userID, user.Provider.Raw(), roles)
 }
 
-func createOnboardingToken(v vault.Vault, w http.ResponseWriter, userID string, provider string) {
+func CreateOnboardingToken(v Vault, w http.ResponseWriter, userID string, provider string) {
 	accessToken, err := v.CreateAccessToken(userID, provider, "onboarding")
 	if err != nil {
 		slog.Error(
@@ -764,9 +759,7 @@ func createOnboardingToken(v vault.Vault, w http.ResponseWriter, userID string, 
 	WriteAuthSuccessResponse(w, accessToken)
 }
 
-func createTokenPair(s store.Store, v vault.Vault, w http.ResponseWriter, userID string, provider string, roles []string) {
-	// TODO: refreshTokenInvalidation for the same device id / fingerprint
-
+func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID string, provider string, roles []string) {
 	scope, err := v.GetScopeForRoles(roles)
 	if err != nil {
 		slog.Error(
@@ -777,7 +770,7 @@ func createTokenPair(s store.Store, v vault.Vault, w http.ResponseWriter, userID
 		return
 	}
 
-	jti, err := s.CreateRefreshToken(userID, time.Now().UTC().Add(vault.RefreshTokenExpiration.Abs()))
+	jti, err := s.CreateRefreshToken(userID, time.Now().UTC().Add(RefreshTokenExpiration.Abs()))
 	if err != nil {
 		slog.Error(
 			"query failed",
@@ -800,7 +793,7 @@ func createTokenPair(s store.Store, v vault.Vault, w http.ResponseWriter, userID
 	WriteAuthSuccessResponse(w, tokenPair)
 }
 
-func deleteCookies(w http.ResponseWriter, names []string) {
+func DeleteCookies(w http.ResponseWriter, names []string) {
 	for _, name := range names {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,

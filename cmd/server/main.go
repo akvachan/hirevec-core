@@ -7,20 +7,19 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/akvachan/hirevec-backend/internal"
-	"github.com/akvachan/hirevec-backend/internal/utils"
+	hirevec "github.com/akvachan/hirevec-backend/internal"
 )
 
 func main() {
-	if err := utils.Loadenv(".dev.env"); err != nil {
+	if err := hirevec.Loadenv(".env"); err != nil {
 		slog.Warn(
 			"could not load .env, using system environment",
 			"err", err,
 		)
 	}
 
-	if err := app.Run(
-		app.AppConfig{
+	if err := hirevec.RunApp(
+		hirevec.AppConfig{
 			// Server
 			Host:         os.Getenv("HOST"),
 			Port:         os.Getenv("PORT"),
@@ -29,11 +28,11 @@ func main() {
 			GracePeriod:  os.Getenv("GRACE_PERIOD"),
 
 			// DB
-			PostgresHost:     os.Getenv("PG_HOST"),
-			PostgresPort:     os.Getenv("PG_PORT"),
-			PostgresDB:       os.Getenv("PG_DB"),
-			PostgresUser:     os.Getenv("PG_USER"),
-			PostgresPassword: os.Getenv("PG_PASSWORD"),
+			PostgresHost:     os.Getenv("POSTGRES_HOST"),
+			PostgresPort:     os.Getenv("POSTGRES_PORT"),
+			PostgresDB:       os.Getenv("POSTGRES_DB"),
+			PostgresUser:     os.Getenv("POSTGRES_USER"),
+			PostgresPassword: os.Getenv("POSTGRES_PASSWORD"),
 
 			// Logger
 			LogLevel: os.Getenv("LOG_LEVEL"),

@@ -1,7 +1,0 @@
-version: "2"
-
-run:
-  timeout: 1m
-
-linters:
-  enable-all: true

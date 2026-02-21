@@ -1,6 +1,14 @@
 # hirevec-backend
 
-## Links
-- For contribution guidelines, see [contributing.md](./docs/contributing.md)
-- For general architectural overview, see [architecture.md](./docs/architecture.md)
-- For checklists, see [checklists/](./docs/checklists/)
+## Run Server
+- Setup environment variables in `.env` as shown in [.example.env](.example.env).
+- Setup development PGSQL database, refer to [this](#setup-pgsql) section:
+    1. [Install Postgres](https://www.postgresql.org/download/).
+    2. []
+- Run server with: 
+```
+go run cmd/server
+```
+
+### Via Docker
+

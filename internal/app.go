@@ -1,17 +1,14 @@
-// Package app provides a high-level interface to app modules
-package app
+// Copyright (c) 2026 Arsenii Kvachan
+// SPDX-License-Identifier: MIT
+
+// Package hirevec implements internal server features
+package hirevec
 
 import (
 	"context"
 	"fmt"
 	"os/signal"
 	"syscall"
-
-	"github.com/akvachan/hirevec-backend/internal/logger"
-	"github.com/akvachan/hirevec-backend/internal/server"
-	"github.com/akvachan/hirevec-backend/internal/store"
-	"github.com/akvachan/hirevec-backend/internal/utils"
-	"github.com/akvachan/hirevec-backend/internal/vault"
 )
 
 type AppConfig struct {
@@ -34,19 +31,19 @@ type AppConfig struct {
 	AppleClientSecret  string
 }
 
-func Run(c AppConfig) error {
+func RunApp(c AppConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	logger.Init(
-		logger.LoggerConfig{
-			Level: utils.ParseLogLevelWithDefault(c.LogLevel, logger.DefaultLogLevel),
+	InitLogger(
+		LoggerConfig{
+			Level: ParseLogLevelWithDefault(c.LogLevel, DefaultLogLevel),
 		},
 	)
 
-	vault, err := vault.NewVault(
+	vault, err := NewPasetoVault(
 		ctx,
-		vault.VaultConfig{
+		VaultConfig{
 			Host:               c.Host,
 			Port:               c.Port,
 			GoogleClientID:     c.GoogleClientID,
@@ -61,10 +58,10 @@ func Run(c AppConfig) error {
 		return fmt.Errorf("vault init failed: %w", err)
 	}
 
-	store, err := store.NewStore(
-		store.StoreConfig{
+	store, err := NewPostgresStore(
+		StoreConfig{
 			PostgresHost:     c.PostgresHost,
-			PostgresPort:     utils.ParseUint16WithDefault(c.PostgresPort, 5432),
+			PostgresPort:     ParseUint16WithDefault(c.PostgresPort, 5432),
 			PostgresDB:       c.PostgresDB,
 			PostgresUser:     c.PostgresUser,
 			PostgresPassword: c.PostgresPassword,
@@ -74,14 +71,14 @@ func Run(c AppConfig) error {
 		return fmt.Errorf("store init failed: %w", err)
 	}
 
-	return server.Run(
+	return RunServer(
 		ctx,
-		server.ServerConfig{
+		ServerConfig{
 			Host:         c.Host,
-			Port:         utils.ParseUint16WithDefault(c.Port, 8080),
-			ReadTimeout:  utils.ParseTimeWithDefault(c.ReadTimeout, server.DefaultReadTimeout),
-			WriteTimeout: utils.ParseTimeWithDefault(c.WriteTimeout, server.DefaultWriteTimeout),
-			GracePeriod:  utils.ParseTimeWithDefault(c.GracePeriod, server.DefaultGracePeriod),
+			Port:         ParseUint16WithDefault(c.Port, 8080),
+			ReadTimeout:  ParseTimeWithDefault(c.ReadTimeout, DefaultReadTimeout),
+			WriteTimeout: ParseTimeWithDefault(c.WriteTimeout, DefaultWriteTimeout),
+			GracePeriod:  ParseTimeWithDefault(c.GracePeriod, DefaultGracePeriod),
 		},
 		store,
 		vault,

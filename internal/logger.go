@@ -1,5 +1,7 @@
-// Package logger is a package for configuring various loggers and observability tools
-package logger
+// Copyright (c) 2026 Arsenii Kvachan
+// SPDX-License-Identifier: MIT
+
+package hirevec
 
 import (
 	"log/slog"
@@ -12,7 +14,7 @@ type LoggerConfig struct {
 	Level slog.Level
 }
 
-func Init(config LoggerConfig) {
+func InitLogger(config LoggerConfig) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: config.Level}))
 	slog.SetDefault(logger)
 }

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: MIT
 
-package server
+package hirevec
 
 import (
 	"context"
@@ -10,34 +10,32 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/akvachan/hirevec-backend/internal/vault"
 )
 
-type contextKey string
+type ContextKey string
 
 const (
-	contextKeyUserID contextKey = "user_id"
-	contextKeyClaims contextKey = "claims"
+	ContextKeyUserID ContextKey = "user_id"
+	ContextKeyClaims ContextKey = "claims"
 )
 
 type RateLimiter struct {
 	MaxRequests uint
 	Window      time.Duration
-	visitors    map[string]*visitor
-	mu          sync.RWMutex
+	Visitors    map[string]*Visitor
+	Mu          sync.RWMutex
 }
 
-type visitor struct {
-	tokens     uint
-	lastRefill time.Time
+type Visitor struct {
+	Tokens     uint
+	LastRefill time.Time
 }
 
 func NewRateLimiter(maxRequests uint, window time.Duration) *RateLimiter {
 	rl := &RateLimiter{
 		MaxRequests: maxRequests,
 		Window:      window,
-		visitors:    make(map[string]*visitor),
+		Visitors:    make(map[string]*Visitor),
 	}
 	go rl.cleanupVisitors()
 	return rl
@@ -48,39 +46,39 @@ func (rl *RateLimiter) cleanupVisitors() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		rl.mu.Lock()
-		for ip, v := range rl.visitors {
-			if time.Since(v.lastRefill) > rl.Window*2 {
-				delete(rl.visitors, ip)
+		rl.Mu.Lock()
+		for ip, v := range rl.Visitors {
+			if time.Since(v.LastRefill) > rl.Window*2 {
+				delete(rl.Visitors, ip)
 			}
 		}
-		rl.mu.Unlock()
+		rl.Mu.Unlock()
 	}
 }
 
 func (rl *RateLimiter) allow(ip string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+	rl.Mu.Lock()
+	defer rl.Mu.Unlock()
 
 	now := time.Now()
-	v, exists := rl.visitors[ip]
+	v, exists := rl.Visitors[ip]
 
 	if !exists {
-		rl.visitors[ip] = &visitor{
-			tokens:     rl.MaxRequests - 1,
-			lastRefill: now,
+		rl.Visitors[ip] = &Visitor{
+			Tokens:     rl.MaxRequests - 1,
+			LastRefill: now,
 		}
 		return true
 	}
 
-	elapsed := now.Sub(v.lastRefill)
+	elapsed := now.Sub(v.LastRefill)
 	if elapsed >= rl.Window {
-		v.tokens = rl.MaxRequests
-		v.lastRefill = now
+		v.Tokens = rl.MaxRequests
+		v.LastRefill = now
 	}
 
-	if v.tokens > 0 {
-		v.tokens--
+	if v.Tokens > 0 {
+		v.Tokens--
 		return true
 	}
 
@@ -105,24 +103,28 @@ func RateLimit(rl *RateLimiter) Middleware {
 	}
 }
 
-func PublicMiddleware(rl *RateLimiter) []Middleware {
-	return []Middleware{
+func PublicMiddleware(handler http.HandlerFunc) http.HandlerFunc {
+	return Chain(
+		handler,
 		ErrorHandling,
 		Logging,
-		RateLimit(rl),
-		MaxBytes,
-	}
-}
-
-func ProtectedMiddleware(v vault.Vault, rl *RateLimiter) []Middleware {
-	return []Middleware{
-		ErrorHandling,
-		Logging,
-		RateLimit(rl),
+		RateLimit(NewRateLimiter(100, time.Minute)),
 		MaxBytes,
 		// Authentication(v),
 		// Authorization,
-	}
+	)
+}
+
+func ProtectedMiddleware(handler http.HandlerFunc) http.HandlerFunc {
+	return Chain(
+		handler,
+		ErrorHandling,
+		Logging,
+		RateLimit(NewRateLimiter(100, time.Minute)),
+		MaxBytes,
+		// Authentication(v),
+		// Authorization,
+	)
 }
 
 type Middleware func(http.HandlerFunc) http.HandlerFunc
@@ -135,13 +137,13 @@ func Chain(handler http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc
 	return wrapped
 }
 
-type responseWriter struct {
+type ResponseWriter struct {
 	http.ResponseWriter
-	status int
+	Status int
 }
 
-func (rw *responseWriter) WriteHeader(code int) {
-	rw.status = code
+func (rw *ResponseWriter) WriteHeader(code int) {
+	rw.Status = code
 	rw.ResponseWriter.WriteHeader(code)
 }
 
@@ -161,16 +163,16 @@ func ErrorHandling(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func GetUserID(ctx context.Context) (string, bool) {
-	userID, ok := ctx.Value(contextKeyUserID).(string)
+	userID, ok := ctx.Value(ContextKeyUserID).(string)
 	return userID, ok
 }
 
-func GetClaims(ctx context.Context) (*vault.AccessTokenClaims, bool) {
-	claims, ok := ctx.Value(contextKeyClaims).(*vault.AccessTokenClaims)
+func GetClaims(ctx context.Context) (*AccessTokenClaims, bool) {
+	claims, ok := ctx.Value(ContextKeyClaims).(*AccessTokenClaims)
 	return claims, ok
 }
 
-func Authentication(v vault.Vault) Middleware {
+func Authentication(v Vault) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -184,8 +186,8 @@ func Authentication(v vault.Vault) Middleware {
 				WriteAuthErrorResponse(w, AuthInvalidRequest, "invalid access token")
 				return
 			}
-			ctx := context.WithValue(r.Context(), contextKeyUserID, claims.UserID)
-			ctx = context.WithValue(ctx, contextKeyClaims, claims)
+			ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.UserID)
+			ctx = context.WithValue(ctx, ContextKeyClaims, claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		}
 	}
@@ -206,13 +208,13 @@ func Authentication(v vault.Vault) Middleware {
 func Logging(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+		rec := &ResponseWriter{ResponseWriter: w, Status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		slog.Info(
 			"request",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"status", rec.status,
+			"status", rec.Status,
 			"duration", time.Since(start),
 		)
 	}

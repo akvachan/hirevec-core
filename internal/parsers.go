@@ -1,4 +1,4 @@
-package utils
+package hirevec
 
 import (
 	"log/slog"

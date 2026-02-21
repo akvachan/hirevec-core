@@ -1,21 +1,20 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: MIT
 
-// Package models provides an commond database models
-package models
+package hirevec
 
 type Provider string
 
 const (
-	Apple  Provider = "apple"
-	Google Provider = "google"
+	AppleProvider  Provider = "apple"
+	GoogleProvider Provider = "google"
 )
 
 func (p Provider) Raw() string {
-	if p == Apple {
+	if p == AppleProvider {
 		return "apple"
 	}
-	if p == Google {
+	if p == GoogleProvider {
 		return "google"
 	}
 	return ""
