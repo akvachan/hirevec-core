@@ -1,6 +1,6 @@
 # Hirevec Backend
 
-This project implements server for the Hirevec app.
+Hirevec is a simple job application app. This project implements server for the Hirevec app.
 
 ## Setup
 
@@ -31,7 +31,7 @@ go run cmd/server/main.go
 
 #### Cleanup
 
-In case, for whatever reason, you want to completely remove the database and all what was created by the setup script, run cleanup script:
+In case, for whatever reason, you want to completely remove the database and everything created by the setup script, run cleanup script:
 ```bash
 go run cmd/cleanup/main.go
 ```
