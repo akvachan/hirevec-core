@@ -33,3 +33,10 @@ go run cmd/server/main.go
 ```bash
 docker compose up
 ```
+
+## Cleanup
+
+In case, for whatever reason, you want to completely remove the database and all what was created by the setup script, run cleanup script:
+```bash
+go run cmd/cleanup/main.go
+```
