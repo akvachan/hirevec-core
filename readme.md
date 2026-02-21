@@ -1,5 +1,3 @@
-# hirevec-backend
-
 ## Setup
 
 We support either bare metal setup (downloading postgres and other dependencies is on you) or Docker (dependencies are handled automatically).
