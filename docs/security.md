@@ -14,10 +14,12 @@ Developers should familiarize themselves with [PASETO](https://paseto.io/).
 
 ## Authentication
 Anyone can access authentication endpoint (currently `/api/v1/auth/login/{provider}`) to obtain an access and refresh tokens. 
+
 After successful authentication:
-    - If the user already has a profile, the client is issued a pair of access and refresh tokens with the appropriate scopes based on their profile type (candidate or recruiter).
-    - If the user does not have a profile, the client is issued a short-lived onboarding access token (24 hours) with the `candidates:write`, `recruiters:write` scope, which allows them to create one candidte and one recruiter profile.
-    - If the onboarding access token expires before the user creates a profile, they can simply authenticate again to obtain a new registration access token.
+
+- If the user already has a profile, the client is issued a pair of access and refresh tokens with the appropriate scopes based on their profile type (candidate or recruiter).
+- If the user does not have a profile, the client is issued a short-lived onboarding access token (24 hours) with the `candidates:write`, `recruiters:write` scope, which allows them to create one candidte and one recruiter profile.
+- If the onboarding access token expires before the user creates a profile, they can simply authenticate again to obtain a new registration access token.
 
 Refresh tokens are not stored in the DB, instead their JTI is stored.
 The JTI is issued by the database as UUID.
@@ -25,11 +27,13 @@ Refresh tokens can be invalidated by setting a flag in the table for a specific 
 Access tokens have a lifespan of 15 minutes, refresh tokens have a lifespan of 30 days.
 
 ## Authorization
+
 Server uses scope-based authorization:
-    - `role:recruiter`: Recruiter role
-    - `role:candidate`: Candidate role
-    - `candidates:write`: Can write to the candidates table
-    - `recruiters:write`: Can write to the recruiters table
+
+- `role:recruiter`: Recruiter role
+- `role:candidate`: Candidate role
+- `candidates:write`: Can write to the candidates table
+- `recruiters:write`: Can write to the recruiters table
 
 Authentication and authorization are handled by middleware, so all protected endpoints will require a valid access token with the appropriate scopes. 
 Handlers do not need to worry about authentication and authorization, they can assume that if the request reaches them, the user is authenticated and authorized to perform the action.
