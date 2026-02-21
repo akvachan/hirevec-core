@@ -1,6 +1,10 @@
+# Hirevec Backend
+
+This project implements server for the Hirevec app.
+
 ## Setup
 
-We support either bare metal setup (downloading postgres and other dependencies is on you) or Docker (dependencies are handled automatically).
+We support bare metal setup (downloading postgres and other dependencies is on you) and Docker setup (dependencies are handled automatically).
 
 ### Bare Metal
 
