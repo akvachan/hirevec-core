@@ -15,7 +15,13 @@ import (
 )
 
 func Health(w http.ResponseWriter, r *http.Request) {
-	Success(w, http.StatusOK, nil)
+	link := Link{
+		Rel:    RelTypeSelf,
+		Name:   "health",
+		Method: MethodGet,
+		Href:   RouteHealth.Href,
+	}
+	Success(w, http.StatusOK, nil, link)
 }
 
 func GetPosition(s Store) http.HandlerFunc {
@@ -116,7 +122,7 @@ func GetCandidates(s Store) http.HandlerFunc {
 
 func CreateCandidateReaction(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[CreateCandidateReactionRequest](r)
+		req, err := DecodeRequestBody[RequestBodyCreateCandidateReaction](r)
 		if err != nil {
 			Error(w, http.StatusBadRequest, "invalid request")
 			return
@@ -147,7 +153,7 @@ func CreateCandidateReaction(s Store) http.HandlerFunc {
 
 func CreateRecruiterReaction(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[CreateRecruiterReactionRequest](r)
+		req, err := DecodeRequestBody[RequestBodyCreateRecruiterReaction](r)
 		if err != nil {
 			Error(w, http.StatusBadRequest, "invalid request")
 			return
@@ -179,7 +185,7 @@ func CreateRecruiterReaction(s Store) http.HandlerFunc {
 
 func CreateCandidate(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[CreateCandidateRequest](r)
+		req, err := DecodeRequestBody[RequestBodyCreateCandidate](r)
 		if err != nil {
 			Error(w, http.StatusBadRequest, "invalid request")
 			return
@@ -223,7 +229,7 @@ func CreateCandidate(s Store, v Vault) http.HandlerFunc {
 
 func CreateMatch(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[CreateMatchRequest](r)
+		req, err := DecodeRequestBody[RequestBodyCreateMatch](r)
 		if err != nil {
 			Error(w, http.StatusBadRequest, "invalid request")
 			return
@@ -259,7 +265,7 @@ func GetPublicKeys(v Vault) http.HandlerFunc {
 
 func CreateAccessToken(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[CreateTokenRequest](r)
+		req, err := DecodeRequestBody[RequestBodyCreateToken](r)
 		if err != nil {
 			AuthError(w, AuthInvalidRequest, "invalid request body")
 			return
@@ -319,14 +325,7 @@ func CreateAccessToken(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 
-		AuthSuccess(w, struct {
-			AccessToken
-			Links   []Link   `json:"links,omitempty"`
-			Actions []Action `json:"actions,omitempty"`
-		}{
-			AccessToken: *accessToken,
-		},
-		)
+		AuthAccessToken(w, *accessToken)
 	}
 }
 
@@ -588,14 +587,7 @@ func CreateOnboardingToken(v Vault, w http.ResponseWriter, userID string, provid
 		return
 	}
 
-	AuthSuccess(w, struct {
-		AccessToken
-		Links   []Link   `json:"links,omitempty"`
-		Actions []Action `json:"actions,omitempty"`
-	}{
-		AccessToken: *accessToken,
-	},
-	)
+	AuthAccessToken(w, *accessToken)
 }
 
 func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID string, provider string, roles []string) {
@@ -629,14 +621,7 @@ func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID string, pro
 		return
 	}
 
-	AuthSuccess(w, struct {
-		TokenPair
-		Links   []Link   `json:"links,omitempty"`
-		Actions []Action `json:"actions,omitempty"`
-	}{
-		TokenPair: *tokenPair,
-	},
-	)
+	AuthTokenPair(w, *tokenPair)
 }
 
 func DeleteCookies(w http.ResponseWriter, names []string) {

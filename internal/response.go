@@ -12,38 +12,79 @@ import (
 type ParamLocation string
 
 const (
-	ParamLocationBody   ParamLocation = "body"
-	ParamLocationQuery  ParamLocation = "query"
-	ParamLocationHeader ParamLocation = "header"
-	ParamLocationPath   ParamLocation = "path"
+	ParamLocationQuery ParamLocation = "query"
+	ParamLocationPath  ParamLocation = "path"
 )
 
 type ParamType string
 
 const (
+	ParamTypeBoolean ParamType = "boolean"
 	ParamTypeInteger ParamType = "integer"
 	ParamTypeFloat   ParamType = "float"
 	ParamTypeString  ParamType = "string"
+	ParamTypeArray   ParamType = "array"
 )
 
-type ActionParam struct {
-	Name     string        `json:"name"` // must be in kebab-case
+type ParamFormat string
+
+const (
+	ParamFormatUUID     ParamFormat = "uuid"
+	ParamFormatDateTime ParamFormat = "date-time"
+	ParamFormatDate     ParamFormat = "date"
+	ParamFormatEmail    ParamFormat = "email"
+	ParamFormatURI      ParamFormat = "uri"
+	ParamFormatPassword ParamFormat = "password"
+)
+
+type Param struct {
+	Name     string        `json:"name"`
 	Location ParamLocation `json:"location"`
 	Type     ParamType     `json:"type"`
 	Required bool          `json:"required"`
 }
 
-type Link struct {
-	Rel  string `json:"rel"`
-	Href string `json:"href"`
-}
+// RelType is an enum that implements [RFC5988](https://www.rfc-editor.org/rfc/rfc5988.txt).
+type RelType string
 
-type Action struct {
-	Rel    string        `json:"rel"`
-	Name   string        `json:"name"`
-	Method string        `json:"method"`
-	Href   string        `json:"href"`
-	Params []ActionParam `json:"params,omitempty"`
+const (
+	// Conveys an identifier for the link's context.
+	RelTypeSelf RelType = "self"
+
+	// Refers to a parent document in a hierarchy of documents.
+	RelTypeUp RelType = "up"
+
+	// Refers to the previous resource in an ordered series of resources.
+	RelTypePrevious RelType = "previous"
+
+	// Refers to the next resource in a ordered series of resources.
+	RelTypeNext RelType = "next"
+
+	// An IRI that refers to the furthest preceding resource in a series of resources.
+	RelTypeFirst RelType = "first"
+
+	// An IRI that refers to the furthest following resource in a series of resources.
+	RelTypeLast RelType = "last"
+
+	// Refers to an index.
+	RelTypeIndex RelType = "index"
+
+	// Refers to a resource offering help (more information, links to other sources information, etc.).
+	RelTypeHelp RelType = "help"
+
+	// Refers to a resource that can be used to edit the link's context.
+	RelTypeEdit RelType = "edit"
+
+	RelTypeRecommendation RelType = "/rels/recommendations"
+)
+
+type Link struct {
+	Rel    RelType `json:"rel"`
+	Name   string  `json:"name"`
+	Method Method  `json:"method"`
+	Href   Href    `json:"href"`
+	Params []Param `json:"params,omitempty"`
+	Docs   string  `json:"docs,omitempty"`
 }
 
 type ResponseStatus string
@@ -55,10 +96,9 @@ const (
 )
 
 type SuccessResponse struct {
-	Status  ResponseStatus `json:"status"`
-	Data    any            `json:"data,omitempty"`
-	Actions []Action       `json:"actions,omitempty"`
-	Links   []Link         `json:"links,omitempty"`
+	Status ResponseStatus `json:"status"`
+	Data   any            `json:"data"`
+	Links  []Link         `json:"_links,omitempty"`
 }
 
 type ErrorResponse struct {
@@ -67,10 +107,9 @@ type ErrorResponse struct {
 }
 
 type FailResponse struct {
-	Status  ResponseStatus `json:"status"`
-	Data    any            `json:"data"`
-	Actions []Action       `json:"actions,omitempty"`
-	Links   []Link         `json:"links,omitempty"`
+	Status ResponseStatus `json:"status"`
+	Data   any            `json:"data"`
+	Links  []Link         `json:"_links,omitempty"`
 }
 
 type AuthErrorCode string
@@ -86,20 +125,7 @@ type AuthErrorResponse struct {
 	Error            AuthErrorCode `json:"error"`
 	ErrorDescription string        `json:"error_description,omitempty"`
 	ErrorURI         string        `json:"error_uri,omitempty"`
-	Actions          []Action      `json:"actions,omitempty"`
-	Links            []Link        `json:"links,omitempty"`
-}
-
-type ResponseContext struct {
-	Links   []Link
-	Actions []Action
-}
-
-func UnpackContext(rctx []ResponseContext) ([]Link, []Action) {
-	if len(rctx) > 0 {
-		return rctx[0].Links, rctx[0].Actions
-	}
-	return nil, nil
+	Links            []Link        `json:"_links,omitempty"`
 }
 
 func WriteJSON(w http.ResponseWriter, status int, data any) {
@@ -119,10 +145,9 @@ func SetAuthHeaders(w http.ResponseWriter) {
 	w.Header().Set("Pragma", "no-cache")
 }
 
-func Success(w http.ResponseWriter, status int, data any, rctx ...ResponseContext) {
-	links, actions := UnpackContext(rctx)
+func Success(w http.ResponseWriter, status int, data any, links ...Link) {
 	SetDefaultHeaders(w)
-	WriteJSON(w, status, SuccessResponse{ResponseStatusSuccess, data, actions, links})
+	WriteJSON(w, status, SuccessResponse{ResponseStatusSuccess, data, links})
 }
 
 func Error(w http.ResponseWriter, status int, message string) {
@@ -130,26 +155,44 @@ func Error(w http.ResponseWriter, status int, message string) {
 	WriteJSON(w, status, ErrorResponse{ResponseStatusError, message})
 }
 
-func Fail(w http.ResponseWriter, status int, data any, rctx ...ResponseContext) {
-	links, actions := UnpackContext(rctx)
+func Fail(w http.ResponseWriter, status int, data any, links ...Link) {
 	SetDefaultHeaders(w)
-	WriteJSON(w, status, FailResponse{ResponseStatusFail, data, actions, links})
+	WriteJSON(w, status, FailResponse{ResponseStatusFail, data, links})
 }
 
-func AuthSuccess(w http.ResponseWriter, data any) {
+func AuthAccessToken(w http.ResponseWriter, accessToken AccessToken, links ...Link) {
 	SetAuthHeaders(w)
+
+	data := struct {
+		AccessToken
+		Links []Link `json:"_links,omitempty"`
+	}{
+		accessToken,
+		links,
+	}
 	WriteJSON(w, http.StatusOK, data)
 }
 
-func AuthError(w http.ResponseWriter, code AuthErrorCode, description string, rctx ...ResponseContext) {
-	links, actions := UnpackContext(rctx)
+func AuthTokenPair(w http.ResponseWriter, tokenPair TokenPair, links ...Link) {
 	SetAuthHeaders(w)
-	WriteJSON(w, http.StatusBadRequest, AuthErrorResponse{Error: code, ErrorDescription: description, Actions: actions, Links: links})
+
+	data := struct {
+		TokenPair
+		Links []Link `json:"_links,omitempty"`
+	}{
+		tokenPair,
+		links,
+	}
+	WriteJSON(w, http.StatusOK, data)
 }
 
-func Unauthorized(w http.ResponseWriter, code AuthErrorCode, description string, rctx ...ResponseContext) {
-	links, actions := UnpackContext(rctx)
+func AuthError(w http.ResponseWriter, code AuthErrorCode, description string, links ...Link) {
+	SetAuthHeaders(w)
+	WriteJSON(w, http.StatusBadRequest, AuthErrorResponse{Error: code, ErrorDescription: description, Links: links})
+}
+
+func Unauthorized(w http.ResponseWriter, code AuthErrorCode, description string, links ...Link) {
 	SetAuthHeaders(w)
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{Error: code, ErrorDescription: description, Actions: actions, Links: links})
+	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{Error: code, ErrorDescription: description, Links: links})
 }

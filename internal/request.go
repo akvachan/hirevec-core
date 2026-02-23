@@ -8,27 +8,27 @@ import (
 	"net/http"
 )
 
-type CreateCandidateReactionRequest struct {
+type RequestBodyCreateCandidateReaction struct {
 	PositionID   string       `json:"position_id"`
 	ReactionType ReactionType `json:"reaction_type"`
 }
 
-type CreateCandidateRequest struct {
+type RequestBodyCreateCandidate struct {
 	About string `json:"about"`
 }
 
-type CreateRecruiterReactionRequest struct {
+type RequestBodyCreateRecruiterReaction struct {
 	PositionID   string       `json:"position_id"`
 	CandidateID  string       `json:"candidate_id"`
 	ReactionType ReactionType `json:"reaction_type"`
 }
 
-type CreateMatchRequest struct {
+type RequestBodyCreateMatch struct {
 	PositionID  string `json:"position_id"`
 	CandidateID string `json:"candidate_id"`
 }
 
-type CreateTokenRequest struct {
+type RequestBodyCreateToken struct {
 	GrantType    string `json:"grant_type"`
 	RefreshToken string `json:"refresh_token"`
 }
