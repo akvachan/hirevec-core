@@ -7,38 +7,39 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
-type Store interface {
-	CreateCandidate(Candidate) error
-	CreateCandidateReaction(CandidateReaction) error
-	CreateMatch(Match) error
-	CreateRecruiterReaction(RecruiterReaction) error
-	CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error)
-	CreateUser(User) (userID string, err error)
-	GetCandidate(id string) (json.RawMessage, error)
-	GetCandidates(Paginator) (json.RawMessage, error)
-	GetPosition(id string) (json.RawMessage, error)
-	GetPositions(Paginator) (json.RawMessage, error)
-	GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error)
-	ValidateActiveSession(jti string) (isSessionRevoked bool, err error)
-}
+type (
+	Store interface {
+		CreateCandidate(Candidate) error
+		CreateCandidateReaction(CandidateReaction) error
+		CreateMatch(Match) error
+		CreateRecruiterReaction(RecruiterReaction) error
+		CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error)
+		CreateUser(User) (userID string, err error)
+		GetCandidate(id string) (*Candidate, error)
+		GetCandidates(limit uint64, beforeID *string, afterID *string) (candidates []Candidate, hasPrev bool, hasNext bool, err error)
+		GetPosition(id string) (*Position, error)
+		GetPositions(limit uint64, beforeID *string, afterID *string) (positions []Position, hasPrev bool, hasNext bool, err error)
+		GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error)
+		ValidateActiveSession(jti string) (isSessionRevoked bool, err error)
+	}
 
-type StoreConfig struct {
-	PostgresHost     string
-	PostgresPort     uint16
-	PostgresDB       string
-	PostgresUser     string
-	PostgresPassword string
-}
+	PostgresStore struct {
+		Postgres *sql.DB
+	}
 
-type PostgresStore struct {
-	Postgres *sql.DB
-}
+	StoreConfig struct {
+		PostgresHost     string
+		PostgresPort     uint16
+		PostgresDB       string
+		PostgresUser     string
+		PostgresPassword string
+	}
+)
 
 func NewPostgresStore(c StoreConfig) (*PostgresStore, error) {
 	dbConnString := fmt.Sprintf(
@@ -56,62 +57,203 @@ func NewPostgresStore(c StoreConfig) (*PostgresStore, error) {
 	return &PostgresStore{Postgres: database}, nil
 }
 
-// GetPosition retrieves a single position from the database by its unique identifier.
-func (s PostgresStore) GetPosition(id string) (j json.RawMessage, err error) {
-	return j, s.Postgres.QueryRow(
+func (s PostgresStore) GetPosition(id string) (*Position, error) {
+	var p Position
+
+	err := s.Postgres.QueryRow(
 		`
-		SELECT row_to_json(t) 
-		FROM v1.positions t
-		WHERE t.id = $1
+		SELECT id, title, description, company
+		FROM v1.positions
+		WHERE id = $1
 		`,
 		id,
-	).Scan(&j)
+	).Scan(
+		&p.ID,
+		&p.Title,
+		&p.Description,
+		&p.Company,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &p, nil
 }
 
-// GetPositions retrieves a paginated list of all positions, ordered by ID.
-func (s PostgresStore) GetPositions(p Paginator) (j json.RawMessage, err error) {
-	return j, s.Postgres.QueryRow(
-		`
-		SELECT COALESCE(json_agg(t), '[]'::json)
-		FROM (
-			SELECT *
-			FROM v1.positions
-			ORDER BY id
-			LIMIT $1 OFFSET $2
-		) t
-		`,
-		p.Limit,
-		p.Offset,
-	).Scan(&j)
+func (s PostgresStore) GetPositions(
+	limit uint64,
+	beforeID *string,
+	afterID *string,
+) (positions []Position, hasPrev bool, hasNext bool, err error) {
+	query := `
+        SELECT id, title, description, company
+        FROM v1.positions
+        WHERE 1=1
+    `
+	args := []any{}
+	argPos := 1
+
+	order := "ASC"
+
+	if afterID != nil {
+		query += fmt.Sprintf(" AND id > $%d", argPos)
+		args = append(args, *afterID)
+		argPos++
+		order = "ASC"
+	}
+
+	if beforeID != nil {
+		query += fmt.Sprintf(" AND id < $%d", argPos)
+		args = append(args, *beforeID)
+		argPos++
+		order = "DESC"
+	}
+
+	query += fmt.Sprintf(" ORDER BY id %s LIMIT $%d", order, argPos)
+	args = append(args, limit+1)
+
+	rows, err := s.Postgres.Query(query, args...)
+	if err != nil {
+		return nil, false, false, err
+	}
+
+	positions = make([]Position, 0, limit+1)
+	for rows.Next() {
+		var p Position
+		if err := rows.Scan(&p.ID, &p.Title, &p.Description, &p.Company); err != nil {
+			return nil, false, false, err
+		}
+		positions = append(positions, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, false, false, err
+	}
+
+	hasMore := uint64(len(positions)) > limit
+	if hasMore {
+		positions = positions[:limit]
+	}
+
+	if beforeID != nil {
+		for i, j := 0, len(positions)-1; i < j; i, j = i+1, j-1 {
+			positions[i], positions[j] = positions[j], positions[i]
+		}
+	}
+
+	switch {
+	case afterID != nil:
+		hasPrev = true
+		hasNext = hasMore
+
+	case beforeID != nil:
+		hasPrev = hasMore
+		hasNext = true
+
+	default:
+		hasPrev = false
+		hasNext = hasMore
+	}
+
+	return positions, hasPrev, hasNext, nil
 }
 
-// GetCandidate retrieves a single candidate's details by their ID.
-func (s PostgresStore) GetCandidate(id string) (j json.RawMessage, err error) {
-	return j, s.Postgres.QueryRow(
+func (s PostgresStore) GetCandidate(id string) (*Candidate, error) {
+	var c Candidate
+
+	err := s.Postgres.QueryRow(
 		`
-		SELECT row_to_json(t) 
-		FROM v1.candidates t
-		WHERE t.id = $1
+		SELECT id, about
+		FROM v1.candidates
+		WHERE id = $1
 		`,
 		id,
-	).Scan(&j)
+	).Scan(
+		&c.ID,
+		&c.About,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &c, nil
 }
 
-// GetCandidates retrieves a paginated list of candidates, ordered by ID.
-func (s PostgresStore) GetCandidates(p Paginator) (j json.RawMessage, err error) {
-	return j, s.Postgres.QueryRow(
-		`
-		SELECT COALESCE(json_agg(t), '[]'::json)
-		FROM (
-			SELECT *
-			FROM v1.candidates
-			ORDER BY id 
-			LIMIT $1 OFFSET $2
-		) t
-		`,
-		p.Limit,
-		p.Offset,
-	).Scan(&j)
+func (s PostgresStore) GetCandidates(
+	limit uint64,
+	beforeID *string,
+	afterID *string,
+) (candidates []Candidate, hasPrev bool, hasNext bool, err error) {
+	query := `
+        SELECT id, about
+        FROM v1.candidates
+        WHERE 1=1
+    `
+	args := []any{}
+	argPos := 1
+	order := "ASC"
+
+	if afterID != nil {
+		query += fmt.Sprintf(" AND id > $%d", argPos)
+		args = append(args, *afterID)
+		argPos++
+		order = "ASC"
+	}
+
+	if beforeID != nil {
+		query += fmt.Sprintf(" AND id < $%d", argPos)
+		args = append(args, *beforeID)
+		argPos++
+		order = "DESC"
+	}
+
+	query += fmt.Sprintf(" ORDER BY id %s LIMIT $%d", order, argPos)
+	args = append(args, limit+1)
+
+	rows, err := s.Postgres.Query(query, args...)
+	if err != nil {
+		return nil, false, false, err
+	}
+
+	candidates = make([]Candidate, 0, limit+1)
+	for rows.Next() {
+		var c Candidate
+		if err := rows.Scan(&c.ID, &c.About); err != nil {
+			return nil, false, false, err
+		}
+		candidates = append(candidates, c)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, false, false, err
+	}
+
+	hasMore := uint64(len(candidates)) > limit
+	if hasMore {
+		candidates = candidates[:limit]
+	}
+
+	if beforeID != nil {
+		for i, j := 0, len(candidates)-1; i < j; i, j = i+1, j-1 {
+			candidates[i], candidates[j] = candidates[j], candidates[i]
+		}
+	}
+
+	switch {
+	case afterID != nil:
+		hasPrev = true
+		hasNext = hasMore
+
+	case beforeID != nil:
+		hasPrev = hasMore
+		hasNext = true
+
+	default:
+		hasPrev = false
+		hasNext = hasMore
+	}
+
+	return candidates, hasPrev, hasNext, nil
 }
 
 // GetUserByProvider retrieves an existing user and his role based on their provider details.

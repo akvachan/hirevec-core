@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,25 +15,20 @@ import (
 
 type ContextKey string
 
-const (
-	ContextKeyUserID ContextKey = "user_id"
-	ContextKeyClaims ContextKey = "claims"
-)
+type Visitor struct {
+	Tokens     uint
+	LastRefill time.Time
+}
 
-type RateLimiter struct {
+type RateLimiterConfig struct {
 	MaxRequests uint
 	Window      time.Duration
 	Visitors    map[string]*Visitor
 	Mu          sync.RWMutex
 }
 
-type Visitor struct {
-	Tokens     uint
-	LastRefill time.Time
-}
-
-func NewRateLimiter(maxRequests uint, window time.Duration) *RateLimiter {
-	rl := &RateLimiter{
+func NewRateLimiterConfig(maxRequests uint, window time.Duration) *RateLimiterConfig {
+	rl := &RateLimiterConfig{
 		MaxRequests: maxRequests,
 		Window:      window,
 		Visitors:    make(map[string]*Visitor),
@@ -41,7 +37,7 @@ func NewRateLimiter(maxRequests uint, window time.Duration) *RateLimiter {
 	return rl
 }
 
-func (rl *RateLimiter) cleanupVisitors() {
+func (rl *RateLimiterConfig) cleanupVisitors() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
@@ -56,7 +52,7 @@ func (rl *RateLimiter) cleanupVisitors() {
 	}
 }
 
-func (rl *RateLimiter) allow(ip string) bool {
+func (rl *RateLimiterConfig) allow(ip string) bool {
 	rl.Mu.Lock()
 	defer rl.Mu.Unlock()
 
@@ -85,7 +81,9 @@ func (rl *RateLimiter) allow(ip string) bool {
 	return false
 }
 
-func RateLimit(rl *RateLimiter) Middleware {
+type Middleware func(http.HandlerFunc) http.HandlerFunc
+
+func RateLimiter(rlc *RateLimiterConfig) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			ip := r.RemoteAddr
@@ -93,7 +91,7 @@ func RateLimit(rl *RateLimiter) Middleware {
 				ip = strings.Split(forwardedFor, ",")[0]
 			}
 
-			if !rl.allow(ip) {
+			if !rlc.allow(ip) {
 				Error(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
@@ -103,28 +101,69 @@ func RateLimit(rl *RateLimiter) Middleware {
 	}
 }
 
-// Public wraps handler with basic middleware stack WITHOUT AUTHENTICATION AND AUTHORIZATION.
-func Public(handler http.HandlerFunc) http.HandlerFunc {
-	return Chain(
-		handler,
-		Logging,
-		ErrorHandling,
-		RateLimit(NewRateLimiter(60, time.Minute)),
-		MaxBytes,
-	)
+const (
+	PageSizeDefaultLimit = 50
+	PageSizeMaxLimit     = 100
+)
+
+type PaginatorConfig struct {
+	DefaultLimit uint64
+	MaxLimit     uint64
 }
 
-func Protected(handler http.HandlerFunc) http.HandlerFunc {
-	return Chain(
-		handler,
-		Logging,
-		ErrorHandling,
-		RateLimit(NewRateLimiter(120, time.Minute)),
-		MaxBytes,
-	)
+func NewPaginatorConfig(defaultLimit uint64, maxLimit uint64) PaginatorConfig {
+	return PaginatorConfig{
+		defaultLimit,
+		maxLimit,
+	}
 }
 
-type Middleware func(http.HandlerFunc) http.HandlerFunc
+type Pagination struct {
+	Limit  uint64 `json:"limit"`
+	After  string `json:"after,omitempty"`
+	Before string `json:"before,omitempty"`
+}
+
+const ContextKeyPagination ContextKey = "pagination"
+
+func GetPagination(r *http.Request) Pagination {
+	p, ok := r.Context().Value(ContextKeyPagination).(Pagination)
+	if !ok {
+		return Pagination{
+			Limit:  PageSizeDefaultLimit,
+			After:  "",
+			Before: "",
+		}
+	}
+	return p
+}
+
+func Paginator(pc PaginatorConfig) Middleware {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			limitStr := r.URL.Query().Get("limit")
+			limit, err := strconv.ParseUint(limitStr, 10, 64)
+			if err != nil || limit == 0 {
+				limit = pc.DefaultLimit
+			}
+			if limit > pc.MaxLimit {
+				limit = pc.MaxLimit
+			}
+
+			after := r.URL.Query().Get("after")
+			before := r.URL.Query().Get("before")
+
+			p := Pagination{
+				Limit:  limit,
+				After:  after,
+				Before: before,
+			}
+			ctx := context.WithValue(r.Context(), ContextKeyPagination, p)
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		}
+	}
+}
 
 // Chain wraps handler into a sequence of middlewares, each middleware is applied in the same order it is provided.
 func Chain(handler http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
@@ -145,7 +184,7 @@ func (rw *ResponseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-func ErrorHandling(next http.HandlerFunc) http.HandlerFunc {
+func ErrorHandler(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -159,6 +198,11 @@ func ErrorHandling(next http.HandlerFunc) http.HandlerFunc {
 		next.ServeHTTP(w, r)
 	}
 }
+
+const (
+	ContextKeyUserID ContextKey = "user_id"
+	ContextKeyClaims ContextKey = "claims"
+)
 
 func GetUserID(ctx context.Context) (string, bool) {
 	userID, ok := ctx.Value(ContextKeyUserID).(string)
@@ -176,12 +220,12 @@ func Authentication(v Vault) Middleware {
 			authHeader := r.Header.Get("Authorization")
 			bearer, found := strings.CutPrefix(authHeader, "Bearer ")
 			if !found || bearer == "" {
-				Unauthorized(w, AuthInvalidClient, "Bearer token is required")
+				Unauthorized(w, AuthInvalidClient, "Bearer token is required", nil)
 				return
 			}
 			claims, err := v.ParseAccessToken(bearer)
 			if err != nil {
-				AuthError(w, AuthInvalidRequest, "invalid access token")
+				AuthError(w, AuthInvalidRequest, "invalid access token", nil)
 				return
 			}
 			ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.UserID)
@@ -191,7 +235,7 @@ func Authentication(v Vault) Middleware {
 	}
 }
 
-func Logging(next http.HandlerFunc) http.HandlerFunc {
+func Logger(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &ResponseWriter{ResponseWriter: w, status: http.StatusOK}
@@ -206,7 +250,7 @@ func Logging(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func MaxBytes(next http.HandlerFunc) http.HandlerFunc {
+func MaxBytesLimiter(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1_000_000)
 		next.ServeHTTP(w, r)

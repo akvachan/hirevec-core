@@ -9,7 +9,7 @@ We support bare metal setup (downloading postgres and other dependencies is on y
 ### Bare Metal
 
 > [!NOTE]
-> Bare metal scripts were tested on macOS 15.7.3 and Debian 13.3.
+> Bare metal scripts were tested on macOS 15.7.3 and Ubuntu (Server) 24.04.4 LTS.
 
 #### Requirements
 
@@ -27,7 +27,7 @@ go run cmd/setup/main.go
 ```
 go run cmd/server/main.go
 ```
-4. Open [http://localhost:8080/api/v1/health](http://localhost:8080/api/v1/health).
+4. Open [http://localhost:8080/v1/health](http://localhost:8080/v1/health).
 
 #### Cleanup
 
@@ -49,5 +49,5 @@ go run cmd/cleanup/main.go
 ```bash
 docker compose up
 ```
-3. Open [http://localhost:8080/api/v1/health](http://localhost:8080/api/v1/health).
+3. Open [http://localhost:8080/v1/health](http://localhost:8080/v1/health).
 

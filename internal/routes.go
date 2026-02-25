@@ -6,62 +6,69 @@ package hirevec
 import (
 	"fmt"
 	"net/http"
+	"time"
 )
 
 type Method string
 
 const (
-	MethodGet    Method = http.MethodGet
-	MethodPost   Method = http.MethodPost
-	MethodPut    Method = http.MethodPut
-	MethodPatch  Method = http.MethodPatch
-	MethodDelete Method = http.MethodDelete
+	RouteHealth            = "/v1/health"
+	RoutePublicKeys        = "/v1/auth/keys"
+	RouteToken             = "/v1/auth/token"
+	RouteLogin             = "/v1/auth/login/{provider}"
+	RouteCallback          = "/v1/auth/callback/{provider}"
+	RoutePositions         = "/v1/positions"
+	RoutePosition          = "/v1/positions/{id}"
+	RouteCandidates        = "/v1/candidates"
+	RouteCandidate         = "/v1/candidates/{id}"
+	MethodGet       Method = http.MethodGet
+	MethodPost      Method = http.MethodPost
 )
 
-type Href string
+func PublicRoute(m *http.ServeMux, method Method, route string, handler http.HandlerFunc, mdw ...Middleware) {
+	routeWithMethod := fmt.Sprintf("%s %s", method, route)
+	rlcfg := NewRateLimiterConfig(60, time.Minute)
+	basic := Chain(
+		handler,
+		Logger,
+		ErrorHandler,
+		RateLimiter(rlcfg),
+		MaxBytesLimiter,
+	)
 
-type Route struct {
-	Method Method
-	Href   Href
+	m.Handle(routeWithMethod, Chain(basic, mdw...))
 }
 
-func (r Route) String() string {
-	return fmt.Sprintf("%s %s", r.Method, r.Href)
+func ProtectedRoute(mux *http.ServeMux, method Method, route string, handler http.HandlerFunc, mdw ...Middleware) {
+	routeWithMethod := fmt.Sprintf("%s %s", method, route)
+	rlcfg := NewRateLimiterConfig(120, time.Minute)
+	basic := Chain(
+		handler,
+		Logger,
+		ErrorHandler,
+		RateLimiter(rlcfg),
+		MaxBytesLimiter,
+	)
+
+	mux.Handle(routeWithMethod, Chain(basic, mdw...))
 }
-
-var (
-	RouteHealth            = Route{MethodGet, Href("/v1/health")}
-	RoutePublicKeys        = Route{MethodGet, Href("/v1/auth/keys")}
-	RouteCreateAccessToken = Route{MethodPost, Href("/v1/auth/token")}
-	RouteGetLogin          = Route{MethodGet, Href("/v1/auth/login/{provider}")}
-	RouteCreateLogin       = Route{MethodPost, Href("/v1/auth/login/{provider}")}
-	RouteGetCallback       = Route{MethodGet, Href("/v1/auth/callback/{provider}")}
-	RouteCreateCallback    = Route{MethodPost, Href("/v1/auth/callback/{provider}")}
-
-	// DEPRECATED:
-	RouteGetPositions     = Route{MethodGet, Href("/v1/positions/{id}")}
-	RouteGetCandidates    = Route{MethodGet, Href("/v1/candidates/{id}")}
-	RouteCreateCandidates = Route{MethodPost, Href("/v1/candidates")}
-)
 
 func GetRootMux(s Store, v Vault) http.Handler {
 	mux := http.NewServeMux()
+	pcfg := NewPaginatorConfig(PageSizeDefaultLimit, PageSizeMaxLimit)
 
-	var (
-		health            = Public(Health)
-		publicKeys        = Public(GetPublicKeys(v))
-		createAccessToken = Public(CreateAccessToken(s, v))
-		login             = Public(Login(v))
-		callback          = Public(RedirectProvider(s, v))
-	)
+	PublicRoute(mux, MethodGet, RouteHealth, Health)
+	PublicRoute(mux, MethodGet, RoutePublicKeys, PublicKeys(v))
+	PublicRoute(mux, MethodPost, RouteToken, CreateAccessToken(s, v))
+	PublicRoute(mux, MethodGet, RouteLogin, Login(v))
+	PublicRoute(mux, MethodPost, RouteLogin, Login(v))
+	PublicRoute(mux, MethodGet, RouteCallback, RedirectProvider(s, v))
+	PublicRoute(mux, MethodPost, RouteCallback, RedirectProvider(s, v))
 
-	mux.Handle(RouteHealth.String(), health)
-	mux.Handle(RoutePublicKeys.String(), publicKeys)
-	mux.Handle(RouteCreateAccessToken.String(), createAccessToken)
-	mux.Handle(RouteGetLogin.String(), login)
-	mux.Handle(RouteCreateLogin.String(), login)
-	mux.Handle(RouteGetCallback.String(), callback)
-	mux.Handle(RouteCreateCallback.String(), callback)
+	ProtectedRoute(mux, MethodGet, RoutePosition, GetPosition(s))
+	ProtectedRoute(mux, MethodGet, RoutePositions, GetPositions(s), Paginator(pcfg))
+	ProtectedRoute(mux, MethodGet, RouteCandidate, GetCandidate(s))
+	ProtectedRoute(mux, MethodGet, RouteCandidates, GetCandidates(s), Paginator(pcfg))
 
 	return mux
 }

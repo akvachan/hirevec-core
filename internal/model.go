@@ -20,31 +20,31 @@ func (p Provider) Raw() string {
 	return ""
 }
 
+type Position struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Company     string `json:"company"`
+}
+
 type User struct {
-	Provider       Provider
-	ProviderUserID string
-	Email          string
-	FirstName      string
-	LastName       string
-	FullName       string
+	Provider       Provider `json:"provider,omitempty"`
+	ProviderUserID string   `json:"provider_user_id,omitempty"`
+	Email          string   `json:"email,omitempty"`
+	FirstName      string   `json:"first_name,omitempty"`
+	LastName       string   `json:"last_name,omitempty"`
+	FullName       string   `json:"full_name,omitempty"`
+	UserName       string   `json:"user_name"`
 }
 
 type Candidate struct {
-	UserID string
-	About  string
+	ID     string `json:"id"`
+	UserID string `json:"user_id,omitempty"`
+	About  string `json:"about"`
 }
 
 type Recruiter struct {
 	UserID string
-}
-
-// Paginator defines parameters for paginating database queries and API responses.
-type Paginator struct {
-	// Limit is the maximum number of records to return.
-	Limit uint8 `json:"limit"`
-
-	// Offset is the number of records to skip before starting to return results.
-	Offset uint8 `json:"offset"`
 }
 
 // Match represents a successful connection between a candidate and a specific job position.

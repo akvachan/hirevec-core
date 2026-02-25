@@ -6,16 +6,7 @@ package hirevec
 import (
 	"html"
 	"regexp"
-	"strconv"
 	"strings"
-)
-
-const (
-	// PageSizeDefaultLimit is used when the client does not provide a limit parameter.
-	PageSizeDefaultLimit = 50
-
-	// PageSizeMaxLimit prevents clients from requesting excessively large datasets.
-	PageSizeMaxLimit = 100
 )
 
 func ValidateName(name string) (string, error) {
@@ -37,58 +28,6 @@ func ValidateName(name string) (string, error) {
 	}
 
 	return html.EscapeString(name), nil
-}
-
-// ValidateSerialID converts a string ID to a positive integer.
-//
-// It returns an error if the string is not an integer or if the ID is non-positive.
-func ValidateSerialID(strID string) (uint32, error) {
-	id, err := strconv.ParseUint(strID, 10, 32)
-	if err != nil {
-		return 0, ErrFailedToParseSerialID
-	}
-	if id == 0 {
-		return 0, ErrInvalidID
-	}
-	return uint32(id), nil
-}
-
-// ValidateLimit parses the limit query parameter.
-//
-// It returns an error if the limit is not zero or a positive integer.
-//
-// It automatically caps the limit to the maximum limit allowed.
-func ValidateLimit(strLimit string) (uint8, error) {
-	if strLimit == "" {
-		return PageSizeDefaultLimit, nil
-	}
-
-	limit, err := strconv.ParseUint(strLimit, 10, 8)
-	if err != nil {
-		return 0, ErrFailedToParseLimit
-	}
-
-	if limit > PageSizeMaxLimit {
-		limit = PageSizeMaxLimit
-	}
-
-	return uint8(limit), nil
-}
-
-// ValidateOffset parses the offset query parameter for pagination.
-//
-// It returns an error if the offset is not zero or a positive integer.
-func ValidateOffset(strOffset string) (uint8, error) {
-	if strOffset == "" {
-		return 0, nil
-	}
-
-	offset, err := strconv.ParseUint(strOffset, 10, 8)
-	if err != nil {
-		return 0, ErrFailedToParseOffset
-	}
-
-	return uint8(offset), nil
 }
 
 func ValidateAbout(about string) (string, error) {

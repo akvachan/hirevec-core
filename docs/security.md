@@ -14,7 +14,7 @@ PASETO is a more robust alternative to JWTs.
 Developers should familiarize themselves with [PASETO](https://paseto.io/).
 
 ## Authentication
-Anyone can access authentication endpoint (currently `/api/v1/auth/login/{provider}`) to obtain an access and refresh tokens. 
+Anyone can access authentication endpoint (currently `/v1/auth/login/{provider}`) to obtain an access and refresh tokens. 
 
 After successful authentication:
 
@@ -36,5 +36,5 @@ Server uses scope-based authorization:
 - `candidates:write`: Can write to the candidates table
 - `recruiters:write`: Can write to the recruiters table
 
-Authentication and authorization are handled by middleware, so all protected endpoints will require a valid access token with the appropriate scopes. 
+Authentication and authorization are handled by middleware, so all protected endpoints will require a valid access token with the appropriate scopes.
 Handlers do not need to worry about authentication and authorization, they can assume that if the request reaches them, the user is authenticated and authorized to perform the action.

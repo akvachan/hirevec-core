@@ -33,7 +33,7 @@ services:
       - db
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- ${PROTOCOL}://${HOST}:${PORT}/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- ${PROTOCOL}://${HOST}:${PORT}/v1/health || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5
