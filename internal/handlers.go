@@ -26,6 +26,9 @@ type (
 	// AuthErrorCode defienes OAuth2 error codes, see [RFC6749](https://www.rfc-editor.org/rfc/rfc6749.txt).
 	AuthErrorCode string
 
+	// ErrorCode defines JSend error codes.
+	ErrorCode uint16
+
 	// RelType defines link relation type, see [RFC5988](https://www.rfc-editor.org/rfc/rfc5988.txt).
 	RelType string
 
@@ -39,13 +42,10 @@ type (
 	// Links defines a group of HAL links.
 	Links map[RelType]Link
 
-	// EmptyResponse defines a nil data type.
-	EmptyResponse struct{}
-
 	// SuccessResponse defines a successful JSend HTTP response.
 	SuccessResponse struct {
 		Status ResponseStatus `json:"status"`
-		Data   any            `json:"data"`
+		Data   any            `json:"data,omitempty"`
 		Links  Links          `json:"_links,omitempty"`
 	}
 
@@ -53,12 +53,13 @@ type (
 	ErrorResponse struct {
 		Status  ResponseStatus `json:"status"`
 		Message string         `json:"message"`
+		Code    ErrorCode      `json:"code,omitempty"`
 	}
 
 	// FailResponse defines an HTTP request validation failure.
 	FailResponse struct {
 		Status ResponseStatus `json:"status"`
-		Data   any            `json:"data"`
+		Data   any            `json:"data,omitempty"`
 		Links  Links          `json:"_links,omitempty"`
 	}
 
@@ -75,7 +76,7 @@ const (
 	// All went well, and (usually) some data was returned.
 	ResponseStatusSuccess = "success"
 
-	// There was a problem with the data submitted, or some pre-condition of the API call wasn't satisfied
+	// There was a problem with the data submitted, or some pre-condition of the API call wasn't satisfied.
 	ResponseStatusFail = "fail"
 
 	// An error occurred in processing the request, i.e. an exception was thrown.
@@ -181,7 +182,7 @@ func Success(w http.ResponseWriter, status int, data any, links Links) {
 
 func Error(w http.ResponseWriter, status int, message string) {
 	SetDefaultHeaders(w)
-	WriteJSON(w, status, ErrorResponse{ResponseStatusError, message})
+	WriteJSON(w, status, ErrorResponse{Status: ResponseStatusError, Message: message})
 }
 
 func Fail(w http.ResponseWriter, status int, data any, links Links) {
@@ -240,11 +241,7 @@ func DecodeRequestBody[T any](r *http.Request) (data *T, err error) {
 }
 
 func Health(w http.ResponseWriter, r *http.Request) {
-	links := Links{
-		RelTypeSelf: {Href: RouteHealth},
-	}
-
-	Success(w, http.StatusOK, EmptyResponse{}, links)
+	Success(w, http.StatusOK, nil, nil)
 }
 
 func GetPosition(s Store) http.HandlerFunc {
