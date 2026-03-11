@@ -4,6 +4,7 @@
 package hirevec
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +13,9 @@ import (
 )
 
 type (
-	ScopeType string
+	ScopeType []ScopeValueType
+
+	ScopeValueType string
 
 	ClaimType string
 
@@ -78,21 +81,47 @@ const (
 	IssuedTokenTypeAccessToken    IssuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
 	DefaultRefreshTokenExpiration                 = 30 * 24 * time.Hour
 	DefaultAccessTokenExpiration                  = 30 * time.Minute
-	ScopeTypeCandidate                            = "role:candidate"
-	ScopeTypeRecruiter                            = "role:recruiter"
-	ScopeTypeAdmin                                = "role:admin"
-	ScopeTypeOnboarding                           = "role:onboarding"
+	ScopeValueTypeCandidate       ScopeValueType  = "role:candidate"
+	ScopeValueTypeRecruiter       ScopeValueType  = "role:recruiter"
+	ScopeValueTypeAdmin           ScopeValueType  = "role:admin"
+	ScopeValueTypeOnboarding      ScopeValueType  = "role:onboarding"
 	TokenAudience                                 = "api.hirevec.com"
 	TokenIssuer                                   = "api.hirevec.com"
 )
 
-func NewScope(scope string) (ScopeType, error) {
-	switch scope {
-	case ScopeTypeAdmin, ScopeTypeOnboarding, ScopeTypeCandidate, ScopeTypeRecruiter:
-		return ScopeType(scope), nil
+func ToScopeValue(str string) (ScopeValueType, error) {
+	switch str {
+	case "role:candidate":
+		return ScopeValueTypeCandidate, nil
+	case "role:recruiter":
+		return ScopeValueTypeRecruiter, nil
+	case "role:admin":
+		return ScopeValueTypeAdmin, nil
+	case "role:onboarding":
+		return ScopeValueTypeOnboarding, nil
 	default:
-		return "", ErrInvalidScopeType
+		return "", ErrInvalidScopeValueType
 	}
+}
+
+func (s ScopeType) Raw() string {
+	var result []string
+	for _, role := range s {
+		result = append(result, string(role))
+	}
+	return strings.Join(result, " ")
+}
+
+func NewScope(scope string) (ScopeType, error) {
+	var result ScopeType
+	for _, role := range strings.Fields(scope) {
+		scopeValue, err := ToScopeValue(role)
+		if err != nil {
+			return result, ErrInvalidScopeValueType
+		}
+		result = append(result, scopeValue)
+	}
+	return result, nil
 }
 
 func (v PasetoVault) ParseAccessToken(tokenString string) (*AccessTokenClaims, error) {
@@ -121,7 +150,7 @@ func (v PasetoVault) ParseAccessToken(tokenString string) (*AccessTokenClaims, e
 
 	validScope, err := NewScope(scope)
 	if err != nil {
-		return nil, ErrInvalidScopeType
+		return nil, ErrInvalidScopeValueType
 	}
 
 	return &AccessTokenClaims{
@@ -174,12 +203,12 @@ func (v PasetoVault) GetPublicKey() []byte {
 	return v.V4AsymetricPublicKey.ExportBytes()
 }
 
-func (v PasetoVault) CreateAccessToken(userID string, provider string, scope string) (*AccessToken, error) {
+func (v PasetoVault) CreateAccessToken(userID string, provider string, scope ScopeType) (*AccessToken, error) {
 	now := time.Now().UTC()
 
 	var expiration time.Duration
 	switch {
-	case scope == ScopeTypeOnboarding:
+	case slices.Contains(scope, ScopeValueTypeOnboarding):
 		expiration = 24 * time.Hour
 	case v.AccessTokenExpiration != 0:
 		expiration = v.AccessTokenExpiration
@@ -203,13 +232,14 @@ func (v PasetoVault) CreateAccessToken(userID string, provider string, scope str
 		return nil, ErrFailedSetProvider
 	}
 
-	token.SetString("scope", scope)
+	rawScope := scope.Raw()
+	token.SetString("scope", rawScope)
 
 	return &AccessToken{
 		AccessToken: token.V4Sign(v.V4AsymmetricSecretKey, nil),
 		TokenType:   "Bearer",
 		ExpiresIn:   uint32(expiration.Abs().Seconds()),
-		Scope:       scope,
+		Scope:       rawScope,
 		UserID:      userID,
 	}, nil
 }
@@ -248,7 +278,7 @@ func (v PasetoVault) CreateRefreshToken(userID string, provider string, jti stri
 	}, nil
 }
 
-func (v PasetoVault) CreateTokenPair(userID string, provider string, jti string, scope string) (*TokenPair, error) {
+func (v PasetoVault) CreateTokenPair(userID string, provider string, jti string, scope ScopeType) (*TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, scope)
 	if err != nil {
 		return nil, ErrFailedCreateAccessToken
@@ -264,22 +294,26 @@ func (v PasetoVault) CreateTokenPair(userID string, provider string, jti string,
 		TokenType:    "Bearer",
 		ExpiresIn:    uint32(DefaultAccessTokenExpiration.Abs().Seconds()),
 		RefreshToken: refreshToken.RefreshToken,
-		Scope:        scope,
+		Scope:        scope.Raw(),
 		UserID:       userID,
 	}, nil
 }
 
-func (v PasetoVault) GetScopeForRoles(roles []string) (string, error) {
-	scopes := make([]string, 0, len(roles))
+func (v PasetoVault) GetScopeForRoles(roles []string) (ScopeType, error) {
+	scope := make([]ScopeValueType, 0, len(roles))
 
 	for _, r := range roles {
 		switch r {
 		case "candidate", "recruiter", "admin":
-			scopes = append(scopes, "role:"+r)
+			scopeValue, err := ToScopeValue("role:" + r)
+			if err != nil {
+				return scope, ErrInvalidScopeValueType
+			}
+			scope = append(scope, scopeValue)
 		default:
-			return "", ErrInvalidRole
+			return scope, ErrInvalidRole
 		}
 	}
 
-	return strings.Join(scopes, " "), nil
+	return scope, nil
 }

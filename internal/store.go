@@ -6,24 +6,26 @@ package hirevec
 import (
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
 type (
 	Store interface {
 		CreateCandidate(Candidate) error
-		CreateCandidateReaction(CandidateReaction) error
 		CreateMatch(Match) error
-		CreateRecruiterReaction(RecruiterReaction) error
+		CreateReaction(Reaction) error
+		CreateRecommendation(positionID, candidateID string) (recID string, err error)
+		CreateRecruiter(Recruiter) error
 		CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error)
 		CreateUser(User) (userID string, err error)
 		GetCandidate(id string) (*Candidate, error)
-		GetCandidates(limit uint64, beforeID *string, afterID *string) (candidates []Candidate, hasPrev bool, hasNext bool, err error)
+		GetCandidateByUserID(userID string) (Candidate, error)
+		GetCandidates(Pagination) (PagedResult[Candidate], error)
 		GetPosition(id string) (*Position, error)
-		GetPositions(limit uint64, beforeID *string, afterID *string) (positions []Position, hasPrev bool, hasNext bool, err error)
+		GetPositions(Pagination) (PagedResult[Position], error)
+		GetRecommendations(userID string, p Pagination, includePositions bool, includeCandidates bool) (PagedResult[Recommendation], error)
 		GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error)
 		GetUserRoles(userID string, provider Provider) (roles []string, err error)
 		ValidateActiveSession(jti string) (isSessionRevoked bool, err error)
@@ -31,6 +33,12 @@ type (
 
 	PostgresStore struct {
 		Postgres *sql.DB
+	}
+
+	PagedResult[T any] struct {
+		Items   []T
+		HasPrev bool
+		HasNext bool
 	}
 
 	StoreConfig struct {
@@ -58,105 +66,25 @@ func NewPostgresStore(c StoreConfig) (*PostgresStore, error) {
 	return &PostgresStore{Postgres: database}, nil
 }
 
-func (s PostgresStore) GetPosition(id string) (*Position, error) {
-	var p Position
-
-	err := s.Postgres.QueryRow(
-		`
+func (s PostgresStore) GetPositions(p Pagination) (PagedResult[Position], error) {
+	baseQuery := `
 		SELECT id, title, description, company
 		FROM v1.positions
-		WHERE id = $1
-		`,
-		id,
-	).Scan(
-		&p.ID,
-		&p.Title,
-		&p.Description,
-		&p.Company,
-	)
-	if err != nil {
-		return nil, err
-	}
+		WHERE 1=1
+	`
 
-	return &p, nil
-}
-
-func (s PostgresStore) GetPositions(
-	limit uint64,
-	beforeID *string,
-	afterID *string,
-) (positions []Position, hasPrev bool, hasNext bool, err error) {
-	query := `
-        SELECT id, title, description, company
-        FROM v1.positions
-        WHERE 1=1
-    `
-	args := []any{}
-	argPos := 1
-
-	order := "ASC"
-
-	if afterID != nil {
-		query += fmt.Sprintf(" AND id > $%d", argPos)
-		args = append(args, *afterID)
-		argPos++
-		order = "ASC"
-	}
-
-	if beforeID != nil {
-		query += fmt.Sprintf(" AND id < $%d", argPos)
-		args = append(args, *beforeID)
-		argPos++
-		order = "DESC"
-	}
-
-	query += fmt.Sprintf(" ORDER BY id %s LIMIT $%d", order, argPos)
-	args = append(args, limit+1)
-
-	rows, err := s.Postgres.Query(query, args...)
-	if err != nil {
-		return nil, false, false, err
-	}
-
-	positions = make([]Position, 0, limit+1)
-	for rows.Next() {
-		var p Position
-		if err := rows.Scan(&p.ID, &p.Title, &p.Description, &p.Company); err != nil {
-			return nil, false, false, err
+	result, err := queryWithPagination[Position](s, baseQuery, "id", []any{}, p, func(rows *sql.Rows) (Position, error) {
+		var pos Position
+		if err := rows.Scan(&pos.ID, &pos.Title, &pos.Description, &pos.Company); err != nil {
+			return Position{}, err
 		}
-		positions = append(positions, p)
+		return pos, nil
+	})
+	if err != nil {
+		return PagedResult[Position]{nil, false, false}, err
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, false, false, err
-	}
-
-	hasMore := uint64(len(positions)) > limit
-	if hasMore {
-		positions = positions[:limit]
-	}
-
-	if beforeID != nil {
-		for i, j := 0, len(positions)-1; i < j; i, j = i+1, j-1 {
-			positions[i], positions[j] = positions[j], positions[i]
-		}
-	}
-
-	switch {
-	case afterID != nil:
-		hasPrev = true
-		hasNext = hasMore
-
-	case beforeID != nil:
-		hasPrev = hasMore
-		hasNext = true
-
-	default:
-		hasPrev = false
-		hasNext = hasMore
-	}
-
-	return positions, hasPrev, hasNext, nil
+	return PagedResult[Position]{result.Items, result.HasPrev, result.HasNext}, nil
 }
 
 func (s PostgresStore) GetCandidate(id string) (*Candidate, error) {
@@ -180,87 +108,73 @@ func (s PostgresStore) GetCandidate(id string) (*Candidate, error) {
 	return &c, nil
 }
 
-func (s PostgresStore) GetCandidates(
-	limit uint64,
-	beforeID *string,
-	afterID *string,
-) (candidates []Candidate, hasPrev bool, hasNext bool, err error) {
-	query := `
-        SELECT id, about
-        FROM v1.candidates
-        WHERE 1=1
-    `
-	args := []any{}
-	argPos := 1
-	order := "ASC"
+func (s PostgresStore) GetPosition(id string) (*Position, error) {
+	var p Position
 
-	if afterID != nil {
-		query += fmt.Sprintf(" AND id > $%d", argPos)
-		args = append(args, *afterID)
-		argPos++
-		order = "ASC"
-	}
-
-	if beforeID != nil {
-		query += fmt.Sprintf(" AND id < $%d", argPos)
-		args = append(args, *beforeID)
-		argPos++
-		order = "DESC"
-	}
-
-	query += fmt.Sprintf(" ORDER BY id %s LIMIT $%d", order, argPos)
-	args = append(args, limit+1)
-
-	rows, err := s.Postgres.Query(query, args...)
+	err := s.Postgres.QueryRow(
+		`
+		SELECT id, recruiter_id, title, description, company
+		FROM v1.positions
+		WHERE id = $1
+		`,
+		id,
+	).Scan(
+		&p.ID,
+		&p.RecruiterID,
+		&p.Title,
+		&p.Description,
+		&p.Company,
+	)
 	if err != nil {
-		return nil, false, false, err
+		return nil, err
 	}
 
-	candidates = make([]Candidate, 0, limit+1)
-	for rows.Next() {
+	return &p, nil
+}
+
+// GetCandidateByUserID fetches a candidate by their associated user ID.
+func (s PostgresStore) GetCandidateByUserID(userID string) (Candidate, error) {
+	var c Candidate
+	query := `
+        SELECT id, user_id, about
+        FROM v1.candidates
+        WHERE user_id = $1
+        LIMIT 1
+    `
+
+	err := s.Postgres.QueryRow(query, userID).Scan(&c.ID, &c.UserID, &c.About)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Candidate{}, ErrCandidateNotFound
+		}
+		return Candidate{}, err
+	}
+
+	return c, nil
+}
+
+func (s PostgresStore) GetCandidates(p Pagination) (PagedResult[Candidate], error) {
+	baseQuery := `
+		SELECT id, about
+		FROM v1.candidates
+		WHERE 1=1
+	`
+
+	result, err := queryWithPagination(s, baseQuery, "id", []any{}, p, func(rows *sql.Rows) (Candidate, error) {
 		var c Candidate
 		if err := rows.Scan(&c.ID, &c.About); err != nil {
-			return nil, false, false, err
+			return Candidate{}, err
 		}
-		candidates = append(candidates, c)
+		return c, nil
+	})
+	if err != nil {
+		return PagedResult[Candidate]{nil, false, false}, err
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, false, false, err
-	}
-
-	hasMore := uint64(len(candidates)) > limit
-	if hasMore {
-		candidates = candidates[:limit]
-	}
-
-	if beforeID != nil {
-		for i, j := 0, len(candidates)-1; i < j; i, j = i+1, j-1 {
-			candidates[i], candidates[j] = candidates[j], candidates[i]
-		}
-	}
-
-	switch {
-	case afterID != nil:
-		hasPrev = true
-		hasNext = hasMore
-
-	case beforeID != nil:
-		hasPrev = hasMore
-		hasNext = true
-
-	default:
-		hasPrev = false
-		hasNext = hasMore
-	}
-
-	return candidates, hasPrev, hasNext, nil
+	return PagedResult[Candidate]{result.Items, result.HasPrev, result.HasNext}, nil
 }
 
 // GetUserByProvider retrieves an existing user and his role based on their provider details.
-//
-// Returns ErrUserDoesNotExist as err if user with the provided providerUserID does not exist.
-// Returns ErrUserDoesNotHaveARole as err if user is found, but does not have any role.
 func (s PostgresStore) GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error) {
 	var isCandidate, isRecruiter bool
 
@@ -304,9 +218,6 @@ func (s PostgresStore) GetUserByProvider(provider Provider, providerUserID strin
 }
 
 // GetUserRoles fetches user roles by user's ID and provider.
-//
-// Returns ErrUserDoesNotExist as err if user with the provided userID does not exist.
-// Returns ErrUserDoesNotHaveARole as err if user is found, but does not have any role.
 func (s PostgresStore) GetUserRoles(userID string, provider Provider) (roles []string, err error) {
 	var isCandidate, isRecruiter, isAdmin bool
 
@@ -356,12 +267,13 @@ func (s PostgresStore) GetUserRoles(userID string, provider Provider) (roles []s
 }
 
 // CreateUser generates a unique username and inserts a new user record.
-//
-// Returns ErrNamesRequired as err if first name, last name or full name is an empty string.
-// Returns ErrFailedToGenerateUsernameSuffix as err if could not generate random username suffix.
 func (s PostgresStore) CreateUser(u User) (userID string, err error) {
-	if u.FirstName == "" || u.LastName == "" || u.FullName == "" {
-		return "", ErrNamesRequired
+	if u.FullName == "" {
+		return "", ErrFullNameRequired
+	}
+
+	if u.UserName == "" {
+		return "", ErrUserNameRequired
 	}
 
 	suffix := make([]byte, 2)
@@ -369,12 +281,6 @@ func (s PostgresStore) CreateUser(u User) (userID string, err error) {
 	if err != nil {
 		return "", ErrFailedGenerateUsernameSuffix
 	}
-
-	userName := fmt.Sprintf("%s_%s_%s",
-		strings.ToLower(u.FirstName),
-		strings.ToLower(u.LastName),
-		hex.EncodeToString(suffix),
-	)
 
 	err = s.Postgres.QueryRow(
 		`
@@ -392,24 +298,29 @@ func (s PostgresStore) CreateUser(u User) (userID string, err error) {
 		u.ProviderUserID,
 		u.Email,
 		u.FullName,
-		userName,
+		u.UserName,
 	).Scan(&userID)
 	return userID, err
 }
 
-// CreateCandidateReaction records a candidate's interest or reaction to a specific job position.
-func (s PostgresStore) CreateCandidateReaction(r CandidateReaction) error {
+// CreateReaction records a reaction (from a candidate or recruiter) to a recommendation.
+func (s PostgresStore) CreateReaction(r Reaction) error {
 	_, err := s.Postgres.Exec(
 		`
-		INSERT INTO v1.candidates_reactions (
-			candidate_id,
-			position_id,
+		INSERT INTO v1.reactions (
+			recommendation_id,
+			reactor_type,
+			reactor_id,
 			reaction_type
 		)
-		VALUES ($1, $2, $3)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (recommendation_id, reactor_type, reactor_id) DO UPDATE
+		SET reaction_type = EXCLUDED.reaction_type,
+		    created_at = NOW()
 		`,
-		r.CandidateID,
-		r.PositionID,
+		r.RecommendationID,
+		r.ReactorType,
+		r.ReactorID,
 		r.ReactionType,
 	)
 	return err
@@ -419,7 +330,7 @@ func (s PostgresStore) CreateCandidateReaction(r CandidateReaction) error {
 func (s PostgresStore) CreateCandidate(c Candidate) error {
 	_, err := s.Postgres.Exec(
 		`
-		INSERT INTO v1.candidate (
+		INSERT INTO v1.candidates (
 			user_id,
 			about
 		)
@@ -431,22 +342,16 @@ func (s PostgresStore) CreateCandidate(c Candidate) error {
 	return err
 }
 
-// CreateRecruiterReaction records a recruiter's reaction to a specific candidate for a position.
-func (s PostgresStore) CreateRecruiterReaction(r RecruiterReaction) error {
+// CreateRecruiter creates a recruiter
+func (s PostgresStore) CreateRecruiter(r Recruiter) error {
 	_, err := s.Postgres.Exec(
 		`
-		INSERT INTO v1.recruiters_reactions (
-			recruiter_id,
-			position_id,
-			candidate_id,
-			reaction_type
+		INSERT INTO v1.recruiters (
+			user_id
 		)
-		VALUES ($1, $2, $3, $4)
+		VALUES ($1)
 		`,
-		r.RecruiterID,
-		r.PositionID,
-		r.CandidateID,
-		r.ReactionType,
+		r.UserID,
 	)
 	return err
 }
@@ -495,4 +400,140 @@ func (s PostgresStore) CreateRefreshToken(userID string, expiresAt time.Time) (j
 		expiresAt,
 	).Scan(&jti)
 	return jti, err
+}
+
+// CreateRecommendation inserts a new recommendation for a candidate and a position.
+func (s PostgresStore) CreateRecommendation(positionID, candidateID string) (recID string, err error) {
+	query := `
+		INSERT INTO v1.recommendations (position_id, candidate_id)
+		VALUES ($1, $2)
+		ON CONFLICT (position_id, candidate_id) DO NOTHING
+		RETURNING id
+	`
+	err = s.Postgres.QueryRow(query, positionID, candidateID).Scan(&recID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrRecommendationExists
+		}
+		return "", err
+	}
+
+	// If recommendationID is empty, the insert was skipped due to conflict
+	if recID == "" {
+		return "", ErrRecommendationExists
+	}
+
+	return recID, nil
+}
+
+// GetRecommendations gets aggregated recommendations for candidate account and recruiter account of the user with the provided userID.
+func (s PostgresStore) GetRecommendations(
+	userID string,
+	p Pagination,
+	includePositions bool,
+	includeCandidates bool,
+) (PagedResult[Recommendation], error) {
+	candidate, err := s.GetCandidateByUserID(userID)
+	if err != nil {
+		return PagedResult[Recommendation]{nil, false, false}, fmt.Errorf("failed to get candidate: %w", err)
+	}
+
+	baseQuery := `
+		SELECT r.id, r.candidate_id, r.position_id,
+		       p.id, p.recruiter_id, p.title, p.description, p.company
+		FROM v1.recommendations r
+		JOIN v1.positions p ON p.id = r.position_id
+		LEFT JOIN v1.reactions react ON react.recommendation_id = r.id
+		WHERE r.candidate_id = $1 AND react.recommendation_id IS NULL
+	`
+
+	result, err := queryWithPagination(s, baseQuery, "r.id", []any{candidate.ID}, p, func(rows *sql.Rows) (Recommendation, error) {
+		var r Recommendation
+		var pos Position
+		if err := rows.Scan(&r.ID, &r.CandidateID, &r.PositionID, &pos.ID, &pos.RecruiterID, &pos.Title, &pos.Description, &pos.Company); err != nil {
+			return Recommendation{}, err
+		}
+		r.Position = &pos
+		return r, nil
+	})
+	if err != nil {
+		return PagedResult[Recommendation]{nil, false, false}, err
+	}
+
+	return PagedResult[Recommendation]{result.Items, result.HasPrev, result.HasNext}, nil
+}
+
+// queryWithPagination executes a paginated query.
+func queryWithPagination[T any](
+	s PostgresStore,
+	baseQuery string,
+	cursorCol string,
+	args []any,
+	p Pagination,
+	scanFunc func(*sql.Rows) (T, error),
+) (PagedResult[T], error) {
+	result := PagedResult[T]{}
+	argPos := len(args) + 1
+	order := "ASC"
+
+	if p.After != nil {
+		baseQuery += fmt.Sprintf(" AND %s > $%d", cursorCol, argPos)
+		args = append(args, *p.After)
+		argPos++
+		order = "ASC"
+	}
+	if p.Before != nil {
+		baseQuery += fmt.Sprintf(" AND %s < $%d", cursorCol, argPos)
+		args = append(args, *p.Before)
+		argPos++
+		order = "DESC"
+	}
+
+	baseQuery += fmt.Sprintf(" ORDER BY %s %s LIMIT $%d", cursorCol, order, argPos)
+	args = append(args, p.Limit+1)
+
+	rows, err := s.Postgres.Query(baseQuery, args...)
+	if err != nil {
+		return result, err
+	}
+	defer rows.Close()
+
+	items := make([]T, 0, p.Limit+1)
+	for rows.Next() {
+		item, err := scanFunc(rows)
+		if err != nil {
+			return result, err
+		}
+		items = append(items, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return result, err
+	}
+
+	hasMore := uint64(len(items)) > p.Limit
+	if hasMore {
+		items = items[:p.Limit]
+	}
+
+	if p.Before != nil {
+		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+			items[i], items[j] = items[j], items[i]
+		}
+	}
+
+	switch {
+	case p.After != nil:
+		result.HasPrev = true
+		result.HasNext = hasMore
+	case p.Before != nil:
+		result.HasPrev = hasMore
+		result.HasNext = true
+	default:
+		result.HasPrev = false
+		result.HasNext = hasMore
+	}
+
+	result.Items = items
+	return result, nil
 }

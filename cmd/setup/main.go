@@ -28,7 +28,7 @@ var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: sl
 
 func main() {
 	if err := common.Loadenv(".env"); err != nil {
-		log.Warn("could not load .env, using system environment", "err", err)
+		log.Warn("failed to load .env, using system environment", "err", err)
 	}
 	checkPostgres()
 	checkEnvVars()
@@ -96,7 +96,7 @@ END $$;`)
 		"SELECT 1 FROM pg_database WHERE datname = '"+dbName+"';",
 	).Output()
 	if err != nil {
-		die("could not check database existence", "err", err)
+		die("failed to check database existence", "err", err)
 	}
 	if strings.TrimSpace(string(out)) != "1" {
 		runSuper(superuser, "create database", "CREATE DATABASE "+dbName+" OWNER "+user+";")
@@ -112,7 +112,7 @@ END $$;`)
 func initDB() {
 	out, err := psqlApp("-c", "SELECT to_regclass('"+sentinelTable+"');").Output()
 	if err != nil {
-		die("could not query database", "err", err)
+		die("failed to query database", "err", err)
 	}
 
 	if strings.Contains(string(out), sentinelTable) {

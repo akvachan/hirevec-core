@@ -21,7 +21,7 @@ var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: sl
 
 func main() {
 	if err := common.Loadenv(".env"); err != nil {
-		log.Warn("could not load .env, using system environment", "err", err)
+		log.Warn("failed to load .env, using system environment", "err", err)
 	}
 	checkEnvVars()
 
@@ -55,7 +55,7 @@ func dropDB(superuser string, dbName string) {
 		"SELECT 1 FROM pg_database WHERE datname = '"+dbName+"';",
 	).Output()
 	if err != nil {
-		die("could not check database existence", "err", err)
+		die("failed to check database existence", "err", err)
 	}
 	if strings.TrimSpace(string(out)) != "1" {
 		log.Info("database does not exist, skipping", "db", dbName)
@@ -75,7 +75,7 @@ func dropRole(superuser, user string) {
 		"SELECT 1 FROM pg_roles WHERE rolname = '"+user+"';",
 	).Output()
 	if err != nil {
-		die("could not check role existence", "err", err)
+		die("failed to check role existence", "err", err)
 	}
 	if strings.TrimSpace(string(out)) != "1" {
 		log.Info("role does not exist, skipping", "role", user)

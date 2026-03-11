@@ -23,18 +23,12 @@ We support bare metal setup (downloading postgres and other dependencies is on y
 ```bash
 go run cmd/setup/main.go
 ```
-3. Generate and copy a development access token:
-```bash
-go run cmd/token/main.go
 ```
-4. Run Go server:
+3. Run Go server:
 ```
 go run cmd/server/main.go
 ```
-5. Open [http://localhost:8080/v1/health](http://localhost:8080/v1/health).
-
-> [!TIP]
-> When accessing protected resources, use your development access token. You can modify certain aspects of the token and add scopes via [cmd/token/main.go](./cmd/token/main.go).
+4. Open [http://localhost:8080/v1/health](http://localhost:8080/v1/health).
 
 #### Cleanup
 
@@ -56,8 +50,16 @@ go run cmd/cleanup/main.go
 ```bash
 docker compose up
 ```
-3. Generate and copy a development access token:
-```bash
+3. Open [http://localhost:8080/v1/health](http://localhost:8080/v1/health).
+
+## API Usage (Client)
+
+1. Generate access token:
+```
 go run cmd/token/main.go
 ```
-4. Open [http://localhost:8080/v1/health](http://localhost:8080/v1/health).
+2. Set `ACCESS_TOKEN` either in shell environment variables or `.env`.
+3. Call the script by providing the path, e.g.:
+```
+go run cmd/api/main.go "/v1/positions?limit=10"
+```

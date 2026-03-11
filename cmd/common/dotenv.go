@@ -20,7 +20,7 @@ func Loadenv(path string) error {
 		err := f.Close()
 		if err != nil {
 			slog.Error(
-				"could not properly close file",
+				"failed to properly close file",
 				"err", err,
 			)
 			os.Exit(0)

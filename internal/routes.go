@@ -24,22 +24,27 @@ type (
 		Method         Method
 		Route          string
 		Handler        http.HandlerFunc
-		RequiredScopes []ScopeType
+		RequiredScopes []ScopeValueType
 	}
 )
 
 const (
-	RouteHealth            = "/v1/health"
-	RoutePublicKeys        = "/v1/auth/keys"
-	RouteToken             = "/v1/auth/token"
-	RouteLogin             = "/v1/auth/login/{provider}"
-	RouteCallback          = "/v1/auth/callback/{provider}"
-	RoutePositions         = "/v1/positions"
-	RoutePosition          = "/v1/positions/{id}"
-	RouteCandidates        = "/v1/candidates"
-	RouteCandidate         = "/v1/candidates/{id}"
-	MethodGet       Method = http.MethodGet
-	MethodPost      Method = http.MethodPost
+	RouteHealth          = "/v1/health"
+	RoutePublicKeys      = "/v1/auth/keys"
+	RouteToken           = "/v1/auth/token"
+	RouteLogin           = "/v1/auth/login/{provider}"
+	RouteCallback        = "/v1/auth/callback/{provider}"
+	RoutePositions       = "/v1/positions"
+	RoutePosition        = "/v1/positions/{id}"
+	RouteCandidates      = "/v1/candidates"
+	RouteCandidate       = "/v1/candidates/{id}"
+	RouteRecommendations = "/v1/me/recommendations"
+	// RouteMatches                = "/v1/me/matches"
+	// RouteReactions              = "/v1/me/reactions"
+	// RouteProfile                = "/v1/me/profile"
+	// RouteStats                  = "/v1/me/stats"
+	MethodGet  Method = http.MethodGet
+	MethodPost Method = http.MethodPost
 )
 
 func PublicRoute(s Store, v Vault, cfg PublicRouteConfig) {
@@ -144,7 +149,7 @@ func GetRootMux(s Store, v Vault) http.Handler {
 			MethodGet,
 			RoutePosition,
 			GetPosition(s),
-			[]ScopeType{ScopeTypeAdmin},
+			[]ScopeValueType{ScopeValueTypeAdmin},
 		},
 	)
 	ProtectedRoute(
@@ -157,7 +162,7 @@ func GetRootMux(s Store, v Vault) http.Handler {
 				GetPositions(s),
 				Paginator(pcfg),
 			),
-			[]ScopeType{ScopeTypeAdmin},
+			[]ScopeValueType{ScopeValueTypeAdmin},
 		},
 	)
 	ProtectedRoute(
@@ -167,7 +172,7 @@ func GetRootMux(s Store, v Vault) http.Handler {
 			MethodGet,
 			RouteCandidate,
 			GetCandidate(s),
-			[]ScopeType{ScopeTypeAdmin},
+			[]ScopeValueType{ScopeValueTypeAdmin},
 		},
 	)
 	ProtectedRoute(
@@ -180,7 +185,20 @@ func GetRootMux(s Store, v Vault) http.Handler {
 				GetCandidates(s),
 				Paginator(pcfg),
 			),
-			[]ScopeType{ScopeTypeAdmin},
+			[]ScopeValueType{ScopeValueTypeAdmin},
+		},
+	)
+	ProtectedRoute(
+		s, v,
+		ProtectedRouteConfig{
+			mux,
+			MethodGet,
+			RouteRecommendations,
+			Chain(
+				GetRecommendations(s),
+				Paginator(pcfg),
+			),
+			[]ScopeValueType{ScopeValueTypeAdmin, ScopeValueTypeCandidate, ScopeValueTypeRecruiter},
 		},
 	)
 

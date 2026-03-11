@@ -14,7 +14,7 @@ import (
 
 func main() {
 	if err := common.Loadenv(".env"); err != nil {
-		slog.Warn("could not load .env, using system environment")
+		slog.Warn("failed to load .env, using system environment")
 	}
 
 	if err := hirevec.RunApp(

@@ -35,9 +35,9 @@ type (
 	}
 
 	Pagination struct {
-		Limit  uint64 `json:"limit"`
-		After  string `json:"after,omitempty"`
-		Before string `json:"before,omitempty"`
+		Limit  uint64  `json:"limit"`
+		After  *string `json:"after,omitempty"`
+		Before *string `json:"before,omitempty"`
 	}
 
 	Middleware func(http.HandlerFunc) http.HandlerFunc
@@ -138,12 +138,23 @@ func NewPaginatorConfig(defaultLimit uint64, maxLimit uint64) PaginatorConfig {
 func GetPagination(r *http.Request) Pagination {
 	p, ok := r.Context().Value(ContextKeyPagination).(Pagination)
 	if !ok {
-		return Pagination{
-			Limit:  DefaultPageSizeLimit,
-			After:  "",
-			Before: "",
+		p = Pagination{
+			Limit: DefaultPageSizeLimit,
 		}
 	}
+
+	q := r.URL.Query()
+
+	p.Before = nil
+	p.After = nil
+
+	if before := q.Get("before"); before != "" {
+		p.Before = &before
+	}
+	if after := q.Get("after"); after != "" {
+		p.After = &after
+	}
+
 	return p
 }
 
@@ -161,11 +172,15 @@ func Paginator(pc PaginatorConfig) Middleware {
 
 			after := r.URL.Query().Get("after")
 			before := r.URL.Query().Get("before")
+			if after != "" && before != "" {
+				Fail(w, http.StatusBadRequest, FailData{"pagination": "cannot use both before and after"}, nil)
+				return
+			}
 
 			p := Pagination{
 				Limit:  limit,
-				After:  after,
-				Before: before,
+				After:  &after,
+				Before: &before,
 			}
 			ctx := context.WithValue(r.Context(), ContextKeyPagination, p)
 
@@ -203,17 +218,17 @@ func ErrorHandler(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func GetUserID(ctx context.Context) (string, bool) {
-	userID, ok := ctx.Value(ContextKeyUserID).(string)
+func GetUserID(r *http.Request) (string, bool) {
+	userID, ok := r.Context().Value(ContextKeyUserID).(string)
 	return userID, ok
 }
 
-func GetClaims(ctx context.Context) (*AccessTokenClaims, bool) {
-	claims, ok := ctx.Value(ContextKeyClaims).(*AccessTokenClaims)
+func GetClaims(r *http.Request) (*AccessTokenClaims, bool) {
+	claims, ok := r.Context().Value(ContextKeyClaims).(*AccessTokenClaims)
 	return claims, ok
 }
 
-func Authentication(v Vault, allowedForScopes []ScopeType) Middleware {
+func Authentication(v Vault, allowedForScopeValues []ScopeValueType) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var bearer string
@@ -230,13 +245,15 @@ func Authentication(v Vault, allowedForScopes []ScopeType) Middleware {
 
 			claims, err := v.ParseAccessToken(bearer)
 			if err != nil || claims == nil {
-				AuthError(w, AuthInvalidRequest, "invalid access token")
+				AuthError(w, AuthInvalidGrant, "invalid access token")
 				return
 			}
 
-			if !slices.Contains(allowedForScopes, ScopeType(claims.Scope)) {
-				AuthError(w, AuthInvalidRequest, "permissions denied")
-				return
+			for _, scopeValue := range claims.Scope {
+				if !slices.Contains(allowedForScopeValues, scopeValue) {
+					AuthError(w, AuthInvalidGrant, "permission denied")
+					return
+				}
 			}
 
 			ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.UserID)

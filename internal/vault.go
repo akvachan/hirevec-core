@@ -20,15 +20,15 @@ import (
 
 type Vault interface {
 	CleanupExpiredStateTokens()
-	CreateAccessToken(userID string, provider string, scope string) (*AccessToken, error)
+	CreateAccessToken(userID string, provider string, scope ScopeType) (*AccessToken, error)
 	CreateAuthCodeURL(state string, verifier string, provider string) (string, error)
 	CreateRefreshToken(userID string, provider string, jti string) (*RefreshToken, error)
 	CreateStateToken() (string, error)
-	CreateTokenPair(userID string, provider string, jti string, scope string) (*TokenPair, error)
+	CreateTokenPair(userID string, provider string, jti string, scope ScopeType) (*TokenPair, error)
 	ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifier *http.Cookie) (string, error)
 	ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifier *http.Cookie) (string, error)
 	GetPublicKey() []byte
-	GetScopeForRoles(roles []string) (string, error)
+	GetScopeForRoles(roles []string) (ScopeType, error)
 	ParseAccessToken(token string) (*AccessTokenClaims, error)
 	ParseRefreshToken(token string) (*RefreshTokenClaims, error)
 	ValidateAndDeleteStateToken(state string) bool
@@ -259,22 +259,10 @@ func (v PasetoVault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken
 		return nil, err
 	}
 
-	firstName, err := ValidateName(claims.GivenName)
-	if err != nil {
-		return nil, err
-	}
-
-	lastName, err := ValidateName(claims.FamilyName)
-	if err != nil {
-		return nil, err
-	}
-
 	return &User{
 		Provider:       ProviderGoogle,
 		ProviderUserID: claims.Sub,
 		Email:          claims.Email,
-		FirstName:      firstName,
-		LastName:       lastName,
 		FullName:       name,
 	}, nil
 }
@@ -314,8 +302,6 @@ func (v PasetoVault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken 
 		Provider:       ProviderApple,
 		ProviderUserID: claims.Sub,
 		Email:          claims.Email,
-		FirstName:      firstName,
-		LastName:       lastName,
 		FullName:       fullName,
 	}, nil
 }

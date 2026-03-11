@@ -5,12 +5,16 @@ package hirevec
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -71,6 +75,14 @@ type (
 		Links            Links         `json:"_links,omitempty"`
 	}
 )
+
+var adjectives = []string{
+	"fast", "lazy", "clever", "curious", "brave", "mighty", "silent", "noisy", "happy", "grumpy",
+}
+
+var nouns = []string{
+	"lion", "tiger", "panda", "fox", "eagle", "shark", "wolf", "dragon", "otter", "koala",
+}
 
 const (
 	// All went well, and (usually) some data was returned.
@@ -161,7 +173,7 @@ const (
 func WriteJSON(w http.ResponseWriter, status int, data any) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		slog.Error("could not encode response data", "err", err)
+		slog.Error("failed to encode response data", "err", err)
 	}
 }
 
@@ -256,10 +268,7 @@ func GetPosition(s Store) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error(
-				"query failed",
-				"err", err,
-			)
+			slog.Error("query failed", "err", err)
 			Error(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
@@ -273,46 +282,38 @@ func GetPosition(s Store) http.HandlerFunc {
 
 func GetPositions(s Store) http.HandlerFunc {
 	type ResponseBodyGetPositions struct {
-		Positions []Position `json:"positions"`
+		Positions []Position `json:"positions,omitempty"`
 		Limit     uint64     `json:"limit"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		links := Links{}
 
-		var beforePtr, afterPtr *string
 		p := GetPagination(r)
-		if p.Before != "" {
-			beforePtr = &p.Before
-		}
-		if p.After != "" {
-			afterPtr = &p.After
-		}
 
-		positions, hasPrev, hasNext, err := s.GetPositions(p.Limit, beforePtr, afterPtr)
+		page, err := s.GetPositions(p)
 		if err != nil {
-			slog.Error(
-				"query failed",
-				"err", err,
-			)
+			slog.Error("query failed", "err", err)
 			Error(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
-		links[RelTypeSelf] = Link{Href: r.URL.String()}
-		if len(positions) > 0 {
-			if hasPrev {
-				links[RelTypePrevious] = Link{Href: fmt.Sprintf("%s?limit=%d&before=%s", RoutePositions, p.Limit, positions[0].ID)}
+		if len(page.Items) > 0 {
+			if page.HasPrev {
+				links[RelTypePrevious] = Link{
+					Href: fmt.Sprintf("%s?limit=%d&before=%s", RoutePositions, p.Limit, page.Items[0].ID),
+				}
 			}
-			if hasNext {
-				links[RelTypeNext] = Link{Href: fmt.Sprintf("%s?limit=%d&after=%s", RoutePositions, p.Limit, positions[len(positions)-1].ID)}
+			if page.HasNext {
+				links[RelTypeNext] = Link{
+					Href: fmt.Sprintf("%s?limit=%d&after=%s", RoutePositions, p.Limit, page.Items[len(page.Items)-1].ID),
+				}
 			}
 		}
 
-		links[RelTypeSelf] = Link{Href: r.URL.Path}
-		response := ResponseBodyGetPositions{positions, p.Limit}
+		links[RelTypeSelf] = Link{Href: r.URL.String()}
 
-		Success(w, http.StatusOK, response, links)
+		Success(w, http.StatusOK, ResponseBodyGetPositions{page.Items, p.Limit}, links)
 	}
 }
 
@@ -328,10 +329,7 @@ func GetCandidate(s Store) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error(
-				"query failed",
-				"err", err,
-			)
+			slog.Error("query failed", "err", err)
 			Error(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
@@ -345,46 +343,97 @@ func GetCandidate(s Store) http.HandlerFunc {
 
 func GetCandidates(s Store) http.HandlerFunc {
 	type ResponseBodyGetCandidates struct {
-		Candidates []Candidate `json:"candidates"`
+		Candidates []Candidate `json:"candidates,omitempty"`
 		Limit      uint64      `json:"limit"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		links := Links{}
 
-		var beforePtr, afterPtr *string
 		p := GetPagination(r)
-		if p.Before != "" {
-			beforePtr = &p.Before
-		}
-		if p.After != "" {
-			afterPtr = &p.After
-		}
 
-		candidates, hasPrev, hasNext, err := s.GetCandidates(p.Limit, beforePtr, afterPtr)
+		page, err := s.GetCandidates(p)
 		if err != nil {
-			slog.Error(
-				"query failed",
-				"err", err,
-			)
+			slog.Error("query failed", "err", err)
 			Error(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
-		links[RelTypeSelf] = Link{Href: r.URL.String()}
-		if len(candidates) > 0 {
-			if hasPrev {
-				links[RelTypePrevious] = Link{Href: fmt.Sprintf("%s?limit=%d&before=%s", RouteCandidates, p.Limit, candidates[0].ID)}
+		if len(page.Items) > 0 {
+			if page.HasPrev {
+				links[RelTypePrevious] = Link{
+					Href: fmt.Sprintf("%s?limit=%d&before=%s", RouteCandidates, p.Limit, page.Items[0].ID),
+				}
 			}
-			if hasNext {
-				links[RelTypeNext] = Link{Href: fmt.Sprintf("%s?limit=%d&after=%s", RouteCandidates, p.Limit, candidates[len(candidates)-1].ID)}
+			if page.HasNext {
+				links[RelTypeNext] = Link{
+					Href: fmt.Sprintf("%s?limit=%d&after=%s", RouteCandidates, p.Limit, page.Items[len(page.Items)-1].ID),
+				}
 			}
 		}
 
-		links[RelTypeSelf] = Link{Href: r.URL.Path}
-		response := ResponseBodyGetCandidates{candidates, p.Limit}
+		links[RelTypeSelf] = Link{Href: r.URL.String()}
 
-		Success(w, http.StatusOK, response, links)
+		Success(w, http.StatusOK, ResponseBodyGetCandidates{page.Items, p.Limit}, links)
+	}
+}
+
+func GetRecommendations(s Store) http.HandlerFunc {
+	type ResponseBodyGetRecommendations struct {
+		Recommendations []Recommendation `json:"recommendations,omitempty"`
+		Limit           uint64           `json:"limit"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		links := Links{}
+
+		userID, ok := GetUserID(r)
+		if !ok || userID == "" {
+			Error(w, http.StatusUnauthorized, "user not authenticated")
+			return
+		}
+
+		p := GetPagination(r)
+		claims, ok := GetClaims(r)
+		if !ok || claims == nil {
+			Error(w, http.StatusUnauthorized, "user not authenticated")
+			return
+		}
+
+		var includePositions, includeCandidates bool
+
+		if slices.Contains(claims.Scope, ScopeValueTypeCandidate) {
+			includePositions = true
+		}
+		if slices.Contains(claims.Scope, ScopeValueTypeRecruiter) {
+			includeCandidates = true
+		}
+
+		page, err := s.GetRecommendations(userID, p, includePositions, includeCandidates)
+		if err != nil {
+			slog.Error("failed to fetch recommendations", "err", err)
+			Error(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		if len(page.Items) > 0 {
+			if page.HasPrev {
+				links[RelTypePrevious] = Link{
+					Href: fmt.Sprintf("%s?limit=%d&before=%s", RouteRecommendations, p.Limit, page.Items[0].ID),
+				}
+			}
+			if page.HasNext {
+				links[RelTypeNext] = Link{
+					Href: fmt.Sprintf("%s?limit=%d&after=%s", RouteRecommendations, p.Limit, page.Items[len(page.Items)-1].ID),
+				}
+			}
+		}
+		links[RelTypeSelf] = Link{Href: r.URL.String()}
+
+		Success(w, http.StatusOK, ResponseBodyGetRecommendations{
+			page.Items,
+			p.Limit,
+		}, links)
 	}
 }
 
@@ -426,10 +475,7 @@ func CreateAccessToken(s Store, v Vault) http.HandlerFunc {
 
 		claims, err := v.ParseRefreshToken(req.RefreshToken)
 		if err != nil {
-			slog.Error(
-				"refresh token parsing failed",
-				"err", err,
-			)
+			slog.Error("refresh token parsing failed", "err", err)
 			AuthError(w, AuthInvalidGrant, "invalid refresh token")
 			return
 		}
@@ -462,7 +508,7 @@ func CreateAccessToken(s Store, v Vault) http.HandlerFunc {
 		roles, err := s.GetUserRoles(claims.UserID, Provider(claims.Provider))
 		if err != nil {
 			slog.Error(
-				"could not get roles for the user",
+				"failed to get roles for the user",
 				"err", err,
 				"user_id", claims.UserID,
 			)
@@ -473,7 +519,7 @@ func CreateAccessToken(s Store, v Vault) http.HandlerFunc {
 		scope, err := v.GetScopeForRoles(roles)
 		if err != nil {
 			slog.Error(
-				"could not get scope for the user with the following roles",
+				"failed to get scope for the user with the following roles",
 				"err", err,
 				"user_id", claims.UserID,
 				"roles", roles,
@@ -502,10 +548,7 @@ func Login(v Vault) http.HandlerFunc {
 
 		state, err := v.CreateStateToken()
 		if err != nil {
-			slog.Error(
-				"generation of state token failed",
-				"err", err,
-			)
+			slog.Error("generation of state token failed", "err", err)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -541,10 +584,7 @@ func Login(v Vault) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error(
-				"generation of auth code url failed",
-				"err", err,
-			)
+			slog.Error("generation of auth code url failed", "err", err)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -611,10 +651,7 @@ func GoogleCallback(s Store, v Vault, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error(
-			"oauth token exchange failed",
-			"err", err,
-		)
+		slog.Error("oauth token exchange failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -633,10 +670,7 @@ func GoogleCallback(s Store, v Vault, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error(
-			"id_token verification failed",
-			"err", err,
-		)
+		slog.Error("id_token verification failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -682,10 +716,7 @@ func AppleCallback(s Store, v Vault, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error(
-			"oauth token exchange failed",
-			"err", err,
-		)
+		slog.Error("oauth token exchange failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -700,10 +731,7 @@ func AppleCallback(s Store, v Vault, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error(
-			"id_token verification failed",
-			"err", err,
-		)
+		slog.Error("id_token verification failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -715,12 +743,15 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	userID, roles, err := s.GetUserByProvider(user.Provider, user.ProviderUserID)
 
 	if errors.Is(err, ErrUserNotFound) {
+		user.UserName, err = GenerateUsername()
+		if err != nil {
+			slog.Error("username generation failed", "err", err)
+			AuthError(w, AuthInvalidRequest, "internal server error")
+			return
+		}
 		userID, err := s.CreateUser(user)
 		if err != nil {
-			slog.Error(
-				"query failed",
-				"err", err,
-			)
+			slog.Error("query failed", "err", err)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -732,10 +763,7 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 		return
 	}
 	if err != nil {
-		slog.Error(
-			"query failed",
-			"err", err,
-		)
+		slog.Error("query failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -744,12 +772,9 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 }
 
 func CreateOnboardingToken(v Vault, w http.ResponseWriter, userID string, provider string) {
-	accessToken, err := v.CreateAccessToken(userID, provider, ScopeTypeOnboarding)
+	accessToken, err := v.CreateAccessToken(userID, provider, ScopeType{ScopeValueTypeOnboarding})
 	if err != nil {
-		slog.Error(
-			"failed to create access token",
-			"err", err,
-		)
+		slog.Error("failed to create access token", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -762,30 +787,21 @@ func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID string, pro
 
 	scope, err := v.GetScopeForRoles(roles)
 	if err != nil {
-		slog.Error(
-			"failed to get scope for roles",
-			"err", err,
-		)
+		slog.Error("failed to get scope for roles", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
 
 	jti, err := s.CreateRefreshToken(userID, time.Now().UTC().Add(DefaultRefreshTokenExpiration.Abs()))
 	if err != nil {
-		slog.Error(
-			"query failed",
-			"err", err,
-		)
+		slog.Error("query failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
 
 	tokenPair, err := v.CreateTokenPair(userID, provider, jti, scope)
 	if err != nil {
-		slog.Error(
-			"failed to create token pair",
-			"err", err,
-		)
+		slog.Error("failed to create token pair", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -804,4 +820,32 @@ func DeleteCookies(w http.ResponseWriter, names []string) {
 			SameSite: http.SameSiteLaxMode,
 		})
 	}
+}
+
+// GenerateUsername creates username with a cryptographically random suffix
+func GenerateUsername() (string, error) {
+	randInt := func(n int) int {
+		if n <= 0 {
+			return 0
+		}
+		b := make([]byte, 1)
+		_, _ = rand.Read(b)
+		return int(b[0]) % n
+	}
+	adj := adjectives[randInt(len(adjectives))]
+	noun := nouns[randInt(len(nouns))]
+
+	suffix := make([]byte, 2)
+	_, err := rand.Read(suffix)
+	if err != nil {
+		return "", ErrFailedGenerateUsernameSuffix
+	}
+
+	username := fmt.Sprintf("%s_%s%s", adj, noun, hex.EncodeToString(suffix))
+	username = strings.ToLower(username)
+
+	return username, nil
+}
+
+func linksPages() {
 }
