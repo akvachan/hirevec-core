@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -182,9 +181,12 @@ func SetDefaultHeaders(w http.ResponseWriter) {
 }
 
 func SetAuthHeaders(w http.ResponseWriter) {
-	SetDefaultHeaders(w)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
+}
+
+func SetUnauthorizedHeaders(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
 }
 
 func Success(w http.ResponseWriter, status int, data any, links Links) {
@@ -197,46 +199,34 @@ func Error(w http.ResponseWriter, status int, message string) {
 	WriteJSON(w, status, ErrorResponse{Status: ResponseStatusError, Message: message})
 }
 
-func Fail(w http.ResponseWriter, status int, data any, links Links) {
+func Fail(w http.ResponseWriter, status int, data any) {
 	SetDefaultHeaders(w)
-	WriteJSON(w, status, FailResponse{ResponseStatusFail, data, links})
+	WriteJSON(w, status, FailResponse{Status: ResponseStatusFail, Data: data})
 }
 
 func AuthAccessToken(w http.ResponseWriter, accessToken AccessToken) {
+	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-
-	data := struct {
-		AccessToken
-		Links Links `json:"_links,omitempty"`
-	}{
-		accessToken,
-		nil,
-	}
-	WriteJSON(w, http.StatusOK, data)
+	WriteJSON(w, http.StatusOK, accessToken)
 }
 
-func AuthTokenPair(w http.ResponseWriter, tokenPair TokenPair, links Links) {
+func AuthTokenPair(w http.ResponseWriter, tokenPair TokenPair) {
+	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-
-	data := struct {
-		TokenPair
-		Links Links `json:"_links,omitempty"`
-	}{
-		tokenPair,
-		links,
-	}
-	WriteJSON(w, http.StatusOK, data)
+	WriteJSON(w, http.StatusOK, tokenPair)
 }
 
 func AuthError(w http.ResponseWriter, code AuthErrorCode, description string) {
+	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
 	WriteJSON(w, http.StatusBadRequest, AuthErrorResponse{Error: code, ErrorDescription: description})
 }
 
-func Unauthorized(w http.ResponseWriter, code AuthErrorCode, description string, links Links) {
+func Unauthorized(w http.ResponseWriter, code AuthErrorCode, description string) {
+	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-	w.Header().Set("WWW-Authenticate", "Bearer")
-	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{Error: code, ErrorDescription: description, Links: links})
+	SetUnauthorizedHeaders(w)
+	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{Error: code, ErrorDescription: description})
 }
 
 func DecodeRequestBody[T any](r *http.Request) (data *T, err error) {
@@ -264,7 +254,7 @@ func GetPosition(s Store) http.HandlerFunc {
 		if errors.Is(err, sql.ErrNoRows) {
 			links[RelTypeUp] = Link{Href: RoutePositions}
 
-			Fail(w, http.StatusNotFound, FailData{"id": "position not found"}, links)
+			Fail(w, http.StatusNotFound, FailData{"id": "position not found"})
 			return
 		}
 		if err != nil {
@@ -280,43 +270,6 @@ func GetPosition(s Store) http.HandlerFunc {
 	}
 }
 
-func GetPositions(s Store) http.HandlerFunc {
-	type ResponseBodyGetPositions struct {
-		Positions []Position `json:"positions,omitempty"`
-		Limit     uint64     `json:"limit"`
-	}
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		links := Links{}
-
-		p := GetPagination(r)
-
-		page, err := s.GetPositions(p)
-		if err != nil {
-			slog.Error("query failed", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-
-		if len(page.Items) > 0 {
-			if page.HasPrev {
-				links[RelTypePrevious] = Link{
-					Href: fmt.Sprintf("%s?limit=%d&before=%s", RoutePositions, p.Limit, page.Items[0].ID),
-				}
-			}
-			if page.HasNext {
-				links[RelTypeNext] = Link{
-					Href: fmt.Sprintf("%s?limit=%d&after=%s", RoutePositions, p.Limit, page.Items[len(page.Items)-1].ID),
-				}
-			}
-		}
-
-		links[RelTypeSelf] = Link{Href: r.URL.String()}
-
-		Success(w, http.StatusOK, ResponseBodyGetPositions{page.Items, p.Limit}, links)
-	}
-}
-
 func GetCandidate(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		links := Links{}
@@ -325,7 +278,7 @@ func GetCandidate(s Store) http.HandlerFunc {
 		if errors.Is(err, sql.ErrNoRows) {
 			links[RelTypeUp] = Link{Href: RoutePositions}
 
-			Fail(w, http.StatusNotFound, FailData{"id": "candidate not found"}, links)
+			Fail(w, http.StatusNotFound, FailData{"id": "candidate not found"})
 			return
 		}
 		if err != nil {
@@ -338,102 +291,6 @@ func GetCandidate(s Store) http.HandlerFunc {
 		links[RelTypeUp] = Link{Href: RouteCandidates}
 
 		Success(w, http.StatusOK, candidate, links)
-	}
-}
-
-func GetCandidates(s Store) http.HandlerFunc {
-	type ResponseBodyGetCandidates struct {
-		Candidates []Candidate `json:"candidates,omitempty"`
-		Limit      uint64      `json:"limit"`
-	}
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		links := Links{}
-
-		p := GetPagination(r)
-
-		page, err := s.GetCandidates(p)
-		if err != nil {
-			slog.Error("query failed", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-
-		if len(page.Items) > 0 {
-			if page.HasPrev {
-				links[RelTypePrevious] = Link{
-					Href: fmt.Sprintf("%s?limit=%d&before=%s", RouteCandidates, p.Limit, page.Items[0].ID),
-				}
-			}
-			if page.HasNext {
-				links[RelTypeNext] = Link{
-					Href: fmt.Sprintf("%s?limit=%d&after=%s", RouteCandidates, p.Limit, page.Items[len(page.Items)-1].ID),
-				}
-			}
-		}
-
-		links[RelTypeSelf] = Link{Href: r.URL.String()}
-
-		Success(w, http.StatusOK, ResponseBodyGetCandidates{page.Items, p.Limit}, links)
-	}
-}
-
-func GetRecommendations(s Store) http.HandlerFunc {
-	type ResponseBodyGetRecommendations struct {
-		Recommendations []Recommendation `json:"recommendations,omitempty"`
-		Limit           uint64           `json:"limit"`
-	}
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		links := Links{}
-
-		userID, ok := GetUserID(r)
-		if !ok || userID == "" {
-			Error(w, http.StatusUnauthorized, "user not authenticated")
-			return
-		}
-
-		p := GetPagination(r)
-		claims, ok := GetClaims(r)
-		if !ok || claims == nil {
-			Error(w, http.StatusUnauthorized, "user not authenticated")
-			return
-		}
-
-		var includePositions, includeCandidates bool
-
-		if slices.Contains(claims.Scope, ScopeValueTypeCandidate) {
-			includePositions = true
-		}
-		if slices.Contains(claims.Scope, ScopeValueTypeRecruiter) {
-			includeCandidates = true
-		}
-
-		page, err := s.GetRecommendations(userID, p, includePositions, includeCandidates)
-		if err != nil {
-			slog.Error("failed to fetch recommendations", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-
-		if len(page.Items) > 0 {
-			if page.HasPrev {
-				links[RelTypePrevious] = Link{
-					Href: fmt.Sprintf("%s?limit=%d&before=%s", RouteRecommendations, p.Limit, page.Items[0].ID),
-				}
-			}
-			if page.HasNext {
-				links[RelTypeNext] = Link{
-					Href: fmt.Sprintf("%s?limit=%d&after=%s", RouteRecommendations, p.Limit, page.Items[len(page.Items)-1].ID),
-				}
-			}
-		}
-		links[RelTypeSelf] = Link{Href: r.URL.String()}
-
-		Success(w, http.StatusOK, ResponseBodyGetRecommendations{
-			page.Items,
-			p.Limit,
-		}, links)
 	}
 }
 
@@ -783,8 +640,6 @@ func CreateOnboardingToken(v Vault, w http.ResponseWriter, userID string, provid
 }
 
 func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID string, provider string, roles []string) {
-	var links Links
-
 	scope, err := v.GetScopeForRoles(roles)
 	if err != nil {
 		slog.Error("failed to get scope for roles", "err", err)
@@ -806,7 +661,7 @@ func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID string, pro
 		return
 	}
 
-	AuthTokenPair(w, *tokenPair, links)
+	AuthTokenPair(w, *tokenPair)
 }
 
 func DeleteCookies(w http.ResponseWriter, names []string) {

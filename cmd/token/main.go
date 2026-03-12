@@ -110,30 +110,6 @@ func main() {
 
 	}
 
-	slog.Info("creating recommendations for admin user as candidate")
-
-	adminCandidate, err := store.GetCandidateByUserID(userID)
-	if err != nil {
-		die("failed to get admin candidate", "err", err)
-	}
-
-	positions, err := store.GetPositions(hirevec.Pagination{Limit: 100})
-	if err != nil {
-		die("failed to list positions for admin candidate", "err", err)
-	}
-
-	for _, pos := range positions.Items {
-		recID, err := store.CreateRecommendation(pos.ID, adminCandidate.ID)
-		if err != nil {
-			if errors.Is(err, hirevec.ErrRecommendationExists) {
-				slog.Info("recommendation already exists for admin candidate", "position_id", pos.ID)
-				continue
-			}
-			die("failed to create recommendation for admin candidate", "positionID", pos.ID, "err", err)
-		}
-		slog.Info("created recommendation for admin candidate", "position_id", pos.ID, "recommendation_id", recID)
-	}
-
 	vaultCfg := hirevec.VaultConfig{
 		SymmetricKeyHex:       os.Getenv("SYMMETRIC_KEY"),
 		AsymmetricKeyHex:      os.Getenv("ASYMMETRIC_KEY"),

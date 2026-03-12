@@ -46,26 +46,12 @@ type (
 		PositionID  string `json:"position_id"`
 	}
 
-	// Recommendation links a candidate to a position
-	Recommendation struct {
-		ID          string     `json:"recommendation_id"`
-		PositionID  string     `json:"position_id"`
-		CandidateID string     `json:"candidate_id"`
-		Position    *Position  `json:"position,omitempty"`
-		Candidate   *Candidate `json:"candidate,omitempty"`
-	}
-
 	// Reaction represents either a candidate or recruiter reaction to a recommendation
 	Reaction struct {
 		RecommendationID string       `json:"recommendation_id"`
 		ReactorType      ReactorType  `json:"reactor_type"`
 		ReactorID        string       `json:"reactor_id"`
 		ReactionType     ReactionType `json:"reaction_type"`
-	}
-
-	// Aggregated recommendations
-	Recommendations struct {
-		Items []Recommendation `json:"items,omitempty"`
 	}
 )
 

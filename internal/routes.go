@@ -6,26 +6,28 @@ package hirevec
 import (
 	"fmt"
 	"net/http"
-	"time"
 )
 
-type (
-	Method string
+type Method string
 
-	PublicRouteConfig struct {
-		Mux     *http.ServeMux
-		Method  Method
-		Route   string
-		Handler http.HandlerFunc
-	}
+type PublicRouteConfig struct {
+	Mux     *http.ServeMux
+	Method  Method
+	Route   string
+	Handler http.HandlerFunc
+}
 
-	ProtectedRouteConfig struct {
-		Mux            *http.ServeMux
-		Method         Method
-		Route          string
-		Handler        http.HandlerFunc
-		RequiredScopes []ScopeValueType
-	}
+type ProtectedRouteConfig struct {
+	Mux            *http.ServeMux
+	Method         Method
+	Route          string
+	Handler        http.HandlerFunc
+	RequiredScopes []ScopeValueType
+}
+
+const (
+	MethodGet  Method = http.MethodGet
+	MethodPost Method = http.MethodPost
 )
 
 const (
@@ -39,168 +41,118 @@ const (
 	RouteCandidates      = "/v1/candidates"
 	RouteCandidate       = "/v1/candidates/{id}"
 	RouteRecommendations = "/v1/me/recommendations"
-	// RouteMatches                = "/v1/me/matches"
-	// RouteReactions              = "/v1/me/reactions"
-	// RouteProfile                = "/v1/me/profile"
-	// RouteStats                  = "/v1/me/stats"
-	MethodGet  Method = http.MethodGet
-	MethodPost Method = http.MethodPost
 )
 
-func PublicRoute(s Store, v Vault, cfg PublicRouteConfig) {
-	routeWithMethod := fmt.Sprintf("%s %s", cfg.Method, cfg.Route)
-	rlcfg := NewRateLimiterConfig(60, time.Minute)
-	basic := Chain(
-		cfg.Handler,
+func routeKey(method Method, route string) string {
+	return fmt.Sprintf("%s %s", method, route)
+}
+
+func baseMiddleware(handler http.HandlerFunc) http.Handler {
+	return Chain(
+		handler,
 		Logger,
 		ErrorHandler,
-		RateLimiter(rlcfg),
 		MaxBytesLimiter,
 	)
+}
 
-	cfg.Mux.Handle(routeWithMethod, basic)
+func PublicRoute(s Store, v Vault, cfg PublicRouteConfig) {
+	handler := baseMiddleware(cfg.Handler)
+
+	cfg.Mux.Handle(
+		routeKey(cfg.Method, cfg.Route),
+		handler,
+	)
 }
 
 func ProtectedRoute(s Store, v Vault, cfg ProtectedRouteConfig) {
-	routeWithMethod := fmt.Sprintf("%s %s", cfg.Method, cfg.Route)
-	rlcfg := NewRateLimiterConfig(120, time.Minute)
-	basic := Chain(
+	handler := Chain(
 		cfg.Handler,
 		Logger,
 		ErrorHandler,
-		RateLimiter(rlcfg),
 		MaxBytesLimiter,
 		Authentication(v, cfg.RequiredScopes),
 	)
 
-	cfg.Mux.Handle(routeWithMethod, basic)
+	cfg.Mux.Handle(
+		routeKey(cfg.Method, cfg.Route),
+		handler,
+	)
 }
 
 func GetRootMux(s Store, v Vault) http.Handler {
 	mux := http.NewServeMux()
-	pcfg := NewPaginatorConfig(DefaultPageSizeLimit, PageSizeMaxLimit)
 
-	PublicRoute(
-		s, v,
-		PublicRouteConfig{
-			mux,
-			MethodGet,
-			RouteHealth,
-			Health,
-		},
-	)
-	PublicRoute(
-		s, v,
-		PublicRouteConfig{
-			mux,
-			MethodGet,
-			RoutePublicKeys,
-			PublicKeys(v),
-		},
-	)
-	PublicRoute(
-		s, v,
-		PublicRouteConfig{
-			mux,
-			MethodPost,
-			RouteToken,
-			CreateAccessToken(s, v),
-		},
-	)
-	PublicRoute(
-		s, v,
-		PublicRouteConfig{
-			mux,
-			MethodGet,
-			RouteLogin,
-			Login(v),
-		},
-	)
-	PublicRoute(
-		s, v,
-		PublicRouteConfig{
-			mux,
-			MethodPost,
-			RouteLogin,
-			Login(v),
-		})
-	PublicRoute(
-		s, v,
-		PublicRouteConfig{
-			mux,
-			MethodGet,
-			RouteCallback,
-			RedirectProvider(s, v),
-		})
-	PublicRoute(
-		s, v,
-		PublicRouteConfig{
-			mux,
-			MethodPost,
-			RouteCallback,
-			RedirectProvider(s, v),
-		},
-	)
+	// Public routes
+	PublicRoute(s, v, PublicRouteConfig{
+		Mux:     mux,
+		Method:  MethodGet,
+		Route:   RouteHealth,
+		Handler: Health,
+	})
 
-	ProtectedRoute(
-		s, v,
-		ProtectedRouteConfig{
-			mux,
-			MethodGet,
-			RoutePosition,
-			GetPosition(s),
-			[]ScopeValueType{ScopeValueTypeAdmin},
+	PublicRoute(s, v, PublicRouteConfig{
+		Mux:     mux,
+		Method:  MethodGet,
+		Route:   RoutePublicKeys,
+		Handler: PublicKeys(v),
+	})
+
+	PublicRoute(s, v, PublicRouteConfig{
+		Mux:     mux,
+		Method:  MethodPost,
+		Route:   RouteToken,
+		Handler: CreateAccessToken(s, v),
+	})
+
+	PublicRoute(s, v, PublicRouteConfig{
+		Mux:     mux,
+		Method:  MethodGet,
+		Route:   RouteLogin,
+		Handler: Login(v),
+	})
+
+	PublicRoute(s, v, PublicRouteConfig{
+		Mux:     mux,
+		Method:  MethodPost,
+		Route:   RouteLogin,
+		Handler: Login(v),
+	})
+
+	PublicRoute(s, v, PublicRouteConfig{
+		Mux:     mux,
+		Method:  MethodGet,
+		Route:   RouteCallback,
+		Handler: RedirectProvider(s, v),
+	})
+
+	PublicRoute(s, v, PublicRouteConfig{
+		Mux:     mux,
+		Method:  MethodPost,
+		Route:   RouteCallback,
+		Handler: RedirectProvider(s, v),
+	})
+
+	// Protected routes
+	ProtectedRoute(s, v, ProtectedRouteConfig{
+		Mux:     mux,
+		Method:  MethodGet,
+		Route:   RoutePosition,
+		Handler: GetPosition(s),
+		RequiredScopes: []ScopeValueType{
+			ScopeValueTypeAdmin,
 		},
-	)
-	ProtectedRoute(
-		s, v,
-		ProtectedRouteConfig{
-			mux,
-			MethodGet,
-			RoutePositions,
-			Chain(
-				GetPositions(s),
-				Paginator(pcfg),
-			),
-			[]ScopeValueType{ScopeValueTypeAdmin},
+	})
+
+	ProtectedRoute(s, v, ProtectedRouteConfig{
+		Mux:     mux,
+		Method:  MethodGet,
+		Route:   RouteCandidate,
+		Handler: GetCandidate(s),
+		RequiredScopes: []ScopeValueType{
+			ScopeValueTypeAdmin,
 		},
-	)
-	ProtectedRoute(
-		s, v,
-		ProtectedRouteConfig{
-			mux,
-			MethodGet,
-			RouteCandidate,
-			GetCandidate(s),
-			[]ScopeValueType{ScopeValueTypeAdmin},
-		},
-	)
-	ProtectedRoute(
-		s, v,
-		ProtectedRouteConfig{
-			mux,
-			MethodGet,
-			RouteCandidates,
-			Chain(
-				GetCandidates(s),
-				Paginator(pcfg),
-			),
-			[]ScopeValueType{ScopeValueTypeAdmin},
-		},
-	)
-	ProtectedRoute(
-		s, v,
-		ProtectedRouteConfig{
-			mux,
-			MethodGet,
-			RouteRecommendations,
-			Chain(
-				GetRecommendations(s),
-				Paginator(pcfg),
-			),
-			[]ScopeValueType{ScopeValueTypeAdmin, ScopeValueTypeCandidate, ScopeValueTypeRecruiter},
-		},
-	)
+	})
 
 	return mux
 }
