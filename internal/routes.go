@@ -133,26 +133,5 @@ func GetRootMux(s Store, v Vault) http.Handler {
 		Handler: RedirectProvider(s, v),
 	})
 
-	// Protected routes
-	ProtectedRoute(s, v, ProtectedRouteConfig{
-		Mux:     mux,
-		Method:  MethodGet,
-		Route:   RoutePosition,
-		Handler: GetPosition(s),
-		RequiredScopes: []ScopeValueType{
-			ScopeValueTypeAdmin,
-		},
-	})
-
-	ProtectedRoute(s, v, ProtectedRouteConfig{
-		Mux:     mux,
-		Method:  MethodGet,
-		Route:   RouteCandidate,
-		Handler: GetCandidate(s),
-		RequiredScopes: []ScopeValueType{
-			ScopeValueTypeAdmin,
-		},
-	})
-
 	return mux
 }

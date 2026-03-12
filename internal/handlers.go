@@ -5,10 +5,8 @@ package hirevec
 
 import (
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -178,52 +176,4 @@ func GenerateUsername() (string, error) {
 
 func Health(w http.ResponseWriter, r *http.Request) {
 	Success(w, http.StatusOK, nil, nil)
-}
-
-func GetPosition(s Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		links := Links{}
-
-		position, err := s.GetPosition(r.PathValue("id"))
-		if errors.Is(err, sql.ErrNoRows) {
-			links[RelTypeUp] = Link{Href: RoutePositions}
-
-			Fail(w, http.StatusNotFound, FailData{"id": "position not found"})
-			return
-		}
-		if err != nil {
-			slog.Error("query failed", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-
-		links[RelTypeSelf] = Link{Href: r.URL.Path}
-		links[RelTypeUp] = Link{Href: RoutePositions}
-
-		Success(w, http.StatusOK, position, links)
-	}
-}
-
-func GetCandidate(s Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		links := Links{}
-
-		candidate, err := s.GetCandidate(r.PathValue("id"))
-		if errors.Is(err, sql.ErrNoRows) {
-			links[RelTypeUp] = Link{Href: RoutePositions}
-
-			Fail(w, http.StatusNotFound, FailData{"id": "candidate not found"})
-			return
-		}
-		if err != nil {
-			slog.Error("query failed", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
-			return
-		}
-
-		links[RelTypeSelf] = Link{Href: r.URL.Path}
-		links[RelTypeUp] = Link{Href: RouteCandidates}
-
-		Success(w, http.StatusOK, candidate, links)
-	}
 }
