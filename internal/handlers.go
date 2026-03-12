@@ -75,13 +75,15 @@ type (
 	}
 )
 
-var adjectives = []string{
-	"fast", "lazy", "clever", "curious", "brave", "mighty", "silent", "noisy", "happy", "grumpy",
-}
+var (
+	adjectives = []string{
+		"fast", "lazy", "clever", "curious", "brave", "mighty", "silent", "noisy", "happy", "grumpy",
+	}
 
-var nouns = []string{
-	"lion", "tiger", "panda", "fox", "eagle", "shark", "wolf", "dragon", "otter", "koala",
-}
+	nouns = []string{
+		"lion", "tiger", "panda", "fox", "eagle", "shark", "wolf", "dragon", "otter", "koala",
+	}
+)
 
 const (
 	// All went well, and (usually) some data was returned.

@@ -8,29 +8,29 @@ import (
 	"net/http"
 )
 
-type Method string
+type (
+	Method string
 
-type PublicRouteConfig struct {
-	Mux     *http.ServeMux
-	Method  Method
-	Route   string
-	Handler http.HandlerFunc
-}
+	PublicRouteConfig struct {
+		Mux     *http.ServeMux
+		Method  Method
+		Route   string
+		Handler http.HandlerFunc
+	}
 
-type ProtectedRouteConfig struct {
-	Mux            *http.ServeMux
-	Method         Method
-	Route          string
-	Handler        http.HandlerFunc
-	RequiredScopes []ScopeValueType
-}
+	ProtectedRouteConfig struct {
+		Mux            *http.ServeMux
+		Method         Method
+		Route          string
+		Handler        http.HandlerFunc
+		RequiredScopes []ScopeValueType
+	}
+)
 
 const (
 	MethodGet  Method = http.MethodGet
 	MethodPost Method = http.MethodPost
-)
 
-const (
 	RouteHealth          = "/v1/health"
 	RoutePublicKeys      = "/v1/auth/keys"
 	RouteToken           = "/v1/auth/token"
