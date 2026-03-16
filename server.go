@@ -205,7 +205,7 @@ func GetRecommendationsQueryParams(r *http.Request) (RecommendationsQueryParams,
 	return params, nil
 }
 
-func Authentication(v VaultInterface, allowedScopes []ScopeValueType) Middleware {
+func Authentication(v VaultInterface, allowedScopes []ScopeValue) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var bearer string
@@ -226,7 +226,7 @@ func Authentication(v VaultInterface, allowedScopes []ScopeValueType) Middleware
 				return
 			}
 
-			allowed := make(map[ScopeValueType]bool, len(allowedScopes))
+			allowed := make(map[ScopeValue]bool, len(allowedScopes))
 			for _, s := range allowedScopes {
 				allowed[s] = true
 			}
@@ -280,7 +280,7 @@ type RouteConfig struct {
 	Method         Method
 	Route          string
 	Handler        http.HandlerFunc
-	RequiredScopes []ScopeValueType // required for protected routes
+	RequiredScopes []ScopeValue // required for protected routes
 }
 
 const (
@@ -397,8 +397,8 @@ func RootMux(s StoreInterface, v VaultInterface) http.Handler {
 		Method:  MethodGet,
 		Route:   RouteMeRecommendations,
 		Handler: GetMeRecommendations(s),
-		RequiredScopes: []ScopeValueType{
-			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
+		RequiredScopes: []ScopeValue{
+			ScopeValueCandidate, ScopeValueRecruiter,
 		},
 	}, v)
 
@@ -407,8 +407,8 @@ func RootMux(s StoreInterface, v VaultInterface) http.Handler {
 		Method:  MethodGet,
 		Route:   RouteMeReactions,
 		Handler: GetMeReactions(s),
-		RequiredScopes: []ScopeValueType{
-			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
+		RequiredScopes: []ScopeValue{
+			ScopeValueCandidate, ScopeValueRecruiter,
 		},
 	}, v)
 
@@ -417,8 +417,8 @@ func RootMux(s StoreInterface, v VaultInterface) http.Handler {
 		Method:  MethodGet,
 		Route:   RouteMeMatches,
 		Handler: GetMeMatches(s),
-		RequiredScopes: []ScopeValueType{
-			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
+		RequiredScopes: []ScopeValue{
+			ScopeValueCandidate, ScopeValueRecruiter,
 		},
 	}, v)
 
@@ -427,8 +427,8 @@ func RootMux(s StoreInterface, v VaultInterface) http.Handler {
 		Method:  MethodPost,
 		Route:   RouteMyReaction,
 		Handler: CreateMyReaction(s),
-		RequiredScopes: []ScopeValueType{
-			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
+		RequiredScopes: []ScopeValue{
+			ScopeValueCandidate, ScopeValueRecruiter,
 		},
 	}, v)
 
@@ -633,7 +633,10 @@ func CreateAccessToken(s StoreInterface, v VaultInterface) http.HandlerFunc {
 
 func Login(v VaultInterface) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		provider := r.PathValue("provider")
+		provider, err := ToProvider(r.PathValue("provider"))
+		if err != nil {
+			AuthError(w, AuthInvalidRequest, "invalid provider")
+		}
 
 		state, err := v.CreateStateToken()
 		if err != nil {
@@ -844,11 +847,11 @@ func FinishAuthFlow(s StoreInterface, v VaultInterface, w http.ResponseWriter, u
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
-		CreateOnboardingToken(v, w, userID, user.Provider.Raw())
+		CreateOnboardingToken(v, w, userID, user.Provider)
 		return
 	}
 	if errors.Is(err, ErrUserNoRole) {
-		CreateOnboardingToken(v, w, userID, user.Provider.Raw())
+		CreateOnboardingToken(v, w, userID, user.Provider)
 		return
 	}
 	if err != nil {
@@ -857,11 +860,11 @@ func FinishAuthFlow(s StoreInterface, v VaultInterface, w http.ResponseWriter, u
 		return
 	}
 
-	CreateTokenPair(s, v, w, userID, user.Provider.Raw(), roles)
+	CreateTokenPair(s, v, w, userID, user.Provider, roles)
 }
 
-func CreateOnboardingToken(v VaultInterface, w http.ResponseWriter, userID string, provider string) {
-	accessToken, err := v.CreateAccessToken(userID, provider, ScopeType{ScopeValueTypeOnboarding})
+func CreateOnboardingToken(v VaultInterface, w http.ResponseWriter, userID string, provider Provider) {
+	accessToken, err := v.CreateAccessToken(userID, provider, Scope{ScopeValueOnboarding})
 	if err != nil {
 		slog.Error("failed to create access token", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
@@ -871,7 +874,7 @@ func CreateOnboardingToken(v VaultInterface, w http.ResponseWriter, userID strin
 	AuthAccessToken(w, *accessToken)
 }
 
-func CreateTokenPair(s StoreInterface, v VaultInterface, w http.ResponseWriter, userID string, provider string, roles []string) {
+func CreateTokenPair(s StoreInterface, v VaultInterface, w http.ResponseWriter, userID string, provider Provider, roles []Role) {
 	scope, err := v.GetScopeForRoles(roles)
 	if err != nil {
 		slog.Error("failed to get scope for roles", "err", err)

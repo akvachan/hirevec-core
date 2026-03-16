@@ -136,9 +136,9 @@ type StoreInterface interface {
 	GetMatchesByCandidateID(candidateID string, page Page) ([]Match, string, error)
 	GetRecruiterByUserID(id string) (*Recruiter, error)
 	GetPosition(id string) (*Position, error)
-	GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error)
+	GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []Role, err error)
 	GetRecommendation(id string) (*Recommendation, error)
-	GetUserRoles(userID string, provider Provider) (roles []string, err error)
+	GetUserRoles(userID string, provider Provider) (roles []Role, err error)
 	GetPositionRecommendations(candidateID string, page Page, params RecommendationsQueryParams) ([]PositionRecommendation, string, error)
 	ValidateActiveSession(jti string) (isSessionRevoked bool, err error)
 }
@@ -260,7 +260,7 @@ func (s StoreImpl) GetCandidateByUserID(userID string) (*Candidate, error) {
 }
 
 // GetUserByProvider retrieves an existing user and his role based on their provider details.
-func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error) {
+func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []Role, err error) {
 	var isCandidate, isRecruiter bool
 
 	err = s.Postgres.QueryRow(
@@ -289,10 +289,10 @@ func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (
 	}
 
 	if isCandidate {
-		roles = append(roles, "candidate")
+		roles = append(roles, RoleCandidate)
 	}
 	if isRecruiter {
-		roles = append(roles, "recruiter")
+		roles = append(roles, RoleRecruiter)
 	}
 
 	if len(roles) == 0 {
@@ -303,7 +303,7 @@ func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (
 }
 
 // GetUserRoles fetches user roles by user's ID and provider.
-func (s StoreImpl) GetUserRoles(userID string, provider Provider) (roles []string, err error) {
+func (s StoreImpl) GetUserRoles(userID string, provider Provider) (roles []Role, err error) {
 	var isCandidate, isRecruiter bool
 
 	err = s.Postgres.QueryRow(
@@ -332,10 +332,10 @@ func (s StoreImpl) GetUserRoles(userID string, provider Provider) (roles []strin
 	}
 
 	if isCandidate {
-		roles = append(roles, "candidate")
+		roles = append(roles, RoleCandidate)
 	}
 	if isRecruiter {
-		roles = append(roles, "recruiter")
+		roles = append(roles, RoleRecruiter)
 	}
 
 	if len(roles) == 0 {

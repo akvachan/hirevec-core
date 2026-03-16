@@ -65,6 +65,17 @@ const (
 	ProviderGoogle Provider = "google"
 )
 
+func ToProvider(str string) (Provider, error) {
+	switch str {
+	case "apple":
+		return ProviderApple, nil
+	case "google":
+		return ProviderGoogle, nil
+	default:
+		return "", ErrInvalidProvider
+	}
+}
+
 func (p Provider) Raw() string {
 	switch p {
 	case ProviderApple:
@@ -76,9 +87,17 @@ func (p Provider) Raw() string {
 	}
 }
 
-type ScopeType []ScopeValueType
+type Role string
 
-func (s ScopeType) Raw() string {
+const (
+	RoleCandidate  Role = "candidate"
+	RoleRecruiter  Role = "recruiter"
+	RoleOnboarding Role = "onboarding"
+)
+
+type Scope []ScopeValue
+
+func (s Scope) Raw() string {
 	var result []string
 	for _, role := range s {
 		result = append(result, string(role))
@@ -86,8 +105,8 @@ func (s ScopeType) Raw() string {
 	return strings.Join(result, " ")
 }
 
-func NewScope(scope string) (ScopeType, error) {
-	var result ScopeType
+func NewScope(scope string) (Scope, error) {
+	var result Scope
 	for _, role := range strings.Fields(scope) {
 		scopeValue, err := ToScopeValue(role)
 		if err != nil {
@@ -98,22 +117,22 @@ func NewScope(scope string) (ScopeType, error) {
 	return result, nil
 }
 
-type ScopeValueType string
+type ScopeValue string
 
 const (
-	ScopeValueTypeCandidate  ScopeValueType = "role:candidate"
-	ScopeValueTypeRecruiter  ScopeValueType = "role:recruiter"
-	ScopeValueTypeOnboarding ScopeValueType = "role:onboarding"
+	ScopeValueCandidate  ScopeValue = "role:candidate"
+	ScopeValueRecruiter  ScopeValue = "role:recruiter"
+	ScopeValueOnboarding ScopeValue = "role:onboarding"
 )
 
-func ToScopeValue(str string) (ScopeValueType, error) {
+func ToScopeValue(str string) (ScopeValue, error) {
 	switch str {
 	case "role:candidate":
-		return ScopeValueTypeCandidate, nil
+		return ScopeValueCandidate, nil
 	case "role:recruiter":
-		return ScopeValueTypeRecruiter, nil
+		return ScopeValueRecruiter, nil
 	case "role:onboarding":
-		return ScopeValueTypeOnboarding, nil
+		return ScopeValueOnboarding, nil
 	default:
 		return "", ErrInvalidScopeValueType
 	}
@@ -128,15 +147,15 @@ const (
 
 type VaultInterface interface {
 	CleanupExpiredStateTokens()
-	CreateAccessToken(userID string, provider string, scope ScopeType) (*AccessToken, error)
-	CreateAuthCodeURL(state string, verifier string, provider string) (string, error)
-	CreateRefreshToken(userID string, provider string, jti string) (*RefreshToken, error)
+	CreateAccessToken(userID string, provider Provider, scope Scope) (*AccessToken, error)
+	CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error)
+	CreateRefreshToken(userID string, provider Provider, jti string) (*RefreshToken, error)
 	CreateStateToken() (string, error)
-	CreateTokenPair(userID string, provider string, jti string, scope ScopeType) (*TokenPair, error)
+	CreateTokenPair(userID string, provider Provider, jti string, scope Scope) (*TokenPair, error)
 	ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifier *http.Cookie) (string, error)
 	ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifier *http.Cookie) (string, error)
 	GetPublicKey() []byte
-	GetScopeForRoles(roles []string) (ScopeType, error)
+	GetScopeForRoles(roles []Role) (Scope, error)
 	ParseAccessToken(token string) (*AccessTokenClaims, error)
 	ParseRefreshToken(token string) (*RefreshTokenClaims, error)
 	ValidateAndDeleteStateToken(state string) bool
@@ -297,13 +316,13 @@ func (v VaultImpl) CleanupExpiredStateTokens() {
 	}
 }
 
-func (v VaultImpl) CreateAuthCodeURL(state string, verifier string, provider string) (string, error) {
+func (v VaultImpl) CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error) {
 	var config *oauth2.Config
 
 	switch provider {
-	case "google":
+	case ProviderGoogle:
 		config = v.GoogleOIDCConfig.OAuth2Config
-	case "apple":
+	case ProviderApple:
 		config = v.AppleOIDCConfig.OAuth2Config
 	default:
 		return "", ErrInvalidProvider
@@ -436,14 +455,14 @@ type (
 
 	RefreshTokenClaims struct {
 		UserID   string
-		Provider string
+		Provider Provider
 		JTI      string
 	}
 
 	AccessTokenClaims struct {
 		UserID   string
-		Provider string
-		Scope    ScopeType
+		Provider Provider
+		Scope    Scope
 	}
 
 	AccessToken struct {
@@ -485,7 +504,8 @@ func (v VaultImpl) ParseAccessToken(tokenString string) (*AccessTokenClaims, err
 	if err != nil {
 		return nil, ErrFailedParseProvider
 	}
-	if provider != "apple" && provider != "google" {
+	validProvider, err := ToProvider(provider)
+	if err != nil {
 		return nil, ErrInvalidProvider
 	}
 
@@ -501,7 +521,7 @@ func (v VaultImpl) ParseAccessToken(tokenString string) (*AccessTokenClaims, err
 
 	return &AccessTokenClaims{
 		UserID:   userID,
-		Provider: provider,
+		Provider: validProvider,
 		Scope:    validScope,
 	}, nil
 }
@@ -521,7 +541,8 @@ func (v VaultImpl) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, e
 	if err != nil {
 		return nil, ErrFailedParseProvider
 	}
-	if provider != "apple" && provider != "google" {
+	validProvider, err := ToProvider(provider)
+	if err != nil {
 		return nil, ErrInvalidProvider
 	}
 
@@ -540,7 +561,7 @@ func (v VaultImpl) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, e
 
 	return &RefreshTokenClaims{
 		UserID:   userID,
-		Provider: provider,
+		Provider: validProvider,
 		JTI:      jti,
 	}, nil
 }
@@ -549,12 +570,12 @@ func (v VaultImpl) GetPublicKey() []byte {
 	return v.V4AsymetricPublicKey.ExportBytes()
 }
 
-func (v VaultImpl) CreateAccessToken(userID string, provider string, scope ScopeType) (*AccessToken, error) {
+func (v VaultImpl) CreateAccessToken(userID string, provider Provider, scope Scope) (*AccessToken, error) {
 	now := time.Now().UTC()
 
 	var expiration time.Duration
 	switch {
-	case slices.Contains(scope, ScopeValueTypeOnboarding):
+	case slices.Contains(scope, ScopeValueOnboarding):
 		expiration = 24 * time.Hour
 	case v.AccessTokenExpiration != 0:
 		expiration = v.AccessTokenExpiration
@@ -590,7 +611,7 @@ func (v VaultImpl) CreateAccessToken(userID string, provider string, scope Scope
 	}, nil
 }
 
-func (v VaultImpl) CreateRefreshToken(userID string, provider string, jti string) (*RefreshToken, error) {
+func (v VaultImpl) CreateRefreshToken(userID string, provider Provider, jti string) (*RefreshToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
@@ -624,7 +645,7 @@ func (v VaultImpl) CreateRefreshToken(userID string, provider string, jti string
 	}, nil
 }
 
-func (v VaultImpl) CreateTokenPair(userID string, provider string, jti string, scope ScopeType) (*TokenPair, error) {
+func (v VaultImpl) CreateTokenPair(userID string, provider Provider, jti string, scope Scope) (*TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, scope)
 	if err != nil {
 		return nil, ErrFailedCreateAccessToken
@@ -645,15 +666,15 @@ func (v VaultImpl) CreateTokenPair(userID string, provider string, jti string, s
 	}, nil
 }
 
-func (v VaultImpl) GetScopeForRoles(roles []string) (ScopeType, error) {
-	scope := make([]ScopeValueType, 0, len(roles))
+func (v VaultImpl) GetScopeForRoles(roles []Role) (Scope, error) {
+	scope := make([]ScopeValue, 0, len(roles))
 
 	for _, r := range roles {
 		switch r {
-		case "candidate", "recruiter":
-			scopeValue, err := ToScopeValue("role:" + r)
+		case RoleCandidate, RoleOnboarding, RoleRecruiter:
+			scopeValue, err := ToScopeValue("role:" + string(r))
 			if err != nil {
-				return scope, ErrInvalidScopeValueType
+				return scope, err
 			}
 			scope = append(scope, scopeValue)
 		default:
