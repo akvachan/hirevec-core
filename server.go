@@ -301,11 +301,11 @@ const (
 	RouteCreateMyReaction     = "/v1/me/recommendations/{id}/reaction"
 )
 
-func routeKey(method Method, route string) string {
+func Route(method Method, route string) string {
 	return fmt.Sprintf("%s %s", method, route)
 }
 
-func baseMiddleware(handler http.HandlerFunc) http.Handler {
+func BaseMiddleware(handler http.HandlerFunc) http.Handler {
 	return Chain(
 		handler,
 		Logger,
@@ -315,10 +315,10 @@ func baseMiddleware(handler http.HandlerFunc) http.Handler {
 }
 
 func PublicRoute(s StoreInterface, v VaultInterface, cfg RouteConfig) {
-	handler := baseMiddleware(cfg.Handler)
+	handler := BaseMiddleware(cfg.Handler)
 
 	cfg.Mux.Handle(
-		routeKey(cfg.Method, cfg.Route),
+		Route(cfg.Method, cfg.Route),
 		handler,
 	)
 }
@@ -333,7 +333,7 @@ func ProtectedRoute(s StoreInterface, v VaultInterface, cfg RouteConfig) {
 	)
 
 	cfg.Mux.Handle(
-		routeKey(cfg.Method, cfg.Route),
+		Route(cfg.Method, cfg.Route),
 		handler,
 	)
 }
