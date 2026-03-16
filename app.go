@@ -7,9 +7,70 @@ package hirevec
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
+	"time"
 )
+
+const DefaultLogLevel = slog.LevelError
+
+type LoggerConfig struct {
+	Level slog.Level
+}
+
+func InitLogger(config LoggerConfig) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: config.Level}))
+	slog.SetDefault(logger)
+}
+
+func ParseTimeWithDefault(value string, defaultValue time.Duration) time.Duration {
+	parsedReadTimeout, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		slog.Warn(
+			"failed to parse time, using default",
+			"value", value,
+			"default", defaultValue,
+		)
+		return defaultValue
+	}
+	return time.Duration(parsedReadTimeout) * time.Millisecond
+}
+
+func ParseLogLevelWithDefault(value string, defaultValue slog.Level) slog.Level {
+	switch value {
+	case "INFO":
+		return slog.LevelInfo
+	case "ERROR":
+		return slog.LevelError
+	case "WARN":
+		return slog.LevelWarn
+	case "DEBUG":
+		return slog.LevelDebug
+	default:
+		slog.Warn(
+			"failed to parse log level, using default",
+			"value", value,
+			"default", defaultValue,
+		)
+		return defaultValue
+	}
+}
+
+func ParseUint16WithDefault(value string, defaultValue uint16) uint16 {
+	parsedValue, err := strconv.ParseUint(value, 10, 16)
+	if err != nil {
+		slog.Warn(
+			"failed to parse uint, using default",
+			"value", value,
+			"default", defaultValue,
+		)
+		return defaultValue
+	}
+	return uint16(parsedValue)
+}
 
 type AppConfig struct {
 	Protocol           string
@@ -42,7 +103,7 @@ func RunApp(c AppConfig) error {
 		},
 	)
 
-	vault, err := NewPasetoVault(
+	vault, err := NewVault(
 		ctx,
 		VaultConfig{
 			Host:               c.Host,
@@ -59,7 +120,7 @@ func RunApp(c AppConfig) error {
 		return fmt.Errorf("vault init failed: %w", err)
 	}
 
-	store, err := NewPostgresStore(
+	store, err := NewStore(
 		StoreConfig{
 			PostgresHost:     c.PostgresHost,
 			PostgresPort:     ParseUint16WithDefault(c.PostgresPort, 5432),

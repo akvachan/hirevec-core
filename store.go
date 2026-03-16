@@ -4,48 +4,158 @@
 package hirevec
 
 import (
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
 	"time"
 )
 
+var (
+	ErrFailedConnectDB       = errors.New("failed to connect to database")
+	ErrUserNoRole            = errors.New("user has no role")
+	ErrUserNotFound          = errors.New("user not found")
+	ErrRecommendationExists  = errors.New("recommendation already exists")
+	ErrCandidateNotFound     = errors.New("candidate not found")
+	ErrRecruiterNotFound     = errors.New("recruiter not found")
+	ErrReactionAlreadyExists = errors.New("reaction already exists")
+)
+
+type ReactionType string
+
+const (
+	ReactionTypePositive ReactionType = "positive"
+	ReactionTypeNegative ReactionType = "negative"
+	ReactionTypeNeutral  ReactionType = "neutral"
+)
+
+func (r ReactionType) IsValid() bool {
+	return r == ReactionTypePositive || r == ReactionTypeNegative || r == ReactionTypeNeutral
+}
+
+func (r ReactorType) IsValid() bool {
+	return r == ReactorTypeCandidate || r == ReactorTypeRecruiter
+}
+
+type ReactorType string
+
+const (
+	ReactorTypeCandidate ReactorType = "candidate"
+	ReactorTypeRecruiter ReactorType = "recruiter"
+)
+
 type (
-	Store interface {
-		CreateCandidate(Candidate) error
-		CreateReaction(Reaction) error
-		CreateRecommendation(positionID, candidateID string) (recID string, err error)
-		CreateRecruiter(Recruiter) error
-		CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error)
-		CreateUser(User) (userID string, err error)
-		GetCandidate(id string) (*Candidate, error)
-		GetCandidateByUserID(id string) (*Candidate, error)
-		GetReactionsByCandidateID(candidateID string, page Page) ([]Reaction, string, error)
-		GetMatchesByCandidateID(candidateID string, page Page) ([]Match, string, error)
-		GetRecruiterByUserID(id string) (*Recruiter, error)
-		GetPosition(id string) (*Position, error)
-		GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error)
-		GetRecommendation(id string) (*Recommendation, error)
-		GetUserRoles(userID string, provider Provider) (roles []string, err error)
-		GetPositionRecommendations(candidateID string, page Page, params RecommendationsQueryParams) ([]PositionRecommendation, string, error)
-		ValidateActiveSession(jti string) (isSessionRevoked bool, err error)
+	// User represents a system user
+	User struct {
+		ID             string   `json:"id,omitempty"`
+		Provider       Provider `json:"provider,omitempty"`
+		ProviderUserID string   `json:"provider_user_id,omitempty"`
+		Email          string   `json:"email,omitempty"`
+		FullName       string   `json:"full_name,omitempty"`
+		UserName       string   `json:"user_name"`
 	}
 
-	PostgresStore struct {
-		Postgres *sql.DB
+	// Candidate represents a candidate profile
+	Candidate struct {
+		ID     string `json:"id"`
+		UserID string `json:"user_id,omitempty"`
+		About  string `json:"about"`
 	}
 
-	StoreConfig struct {
-		PostgresHost     string
-		PostgresPort     uint16
-		PostgresDB       string
-		PostgresUser     string
-		PostgresPassword string
+	// Recruiter represents a recruiter profile
+	Recruiter struct {
+		ID     string `json:"id"`
+		UserID string `json:"user_id"`
+	}
+
+	Recommendation struct {
+		ID          string `json:"id"`
+		PositionID  string `json:"position_id"`
+		CandidateID string `json:"candidate_id"`
+	}
+
+	// Position represents a job position
+	Position struct {
+		ID          string `json:"id"`
+		RecruiterID string `json:"recruiter_id"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Company     string `json:"company"`
+	}
+
+	Match struct {
+		PositionID  string    `json:"position_id"`
+		Title       string    `json:"title"`
+		Description string    `json:"description"`
+		Company     string    `json:"company"`
+		MatchedAt   time.Time `json:"matched_at"`
+	}
+
+	// Reaction represents either a candidate or recruiter reaction to a recommendation
+	Reaction struct {
+		RecommendationID string       `json:"recommendation_id"`
+		ReactorType      ReactorType  `json:"reactor_type"`
+		ReactorID        string       `json:"reactor_id"`
+		ReactionType     ReactionType `json:"reaction_type"`
+		ReactedAt        time.Time    `json:"reacted_at"`
+	}
+
+	Page struct {
+		Cursor  string `json:"cursor,omitempty"`
+		Limit   int    `json:"limit"`
+		Count   int    `json:"count"`
+		HasNext bool   `json:"has_next"`
+	}
+
+	PositionRecommendation struct {
+		RecommendationID string `json:"recommendation_id"`
+		PositionID       string `json:"position_id"`
+		Title            string `json:"title"`
+		Company          string `json:"company"`
+		Description      string `json:"description"`
+	}
+
+	CandidateRecommendation struct {
+		RecommendationID string `json:"recommendation_id"`
+		CandidateID      string `json:"candidate_id"`
+		UserName         string `json:"username"`
+		FullName         string `json:"full_name,omitempty"`
+		About            string `json:"about"`
 	}
 )
 
-func NewPostgresStore(c StoreConfig) (*PostgresStore, error) {
+type StoreInterface interface {
+	CreateCandidate(Candidate) error
+	CreateReaction(Reaction) error
+	CreateRecommendation(positionID, candidateID string) (recID string, err error)
+	CreateRecruiter(Recruiter) error
+	CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error)
+	CreateUser(User) (userID string, err error)
+	GetCandidate(id string) (*Candidate, error)
+	GetCandidateByUserID(id string) (*Candidate, error)
+	GetReactionsByCandidateID(candidateID string, page Page) ([]Reaction, string, error)
+	GetMatchesByCandidateID(candidateID string, page Page) ([]Match, string, error)
+	GetRecruiterByUserID(id string) (*Recruiter, error)
+	GetPosition(id string) (*Position, error)
+	GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error)
+	GetRecommendation(id string) (*Recommendation, error)
+	GetUserRoles(userID string, provider Provider) (roles []string, err error)
+	GetPositionRecommendations(candidateID string, page Page, params RecommendationsQueryParams) ([]PositionRecommendation, string, error)
+	ValidateActiveSession(jti string) (isSessionRevoked bool, err error)
+}
+
+type StoreConfig struct {
+	PostgresHost     string
+	PostgresPort     uint16
+	PostgresDB       string
+	PostgresUser     string
+	PostgresPassword string
+}
+
+type StoreImpl struct {
+	Postgres *sql.DB
+}
+
+func NewStore(c StoreConfig) (*StoreImpl, error) {
 	dbConnString := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s",
 		c.PostgresHost,
@@ -58,10 +168,10 @@ func NewPostgresStore(c StoreConfig) (*PostgresStore, error) {
 	if err != nil {
 		return nil, ErrFailedConnectDB
 	}
-	return &PostgresStore{Postgres: database}, nil
+	return &StoreImpl{Postgres: database}, nil
 }
 
-func (s PostgresStore) GetCandidate(id string) (*Candidate, error) {
+func (s StoreImpl) GetCandidate(id string) (*Candidate, error) {
 	var c Candidate
 
 	err := s.Postgres.QueryRow(
@@ -82,7 +192,7 @@ func (s PostgresStore) GetCandidate(id string) (*Candidate, error) {
 	return &c, nil
 }
 
-func (s PostgresStore) GetRecommendation(id string) (*Recommendation, error) {
+func (s StoreImpl) GetRecommendation(id string) (*Recommendation, error) {
 	var r Recommendation
 
 	err := s.Postgres.QueryRow(
@@ -104,7 +214,7 @@ func (s PostgresStore) GetRecommendation(id string) (*Recommendation, error) {
 	return &r, nil
 }
 
-func (s PostgresStore) GetPosition(id string) (*Position, error) {
+func (s StoreImpl) GetPosition(id string) (*Position, error) {
 	var p Position
 
 	err := s.Postgres.QueryRow(
@@ -129,7 +239,7 @@ func (s PostgresStore) GetPosition(id string) (*Position, error) {
 }
 
 // GetCandidateByUserID fetches a candidate by their associated user ID.
-func (s PostgresStore) GetCandidateByUserID(userID string) (*Candidate, error) {
+func (s StoreImpl) GetCandidateByUserID(userID string) (*Candidate, error) {
 	var c Candidate
 	query := `
         SELECT id, user_id, about
@@ -150,7 +260,7 @@ func (s PostgresStore) GetCandidateByUserID(userID string) (*Candidate, error) {
 }
 
 // GetUserByProvider retrieves an existing user and his role based on their provider details.
-func (s PostgresStore) GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error) {
+func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (userID string, roles []string, err error) {
 	var isCandidate, isRecruiter bool
 
 	err = s.Postgres.QueryRow(
@@ -193,7 +303,7 @@ func (s PostgresStore) GetUserByProvider(provider Provider, providerUserID strin
 }
 
 // GetUserRoles fetches user roles by user's ID and provider.
-func (s PostgresStore) GetUserRoles(userID string, provider Provider) (roles []string, err error) {
+func (s StoreImpl) GetUserRoles(userID string, provider Provider) (roles []string, err error) {
 	var isCandidate, isRecruiter bool
 
 	err = s.Postgres.QueryRow(
@@ -236,21 +346,7 @@ func (s PostgresStore) GetUserRoles(userID string, provider Provider) (roles []s
 }
 
 // CreateUser generates a unique username and inserts a new user record.
-func (s PostgresStore) CreateUser(u User) (userID string, err error) {
-	if u.FullName == "" {
-		return "", ErrFullNameRequired
-	}
-
-	if u.UserName == "" {
-		return "", ErrUserNameRequired
-	}
-
-	suffix := make([]byte, 2)
-	_, err = rand.Read(suffix)
-	if err != nil {
-		return "", ErrFailedGenerateUsernameSuffix
-	}
-
+func (s StoreImpl) CreateUser(u User) (userID string, err error) {
 	err = s.Postgres.QueryRow(
 		`
 		INSERT INTO v1.users (
@@ -273,7 +369,7 @@ func (s PostgresStore) CreateUser(u User) (userID string, err error) {
 }
 
 // CreateReaction records a reaction (from a candidate or recruiter) to a recommendation.
-func (s PostgresStore) CreateReaction(r Reaction) error {
+func (s StoreImpl) CreateReaction(r Reaction) error {
 	result, err := s.Postgres.Exec(
 		`
 		INSERT INTO v1.reactions (
@@ -304,7 +400,7 @@ func (s PostgresStore) CreateReaction(r Reaction) error {
 }
 
 // CreateCandidate creates a candidate
-func (s PostgresStore) CreateCandidate(c Candidate) error {
+func (s StoreImpl) CreateCandidate(c Candidate) error {
 	_, err := s.Postgres.Exec(
 		`
 		INSERT INTO v1.candidates (
@@ -320,7 +416,7 @@ func (s PostgresStore) CreateCandidate(c Candidate) error {
 }
 
 // CreateRecruiter creates a recruiter
-func (s PostgresStore) CreateRecruiter(r Recruiter) error {
+func (s StoreImpl) CreateRecruiter(r Recruiter) error {
 	_, err := s.Postgres.Exec(
 		`
 		INSERT INTO v1.recruiters (
@@ -334,7 +430,7 @@ func (s PostgresStore) CreateRecruiter(r Recruiter) error {
 }
 
 // ValidateActiveSession checks if the JTI exists and is not expired.
-func (s PostgresStore) ValidateActiveSession(jti string) (isSessionRevoked bool, err error) {
+func (s StoreImpl) ValidateActiveSession(jti string) (isSessionRevoked bool, err error) {
 	return isSessionRevoked, s.Postgres.QueryRow(
 		`
 		SELECT revoked 
@@ -347,7 +443,7 @@ func (s PostgresStore) ValidateActiveSession(jti string) (isSessionRevoked bool,
 }
 
 // CreateRefreshToken creates a new refresh token record.
-func (s PostgresStore) CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error) {
+func (s StoreImpl) CreateRefreshToken(userID string, expiresAt time.Time) (jti string, err error) {
 	err = s.Postgres.QueryRow(
 		`
 		INSERT INTO v1.refresh_tokens (
@@ -364,7 +460,7 @@ func (s PostgresStore) CreateRefreshToken(userID string, expiresAt time.Time) (j
 }
 
 // CreateRecommendation inserts a new recommendation for a candidate and a position.
-func (s PostgresStore) CreateRecommendation(positionID, candidateID string) (recID string, err error) {
+func (s StoreImpl) CreateRecommendation(positionID, candidateID string) (recID string, err error) {
 	query := `
 		INSERT INTO v1.recommendations (position_id, candidate_id)
 		VALUES ($1, $2)
@@ -387,7 +483,7 @@ func (s PostgresStore) CreateRecommendation(positionID, candidateID string) (rec
 }
 
 // GetPositionRecommendations returns paginated position recommendations for a candidate.
-func (s PostgresStore) GetPositionRecommendations(candidateID string, page Page, params RecommendationsQueryParams) ([]PositionRecommendation, string, error) {
+func (s StoreImpl) GetPositionRecommendations(candidateID string, page Page, params RecommendationsQueryParams) ([]PositionRecommendation, string, error) {
 	rows, err := s.Postgres.Query(`
 		SELECT r.id, p.id, p.title, p.company, p.description
 		FROM v1.recommendations r
@@ -430,8 +526,7 @@ func (s PostgresStore) GetPositionRecommendations(candidateID string, page Page,
 }
 
 // GetReactionsByCandidateID returns paginated reactions made by a candidate.
-// Cursor is the ID of the last seen recommendation; pass empty string for the first page.
-func (s PostgresStore) GetReactionsByCandidateID(candidateID string, page Page) ([]Reaction, string, error) {
+func (s StoreImpl) GetReactionsByCandidateID(candidateID string, page Page) ([]Reaction, string, error) {
 	rows, err := s.Postgres.Query(`
 		SELECT recommendation_id, reactor_type, reactor_id, reaction_type, created_at
 		FROM v1.reactions
@@ -468,8 +563,7 @@ func (s PostgresStore) GetReactionsByCandidateID(candidateID string, page Page) 
 }
 
 // GetMatchesByCandidateID returns paginated matches for a candidate.
-// Cursor is the ID of the last seen position; pass empty string for the first page.
-func (s PostgresStore) GetMatchesByCandidateID(candidateID string, page Page) ([]Match, string, error) {
+func (s StoreImpl) GetMatchesByCandidateID(candidateID string, page Page) ([]Match, string, error) {
 	rows, err := s.Postgres.Query(`
 		SELECT m.position_id, p.title, p.description, COALESCE(p.company, ''), m.created_at
 		FROM v1.matches m
@@ -506,7 +600,7 @@ func (s PostgresStore) GetMatchesByCandidateID(candidateID string, page Page) ([
 }
 
 // GetRecruiterByUserID fetches a recruiter by their associated user ID.
-func (s PostgresStore) GetRecruiterByUserID(userID string) (*Recruiter, error) {
+func (s StoreImpl) GetRecruiterByUserID(userID string) (*Recruiter, error) {
 	var rec Recruiter
 	err := s.Postgres.QueryRow(
 		`SELECT id, user_id FROM v1.recruiters WHERE user_id = $1 LIMIT 1`,

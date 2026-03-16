@@ -201,7 +201,7 @@ components:
             message: failed to fetch recommendations
 
 paths:
-  /v1/health:
+  /health:
     get:
       operationId: health
       summary: Health check

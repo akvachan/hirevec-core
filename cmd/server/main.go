@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/akvachan/hirevec-backend"
 	"github.com/akvachan/hirevec-backend/cmd/common"
-	"github.com/akvachan/hirevec-backend/internal"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
