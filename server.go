@@ -77,7 +77,7 @@ func NewServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInt
 		Addr:         fmt.Sprintf("%s:%v", c.Host, c.Port),
 		ReadTimeout:  c.ReadTimeout,
 		WriteTimeout: c.WriteTimeout,
-		Handler:      GetRootMux(s, v),
+		Handler:      RootMux(s, v),
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
 	}, nil
@@ -287,16 +287,16 @@ type RouteConfig struct {
 }
 
 const (
-	RouteOpenAPI              = "/openapi.yaml"
-	RouteHealth               = "/health"
-	RoutePublicKeys           = "/v1/auth/keys"
-	RouteToken                = "/v1/auth/token"
-	RouteLogin                = "/v1/auth/login/{provider}"
-	RouteCallback             = "/v1/auth/callback/{provider}"
-	RouteGetMyRecommendations = "/v1/me/recommendations"
-	RouteGetMyReactions       = "/v1/me/reactions"
-	RouteGetMyMatches         = "/v1/me/matches"
-	RouteCreateMyReaction     = "/v1/me/recommendations/{id}/reaction"
+	RouteOpenAPI           = "/openapi.yaml"
+	RouteHealth            = "/health"
+	RoutePublicKeys        = "/v1/auth/keys"
+	RouteToken             = "/v1/auth/token"
+	RouteLogin             = "/v1/auth/login/{provider}"
+	RouteCallback          = "/v1/auth/callback/{provider}"
+	RouteMeRecommendations = "/v1/me/recommendations"
+	RouteMeReactions       = "/v1/me/reactions"
+	RouteMeMatches         = "/v1/me/matches"
+	RouteMyReaction        = "/v1/me/recommendations/{id}/reaction"
 )
 
 func Route(method Method, route string) string {
@@ -312,7 +312,7 @@ func BaseMiddleware(handler http.HandlerFunc) http.Handler {
 	)
 }
 
-func PublicRoute(s StoreInterface, v VaultInterface, cfg RouteConfig) {
+func PublicRoute(cfg RouteConfig) {
 	handler := BaseMiddleware(cfg.Handler)
 
 	cfg.Mux.Handle(
@@ -321,7 +321,7 @@ func PublicRoute(s StoreInterface, v VaultInterface, cfg RouteConfig) {
 	)
 }
 
-func ProtectedRoute(s StoreInterface, v VaultInterface, cfg RouteConfig) {
+func ProtectedRoute(cfg RouteConfig, v VaultInterface) {
 	handler := Chain(
 		cfg.Handler,
 		Logger,
@@ -336,104 +336,104 @@ func ProtectedRoute(s StoreInterface, v VaultInterface, cfg RouteConfig) {
 	)
 }
 
-func GetRootMux(s StoreInterface, v VaultInterface) http.Handler {
+func RootMux(s StoreInterface, v VaultInterface) http.Handler {
 	mux := http.NewServeMux()
 
 	// Public routes
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteOpenAPI,
 		Handler: OpenAPI,
 	})
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteHealth,
 		Handler: Health,
 	})
 
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RoutePublicKeys,
 		Handler: PublicKeys(v),
 	})
 
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodPost,
 		Route:   RouteToken,
 		Handler: CreateAccessToken(s, v),
 	})
 
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteLogin,
 		Handler: Login(v),
 	})
 
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodPost,
 		Route:   RouteLogin,
 		Handler: Login(v),
 	})
 
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteCallback,
 		Handler: RedirectProvider(s, v),
 	})
 
-	PublicRoute(s, v, RouteConfig{
+	PublicRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodPost,
 		Route:   RouteCallback,
 		Handler: RedirectProvider(s, v),
 	})
 
-	ProtectedRoute(s, v, RouteConfig{
+	ProtectedRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
-		Route:   RouteGetMyRecommendations,
-		Handler: GetMyRecommendations(s),
+		Route:   RouteMeRecommendations,
+		Handler: GetMeRecommendations(s),
 		RequiredScopes: []ScopeValueType{
 			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
 		},
-	})
+	}, v)
 
-	ProtectedRoute(s, v, RouteConfig{
+	ProtectedRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
-		Route:   RouteGetMyReactions,
-		Handler: GetMyReactions(s),
+		Route:   RouteMeReactions,
+		Handler: GetMeReactions(s),
 		RequiredScopes: []ScopeValueType{
 			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
 		},
-	})
+	}, v)
 
-	ProtectedRoute(s, v, RouteConfig{
+	ProtectedRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodGet,
-		Route:   RouteGetMyMatches,
-		Handler: GetMyMatches(s),
+		Route:   RouteMeMatches,
+		Handler: GetMeMatches(s),
 		RequiredScopes: []ScopeValueType{
 			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
 		},
-	})
+	}, v)
 
-	ProtectedRoute(s, v, RouteConfig{
+	ProtectedRoute(RouteConfig{
 		Mux:     mux,
 		Method:  MethodPost,
-		Route:   RouteCreateMyReaction,
+		Route:   RouteMyReaction,
 		Handler: CreateMyReaction(s),
 		RequiredScopes: []ScopeValueType{
 			ScopeValueTypeCandidate, ScopeValueTypeRecruiter,
 		},
-	})
+	}, v)
 
 	return mux
 }
@@ -1160,7 +1160,7 @@ func Health(w http.ResponseWriter, r *http.Request) {
 }
 
 // Returns position recommendations for the authenticated candidate.
-func GetMyRecommendations(s StoreInterface) http.HandlerFunc {
+func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := GetUserID(r)
 		if !ok {
@@ -1319,7 +1319,7 @@ func CreateMyReaction(s StoreInterface) http.HandlerFunc {
 }
 
 // Returns all reactions made by the authenticated candidate.
-func GetMyReactions(s StoreInterface) http.HandlerFunc {
+func GetMeReactions(s StoreInterface) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := GetUserID(r)
 		if !ok {
@@ -1383,7 +1383,7 @@ func GetMyReactions(s StoreInterface) http.HandlerFunc {
 }
 
 // Returns all mutual matches for the authenticated candidate.
-func GetMyMatches(s StoreInterface) http.HandlerFunc {
+func GetMeMatches(s StoreInterface) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := GetUserID(r)
 		if !ok {
