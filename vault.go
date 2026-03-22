@@ -25,6 +25,7 @@ const (
 	DefaultAccessTokenExpiration  = 30 * time.Minute
 	DefaultStateTokenExpiration   = 10 * time.Minute
 	DefaultVerifierExpiration     = 10 * time.Minute
+	DefaultProvider               = ProviderGoogle
 )
 
 const (
@@ -305,7 +306,7 @@ func (v VaultImpl) ParseStateToken(raw string) (*StateTokenClaims, error) {
 	if err != nil {
 		return nil, ErrFailedParseProvider
 	}
-	validProvider, err := ToProvider(provider)
+	validProvider, err := ToProvider(provider, DefaultProvider)
 	if err != nil {
 		return nil, ErrInvalidProvider
 	}
@@ -501,7 +502,7 @@ func (v VaultImpl) ParseAccessToken(tokenString string) (*AccessTokenClaims, err
 	if err != nil {
 		return nil, ErrFailedParseProvider
 	}
-	validProvider, err := ToProvider(provider)
+	validProvider, err := ToProvider(provider, DefaultProvider)
 	if err != nil {
 		return nil, ErrInvalidProvider
 	}
@@ -538,7 +539,7 @@ func (v VaultImpl) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, e
 	if err != nil {
 		return nil, ErrFailedParseProvider
 	}
-	validProvider, err := ToProvider(provider)
+	validProvider, err := ToProvider(provider, DefaultProvider)
 	if err != nil {
 		return nil, ErrInvalidProvider
 	}

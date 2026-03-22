@@ -30,7 +30,7 @@ Server uses role-based authorization:
 
 - `role:recruiter`: Recruiter role
 - `role:candidate`: Candidate role
-- `role:onboarding`: Can write to the candidates table once and can write to the recruiters table once
+- `role:onboarding`: Special onboarding role; can send `POST` to `/v1/me/profile` once.
 
 Basic claims extraction and scope checking is handled by middleware.
 Handlers **still** need to make decisions whether to authorize user actions or not.

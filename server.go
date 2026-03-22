@@ -573,7 +573,7 @@ func OAuthToken(s StoreInterface, v VaultInterface) http.HandlerFunc {
 
 func OAuthAuthorize(v VaultInterface) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		provider, err := ToProvider(r.URL.Query().Get("provider"), ProviderGoogle)
+		provider, err := ToProvider(r.URL.Query().Get("provider"), DefaultProvider)
 		if err != nil {
 			AuthError(w, AuthInvalidRequest, "invalid provider; must be one of: google, apple")
 			return
@@ -1063,9 +1063,9 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 		q := r.URL.Query()
 		page := GetPagination(r)
 		excludeReacted := q.Get("exclude_reacted") == "true"
-		embedded := Embedded{}
 		posNextCursor, canNextCursor := "done", "done"
-		totalCount := 0
+		page.Count = 0
+		embedded := Embedded{}
 
 		candidateID, isCandidate := claims.Roles[RoleCandidate]
 		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
@@ -1075,17 +1075,16 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 			return
 		}
 
-		if isCandidate && q.Get("exclude_positions") != "true" && q.Get("pos_cursor") != "done" {
-			posPage := page
-			posPage.Cursor = q.Get("pos_cursor")
-			recs, cursor, err := s.GetPositionRecommendations(candidateID, posPage, excludeReacted)
+		posCursor := q.Get("pos_cursor")
+		if isCandidate && q.Get("exclude_positions") != "true" && posCursor != "done" {
+			recs, cursor, err := s.GetPositionRecommendations(candidateID, Page{Cursor: posCursor, Limit: page.Limit}, excludeReacted)
 			if err != nil {
 				slog.Error("failed to fetch position recommendations", "err", err)
 				Error(w, http.StatusInternalServerError, "internal server error")
 				return
 			}
 			posNextCursor = cmp.Or(string(cursor), "done")
-			totalCount += len(recs)
+			page.Count += len(recs)
 			positions := make([]Resource, len(recs))
 			for i, rec := range recs {
 				positions[i] = Resource{
@@ -1106,17 +1105,16 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 			}
 		}
 
-		if isRecruiter && q.Get("exclude_candidates") != "true" && q.Get("can_cursor") != "done" {
-			canPage := page
-			canPage.Cursor = q.Get("can_cursor")
-			recs, cursor, err := s.GetCandidateRecommendations(recruiterID, canPage, excludeReacted)
+		canCursor := q.Get("can_cursor")
+		if isRecruiter && q.Get("exclude_candidates") != "true" && canCursor != "done" {
+			recs, cursor, err := s.GetCandidateRecommendations(recruiterID, Page{Cursor: canCursor, Limit: page.Limit}, excludeReacted)
 			if err != nil {
 				slog.Error("failed to fetch candidate recommendations", "err", err)
 				Error(w, http.StatusInternalServerError, "internal server error")
 				return
 			}
 			canNextCursor = cmp.Or(string(cursor), "done")
-			totalCount += len(recs)
+			page.Count += len(recs)
 			candidates := make([]Resource, len(recs))
 			for i, rec := range recs {
 				candidates[i] = Resource{
@@ -1137,7 +1135,6 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 			}
 		}
 
-		page.Count = totalCount
 		page.HasNext = posNextCursor != "done" || canNextCursor != "done"
 
 		selfHref := RouteMeRecommendations
