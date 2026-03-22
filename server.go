@@ -16,7 +16,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -574,9 +573,9 @@ func OAuthToken(s StoreInterface, v VaultInterface) http.HandlerFunc {
 
 func OAuthAuthorize(v VaultInterface) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		provider, err := ToProvider(r.URL.Query().Get("provider"))
+		provider, err := ToProvider(r.URL.Query().Get("provider"), ProviderGoogle)
 		if err != nil {
-			AuthError(w, AuthInvalidRequest, "invalid provider")
+			AuthError(w, AuthInvalidRequest, "invalid provider; must be one of: google, apple")
 			return
 		}
 
@@ -694,7 +693,7 @@ func OAuthCallback(s StoreInterface, v VaultInterface) http.HandlerFunc {
 				return
 			}
 			if errors.Is(err, ErrEmailNotVerified) {
-				AuthError(w, AuthInvalidRequest, "email not verified")
+				AuthError(w, AuthInvalidRequest, "unverified provider email")
 				return
 			}
 			if err != nil {
@@ -731,7 +730,7 @@ func OAuthCallback(s StoreInterface, v VaultInterface) http.HandlerFunc {
 			}
 
 		default:
-			AuthError(w, AuthInvalidRequest, "unsupported provider")
+			AuthError(w, AuthInvalidRequest, "invalid provider; must be one of: google, apple")
 			return
 		}
 

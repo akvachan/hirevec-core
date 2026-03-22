@@ -69,12 +69,14 @@ const (
 	ProviderGoogle Provider = "google"
 )
 
-func ToProvider(str string) (Provider, error) {
+func ToProvider(str string, def Provider) (Provider, error) {
 	switch str {
 	case "apple":
 		return ProviderApple, nil
 	case "google":
 		return ProviderGoogle, nil
+	case "":
+		return def, nil
 	default:
 		return "", ErrInvalidProvider
 	}
