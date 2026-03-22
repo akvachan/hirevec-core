@@ -115,6 +115,7 @@ func WaitAndShutdown(ctx context.Context, server *http.Server, errCh chan error,
 		return ErrFailedShutdownServer
 	}
 	slog.Info("HTTP server shutdown complete")
+
 	return nil
 }
 
