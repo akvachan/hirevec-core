@@ -1104,8 +1104,8 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 			for i, rec := range recs {
 				positions[i] = Resource{
 					Links: Links{
-						RelTypeSelf:         Link{Href: "/v1/me/recommendations/" + string(rec.RecommendationID)},
-						RelType("reaction"): Link{Href: "/v1/me/recommendations/" + string(rec.RecommendationID) + "/reaction"},
+						RelTypeSelf:         Link{Href: fmt.Sprintf("%s/%s", RouteMeRecommendations, rec.RecommendationID)},
+						RelType("reaction"): Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, rec.RecommendationID)},
 					}, Props: Props{
 						"recommendation_id": rec.RecommendationID,
 						"position_id":       rec.PositionID,
@@ -1135,8 +1135,8 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 			for i, rec := range recs {
 				candidates[i] = Resource{
 					Links: Links{
-						RelTypeSelf:         Link{Href: "/v1/me/recommendations/" + string(rec.RecommendationID)},
-						RelType("reaction"): Link{Href: "/v1/me/recommendations/" + string(rec.RecommendationID) + "/reaction"},
+						RelTypeSelf:         Link{Href: fmt.Sprintf("%s/%s", RouteMeRecommendations, rec.RecommendationID)},
+						RelType("reaction"): Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, rec.RecommendationID)},
 					},
 					Props: Props{
 						"recommendation_id": rec.RecommendationID,
@@ -1153,15 +1153,24 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 
 		page.Count = totalCount
 		page.HasNext = posNextCursor != "done" || canNextCursor != "done"
+
+		selfHref := RouteMeRecommendations
+		if excludeReacted {
+			selfHref += "?exclude_reacted=true"
+		}
 		links := Links{
-			RelTypeSelf:          Link{Href: "/v1/me/recommendations"},
-			RelType("reactions"): Link{Href: "/v1/me/reactions"},
+			RelTypeSelf:          Link{Href: selfHref},
+			RelType("reactions"): Link{Href: RouteMeReactions},
 		}
 		if page.HasNext {
-			links[RelTypeNext] = Link{Href: fmt.Sprintf(
-				"/v1/me/recommendations?pos_cursor=%s&can_cursor=%s&limit=%d",
-				posNextCursor, canNextCursor, page.Limit,
-			)}
+			nextHref := fmt.Sprintf(
+				"%s?pos_cursor=%s&can_cursor=%s&limit=%d",
+				RouteMeRecommendations, posNextCursor, canNextCursor, page.Limit,
+			)
+			if excludeReacted {
+				nextHref += "&exclude_reacted=true"
+			}
+			links[RelTypeNext] = Link{Href: nextHref}
 		}
 
 		Success(w, http.StatusOK, Resource{
@@ -1241,10 +1250,10 @@ func CreateMyReaction(s StoreInterface) http.HandlerFunc {
 
 		Success(w, http.StatusCreated, Resource{
 			Links: Links{
-				RelTypeSelf:          Link{Href: "/v1/me/recommendations/" + string(recommendationID) + "/reaction"},
-				RelTypeUp:            Link{Href: "/v1/me/recommendations"},
-				RelType("reactions"): Link{Href: "/v1/me/reactions"},
-				RelType("matches"):   Link{Href: "/v1/me/matches"},
+				RelTypeSelf:          Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, recommendationID)},
+				RelTypeUp:            Link{Href: RouteMeRecommendations},
+				RelType("reactions"): Link{Href: RouteMeReactions},
+				RelType("matches"):   Link{Href: RouteMeMatches},
 			},
 			Props: Props{
 				"status": "success",
@@ -1283,10 +1292,10 @@ func GetMeReactions(s StoreInterface) http.HandlerFunc {
 		page.HasNext = nextCursor != ""
 
 		links := Links{
-			RelTypeSelf: Link{Href: "/v1/me/reactions"},
+			RelTypeSelf: Link{Href: RouteMeReactions},
 		}
 		if nextCursor != "" {
-			links[RelTypeNext] = Link{Href: "/v1/me/reactions?cursor=" + string(nextCursor)}
+			links[RelTypeNext] = Link{Href: fmt.Sprintf("%s?cursor=%s", RouteMeReactions, nextCursor)}
 		}
 
 		// Each embedded reaction links back to the recommendation it was made on.
@@ -1294,7 +1303,7 @@ func GetMeReactions(s StoreInterface) http.HandlerFunc {
 		for i, rx := range reactions {
 			embedded[i] = Resource{
 				Links: Links{
-					RelTypeSelf: Link{Href: "/v1/me/recommendations/" + string(rx.RecommendationID) + "/reaction"},
+					RelTypeSelf: Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, rx.RecommendationID)},
 				},
 				Props: Props{
 					"recommendation_id": rx.RecommendationID,
@@ -1344,18 +1353,15 @@ func GetMeMatches(s StoreInterface) http.HandlerFunc {
 		page.HasNext = nextCursor != ""
 
 		links := Links{
-			RelTypeSelf: Link{Href: "/v1/me/matches"},
+			RelTypeSelf: Link{Href: RouteMeMatches},
 		}
 		if nextCursor != "" {
-			links[RelTypeNext] = Link{Href: fmt.Sprintf("/v1/me/matches?cursor=%s&limit=%d", nextCursor, page.Limit)}
+			links[RelTypeNext] = Link{Href: fmt.Sprintf("%s?cursor=%s&limit=%d", RouteMeMatches, nextCursor, page.Limit)}
 		}
 
 		embedded := make([]Resource, len(matches))
 		for i, m := range matches {
 			embedded[i] = Resource{
-				Links: Links{
-					RelTypeSelf: Link{Href: "/v1/positions/" + string(m.PositionID)},
-				},
 				Props: Props{
 					"position_id": m.PositionID,
 					"title":       m.Title,
