@@ -73,14 +73,11 @@ func RunServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInt
 		"addr", server.Addr,
 	)
 	errCh := make(chan error, 1)
-	readyCh := make(chan struct{})
 	go func() {
-		close(readyCh)
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
-	<-readyCh
 	slog.Info("HTTP server ready", "addr", server.Addr)
 
 	return WaitAndShutdown(ctx, server, errCh, c.GracePeriod)
@@ -117,7 +114,6 @@ func WaitAndShutdown(ctx context.Context, server *http.Server, errCh chan error,
 		server.Close()
 		return ErrFailedShutdownServer
 	}
-
 	slog.Info("HTTP server shutdown complete")
 	return nil
 }
