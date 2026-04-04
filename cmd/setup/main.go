@@ -4,17 +4,20 @@
 package main
 
 import (
+	"flag"
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"runtime"
 	"strings"
 
 	"github.com/akvachan/hirevec-backend/cmd/common"
 )
 
-const (
-	initSQLPath   = "init.sql"
+var (
+	initSQLPath   = path.Join("cmd", "setup", "init.sql")
+	devSQLPath    = path.Join("cmd", "setup", "dev.sql")
 	sentinelTable = "general.users"
 )
 
@@ -27,13 +30,21 @@ var requiredVars = []string{
 var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 func main() {
+	dev := flag.Bool("dev", false, "apply additional dev SQL")
+	flag.Parse()
+
 	if err := common.Loadenv(".env"); err != nil {
 		log.Warn("failed to load .env, using system environment", "err", err)
 	}
+
 	checkPostgres()
 	checkEnvVars()
 	createUserAndDB()
 	initDB()
+
+	if *dev {
+		ingestData()
+	}
 }
 
 func checkPostgres() {
@@ -86,14 +97,20 @@ func createUserAndDB() {
 	superuser := detectSuperuser()
 	log.Info("provisioning user via superuser", "user", user, "db", dbName)
 
-	runSuper(superuser, "create role", `DO $$ BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '`+user+`') THEN
-    CREATE ROLE `+user+` WITH LOGIN PASSWORD '`+password+`';
-  END IF;
-END $$;`)
+	runSuper(
+		superuser, "create role",
+		`
+		do $$ 
+		begin
+		if not exists (select from pg_roles where rolname = '`+user+`') then
+			create role `+user+` with login password '`+password+`';
+		end if;
+		end $$;
+		`,
+	)
 
 	out, err := psqlSuper(superuser, "-tAc",
-		"SELECT 1 FROM pg_database WHERE datname = '"+dbName+"';",
+		"select 1 from pg_database where datname = '"+dbName+"';",
 	).Output()
 	if err != nil {
 		common.Exit("failed to check database existence", "err", err)
@@ -110,7 +127,7 @@ END $$;`)
 }
 
 func initDB() {
-	out, err := psqlApp("-c", "SELECT to_regclass('"+sentinelTable+"');").Output()
+	out, err := psqlApp("-c", "select to_regclass('"+sentinelTable+"');").Output()
 	if err != nil {
 		common.Exit("failed to query database", "err", err)
 	}
@@ -191,4 +208,17 @@ func psqlApp(args ...string) *exec.Cmd {
 	cmd := exec.Command("psql", append(base, args...)...)
 	cmd.Env = append(os.Environ(), "PGPASSWORD="+os.Getenv("POSTGRES_PASSWORD"))
 	return cmd
+}
+
+func ingestData() {
+	if _, err := os.Stat(devSQLPath); err == nil {
+		log.Info("applying dev SQL", "file", devSQLPath)
+		cmd := psqlApp("-f", devSQLPath)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			common.Exit("dev SQL execution failed", "err", err)
+		}
+	} else {
+		log.Warn("dev flag set but dev.sql not found, skipping")
+	}
 }

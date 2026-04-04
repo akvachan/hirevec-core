@@ -172,7 +172,7 @@ type VaultImpl struct {
 	AccessTokenParser      paseto.Parser
 	RefreshTokenParser     paseto.Parser
 	StateTokenParser       paseto.Parser
-	V4AsymetricPublicKey   paseto.V4AsymmetricPublicKey
+	V4AsymmetricPublicKey  paseto.V4AsymmetricPublicKey
 	V4AsymmetricSecretKey  paseto.V4AsymmetricSecretKey
 	V4SymmetricKey         paseto.V4SymmetricKey
 	GoogleOIDCConfig       OIDCConfig
@@ -239,7 +239,7 @@ func NewVault(ctx context.Context, cfg VaultConfig) (*VaultImpl, error) {
 		RefreshTokenParser:    refreshTokenParser,
 		StateTokenParser:      stateTokenParser,
 		V4AsymmetricSecretKey: asymmetricKey,
-		V4AsymetricPublicKey:  asymmetricKey.Public(),
+		V4AsymmetricPublicKey: asymmetricKey.Public(),
 		V4SymmetricKey:        symmetricKey,
 		GoogleOIDCConfig: OIDCConfig{
 			OAuth2Config: &oauth2.Config{
@@ -488,7 +488,7 @@ type (
 )
 
 func (v VaultImpl) ParseAccessToken(tokenString string) (*AccessTokenClaims, error) {
-	parsedToken, err := v.AccessTokenParser.ParseV4Public(v.V4AsymetricPublicKey, tokenString, nil)
+	parsedToken, err := v.AccessTokenParser.ParseV4Public(v.V4AsymmetricPublicKey, tokenString, nil)
 	if err != nil {
 		return nil, ErrInvalidAccessToken
 	}

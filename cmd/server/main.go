@@ -20,12 +20,12 @@ func main() {
 	if err := hirevec.RunApp(
 		hirevec.AppConfig{
 			// Server
-			Protocol:     os.Getenv("PROTOCOL"),
-			Host:         os.Getenv("HOST"),
-			Port:         os.Getenv("PORT"),
-			ReadTimeout:  os.Getenv("REQUEST_READ_TIMEOUT"),
-			WriteTimeout: os.Getenv("REQUEST_WRITE_TIMEOUT"),
-			GracePeriod:  os.Getenv("GRACE_PERIOD"),
+			Protocol:            os.Getenv("PROTOCOL"),
+			Host:                os.Getenv("HOST"),
+			Port:                os.Getenv("PORT"),
+			RequestReadTimeout:  os.Getenv("REQUEST_READ_TIMEOUT"),
+			RequestWriteTimeout: os.Getenv("REQUEST_WRITE_TIMEOUT"),
+			GracePeriod:         os.Getenv("GRACE_PERIOD"),
 
 			// DB
 			PostgresHost:     os.Getenv("POSTGRES_HOST"),
@@ -38,8 +38,8 @@ func main() {
 			LogLevel: os.Getenv("LOG_LEVEL"),
 
 			// Crypto
-			SymmetricKeyHex:    os.Getenv("SYMMETRIC_KEY"),
-			AsymmetricKeyHex:   os.Getenv("ASYMMETRIC_KEY"),
+			SymmetricKey:       os.Getenv("SYMMETRIC_KEY"),
+			AsymmetricKey:      os.Getenv("ASYMMETRIC_KEY"),
 			GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 			GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
 			AppleClientID:      os.Getenv("APPLE_CLIENT_ID"),

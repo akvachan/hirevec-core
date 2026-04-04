@@ -34,9 +34,9 @@ This repository contains the backend server implementation.
 - postgres >= 17.9
 
 1. Set up required environment variables in `.env` as shown in [.example.env](.example.env).
-2. Set up server (creates a new database, with a new user) dependencies:
+2. Set up server (creates a new database, with a new database user) dependencies:
 ```bash
-go run cmd/setup/main.go
+go run cmd/setup/main.go --dev
 ```
 3. Run the Go server:
 ```

@@ -26,11 +26,11 @@ func InitLogger(config LoggerConfig) {
 	slog.SetDefault(logger)
 }
 
-func ParseTimeWithDefault(value string, defaultValue time.Duration) time.Duration {
+func ParseDurationWithDefault(value string, defaultValue time.Duration) time.Duration {
 	parsedReadTimeout, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
 		slog.Warn(
-			"failed to parse time, using default",
+			"failed to parse duration, using default",
 			"value", value,
 			"default", defaultValue,
 		)
@@ -73,24 +73,24 @@ func ParseUint16WithDefault(value string, defaultValue uint16) uint16 {
 }
 
 type AppConfig struct {
-	Protocol           string
-	Host               string
-	Port               string
-	ReadTimeout        string
-	WriteTimeout       string
-	GracePeriod        string
-	PostgresHost       string
-	PostgresPort       string
-	PostgresDB         string
-	PostgresUser       string
-	PostgresPassword   string
-	LogLevel           string
-	SymmetricKeyHex    string
-	AsymmetricKeyHex   string
-	GoogleClientID     string
-	GoogleClientSecret string
-	AppleClientID      string
-	AppleClientSecret  string
+	Protocol            string
+	Host                string
+	Port                string
+	RequestReadTimeout  string
+	RequestWriteTimeout string
+	GracePeriod         string
+	PostgresHost        string
+	PostgresPort        string
+	PostgresDB          string
+	PostgresUser        string
+	PostgresPassword    string
+	LogLevel            string
+	SymmetricKey        string
+	AsymmetricKey       string
+	GoogleClientID      string
+	GoogleClientSecret  string
+	AppleClientID       string
+	AppleClientSecret   string
 }
 
 func RunApp(c AppConfig) error {
@@ -112,8 +112,8 @@ func RunApp(c AppConfig) error {
 			GoogleClientSecret: c.GoogleClientSecret,
 			AppleClientID:      c.AppleClientID,
 			AppleClientSecret:  c.AppleClientSecret,
-			SymmetricKeyHex:    c.SymmetricKeyHex,
-			AsymmetricKeyHex:   c.AsymmetricKeyHex,
+			SymmetricKeyHex:    c.SymmetricKey,
+			AsymmetricKeyHex:   c.AsymmetricKey,
 		},
 	)
 	if err != nil {
@@ -139,9 +139,9 @@ func RunApp(c AppConfig) error {
 			Protocol:     c.Protocol,
 			Host:         c.Host,
 			Port:         ParseUint16WithDefault(c.Port, 8080),
-			ReadTimeout:  ParseTimeWithDefault(c.ReadTimeout, DefaultReadTimeout),
-			WriteTimeout: ParseTimeWithDefault(c.WriteTimeout, DefaultWriteTimeout),
-			GracePeriod:  ParseTimeWithDefault(c.GracePeriod, DefaultGracePeriod),
+			ReadTimeout:  ParseDurationWithDefault(c.RequestReadTimeout, DefaultReadTimeout),
+			WriteTimeout: ParseDurationWithDefault(c.RequestWriteTimeout, DefaultWriteTimeout),
+			GracePeriod:  ParseDurationWithDefault(c.GracePeriod, DefaultGracePeriod),
 		},
 		store,
 		vault,

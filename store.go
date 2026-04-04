@@ -188,9 +188,9 @@ func (s StoreImpl) GetCandidate(id ULID) (*Candidate, error) {
 
 	err := s.Postgres.QueryRow(
 		`
-		SELECT id, about
-		FROM v1.candidates
-		WHERE id = $1
+			select id, about
+			from v1.candidates
+			where id = $1
 		`,
 		id,
 	).Scan(
@@ -209,9 +209,9 @@ func (s StoreImpl) GetRecommendation(id ULID) (*Recommendation, error) {
 
 	err := s.Postgres.QueryRow(
 		`
-		SELECT id, candidate_id, position_id
-		FROM v1.recommendations
-		WHERE id = $1
+			select id, candidate_id, position_id
+			from v1.recommendations
+			where id = $1
 		`,
 		id,
 	).Scan(
@@ -231,9 +231,9 @@ func (s StoreImpl) GetPosition(id ULID) (*Position, error) {
 
 	err := s.Postgres.QueryRow(
 		`
-		SELECT id, recruiter_id, title, description, company
-		FROM v1.positions
-		WHERE id = $1
+			select id, recruiter_id, title, description, company
+			from v1.positions
+			where id = $1
 		`,
 		id,
 	).Scan(
@@ -253,14 +253,12 @@ func (s StoreImpl) GetPosition(id ULID) (*Position, error) {
 // GetCandidateByUserID fetches a candidate by their associated user ID.
 func (s StoreImpl) GetCandidateByUserID(userID ULID) (*Candidate, error) {
 	var c Candidate
-	query := `
-        SELECT id, user_id, about
-        FROM v1.candidates
-        WHERE user_id = $1
-        LIMIT 1
-    `
-
-	err := s.Postgres.QueryRow(query, userID).Scan(&c.ID, &c.UserID, &c.About)
+	err := s.Postgres.QueryRow(`
+		select id, user_id, about
+		from v1.candidates
+		where user_id = $1
+		limit 1
+	`, userID).Scan(&c.ID, &c.UserID, &c.About)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrCandidateNotFound
@@ -277,15 +275,15 @@ func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (
 	var candidateID, recruiterID sql.NullString
 	err := s.Postgres.QueryRow(
 		`
-    SELECT
-        u.id,
-        c.id AS candidate_id,
-        r.id AS recruiter_id
-    FROM v1.users u
-    LEFT JOIN v1.candidates c ON c.user_id = u.id
-    LEFT JOIN v1.recruiters r ON r.user_id = u.id
-    WHERE u.provider = $1
-        AND u.provider_user_id = $2
+			select
+					u.id,
+					c.id as candidate_id,
+					r.id as recruiter_id
+			from v1.users u
+			left join v1.candidates c on c.user_id = u.id
+			left join v1.recruiters r on r.user_id = u.id
+			where u.provider = $1
+					and u.provider_user_id = $2
     `,
 		provider,
 		providerUserID,
@@ -315,12 +313,12 @@ func (s StoreImpl) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, 
 	var candidateID, recruiterID sql.NullString
 	err := s.Postgres.QueryRow(
 		`
-		SELECT
-				(SELECT c.id FROM v1.candidates c WHERE c.user_id = u.id) AS candidate_id,
-				(SELECT r.id FROM v1.recruiters r WHERE r.user_id = u.id) AS recruiter_id
-		FROM v1.users u
-		WHERE u.user_id = $1
-			AND u.provider = $2
+			select
+					(select c.id from v1.candidates c where c.user_id = u.id) as candidate_id,
+					(select r.id from v1.recruiters r where r.user_id = u.id) as recruiter_id
+			from v1.users u
+			where u.user_id = $1
+				and u.provider = $2
 		`,
 		userID,
 		provider,
@@ -350,15 +348,15 @@ func (s StoreImpl) CreateUser(u User) (ULID, error) {
 	var userID ULID
 	err := s.Postgres.QueryRow(
 		`
-		INSERT INTO v1.users (
-			provider,
-			provider_user_id, 
-			email,
-			full_name,
-			user_name
-		)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id
+			insert into v1.users (
+				provider,
+				provider_user_id, 
+				email,
+				full_name,
+				user_name
+			)
+			values ($1, $2, $3, $4, $5)
+			returning id
 		`,
 		u.Provider,
 		u.ProviderUserID,
@@ -373,14 +371,14 @@ func (s StoreImpl) CreateUser(u User) (ULID, error) {
 func (s StoreImpl) CreateReaction(r Reaction) error {
 	result, err := s.Postgres.Exec(
 		`
-		INSERT INTO v1.reactions (
-			recommendation_id,
-			reactor_type,
-			reactor_id,
-			reaction_type
-		)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (recommendation_id, reactor_type, reactor_id) DO NOTHING
+			insert into v1.reactions (
+				recommendation_id,
+				reactor_type,
+				reactor_id,
+				reaction_type
+			)
+			values ($1, $2, $3, $4)
+			on conflict (recommendation_id, reactor_type, reactor_id) do nothing
 		`,
 		r.RecommendationID,
 		r.ReactorType,
@@ -404,11 +402,11 @@ func (s StoreImpl) CreateReaction(r Reaction) error {
 func (s StoreImpl) CreateCandidate(c Candidate) error {
 	_, err := s.Postgres.Exec(
 		`
-		INSERT INTO v1.candidates (
-			user_id,
-			about
-		)
-		VALUES ($1, $2)
+			insert into v1.candidates (
+				user_id,
+				about
+			)
+			values ($1, $2)
 		`,
 		c.UserID,
 		c.About,
@@ -420,10 +418,10 @@ func (s StoreImpl) CreateCandidate(c Candidate) error {
 func (s StoreImpl) CreateRecruiter(r Recruiter) error {
 	_, err := s.Postgres.Exec(
 		`
-		INSERT INTO v1.recruiters (
-			user_id
-		)
-		VALUES ($1)
+			insert into v1.recruiters (
+				user_id
+			)
+			values ($1)
 		`,
 		r.UserID,
 	)
@@ -435,10 +433,10 @@ func (s StoreImpl) IsActiveSession(jti ULID) (bool, error) {
 	var isActive bool
 	return isActive, s.Postgres.QueryRow(
 		`
-		SELECT revoked 
-	 	FROM v1.refresh_tokens 
-	 	WHERE jti = $1 
-		AND expires_at > NOW()
+			select revoked 
+			from v1.refresh_tokens 
+			where jti = $1 
+			and expires_at > now()
 		`,
 		jti,
 	).Scan(&isActive)
@@ -448,12 +446,12 @@ func (s StoreImpl) IsActiveSession(jti ULID) (bool, error) {
 func (s StoreImpl) CreateRefreshToken(userID ULID, expiresAt time.Time) (jti ULID, err error) {
 	err = s.Postgres.QueryRow(
 		`
-		INSERT INTO v1.refresh_tokens (
+		insert into v1.refresh_tokens (
 			user_id,
 			expires_at
 		)
-		VALUES ($1, $2) 
-		RETURNING jti
+		values ($1, $2) 
+		returning jti
 		`,
 		userID,
 		expiresAt,
@@ -463,15 +461,13 @@ func (s StoreImpl) CreateRefreshToken(userID ULID, expiresAt time.Time) (jti ULI
 
 // CreateRecommendation inserts a new recommendation for a candidate and a position.
 func (s StoreImpl) CreateRecommendation(positionID, candidateID ULID) (ULID, error) {
-	query := `
-		INSERT INTO v1.recommendations (position_id, candidate_id)
-		VALUES ($1, $2)
-		ON CONFLICT (position_id, candidate_id) DO NOTHING
-		RETURNING id
-	`
-
 	var recID ULID
-	if err := s.Postgres.QueryRow(query, positionID, candidateID).Scan(&recID); err != nil {
+	if err := s.Postgres.QueryRow(`
+		insert into v1.recommendations (position_id, candidate_id)
+		values ($1, $2)
+		on conflict (position_id, candidate_id) do nothing
+		returning id
+	`, positionID, candidateID).Scan(&recID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrRecommendationExists
 		}
@@ -487,17 +483,17 @@ func (s StoreImpl) CreateRecommendation(positionID, candidateID ULID) (ULID, err
 // GetPositionRecommendations returns paginated position recommendations for a candidate.
 func (s StoreImpl) GetPositionRecommendations(candidateID ULID, page Page, excludeReacted bool) (positionRecommendations []PositionRecommendation, nextCursor ULID, err error) {
 	rows, err := s.Postgres.Query(`
-		SELECT r.id, p.id, p.title, p.company, p.description
-		FROM v1.recommendations r
-		JOIN v1.positions p ON p.id = r.position_id
-		LEFT JOIN v1.reactions rx ON rx.recommendation_id = r.id
-				AND rx.reactor_type = 'candidate'
-				AND rx.reactor_id = $1
-		WHERE r.candidate_id = $1
-				AND ($2 = '' OR r.id > $2)
-				AND (NOT $4 OR rx.recommendation_id IS NULL)
-		ORDER BY r.id ASC
-		LIMIT $3
+		select r.id, p.id, p.title, p.company, p.description
+		from v1.recommendations r
+		join v1.positions p on p.id = r.position_id
+		left join v1.reactions rx on rx.recommendation_id = r.id
+				and rx.reactor_type = 'candidate'
+				and rx.reactor_id = $1
+		where r.candidate_id = $1
+				and ($2 = '' or r.id > $2)
+				and (not $4 or rx.recommendation_id is null)
+		order by r.id asc
+		limit $3
 	`, candidateID, page.Cursor, page.Limit+1, excludeReacted)
 	if err != nil {
 		return nil, "", err
@@ -526,19 +522,19 @@ func (s StoreImpl) GetPositionRecommendations(candidateID ULID, page Page, exclu
 
 func (s StoreImpl) GetCandidateRecommendations(recruiterID ULID, page Page, excludeReacted bool) ([]CandidateRecommendation, ULID, error) {
 	rows, err := s.Postgres.Query(`
-		SELECT r.id, c.id, u.full_name, c.about
-		FROM v1.recommendations r
-		JOIN v1.positions p ON p.id = r.position_id
-		JOIN v1.candidates c ON c.id = r.candidate_id
-		JOIN v1.users u ON u.id = c.user_id
-		LEFT JOIN v1.reactions rx ON rx.recommendation_id = r.id
-				AND rx.reactor_type = 'recruiter'
-				AND rx.reactor_id = $1
-		WHERE p.recruiter_id = $1
-				AND ($2 = '' OR r.id > $2)
-				AND (NOT $4 OR rx.recommendation_id IS NULL)
-		ORDER BY r.id ASC
-		LIMIT $3
+		select r.id, c.id, u.full_name, c.about
+		from v1.recommendations r
+		join v1.positions p on p.id = r.position_id
+		join v1.candidates c on c.id = r.candidate_id
+		join v1.users u on u.id = c.user_id
+		left join v1.reactions rx on rx.recommendation_id = r.id
+				and rx.reactor_type = 'recruiter'
+				and rx.reactor_id = $1
+		where p.recruiter_id = $1
+				and ($2 = '' or r.id > $2)
+				and (not $4 or rx.recommendation_id is null)
+		order by r.id asc
+		limit $3
 	`, recruiterID, page.Cursor, page.Limit+1, excludeReacted)
 	if err != nil {
 		return nil, "", err
@@ -569,13 +565,13 @@ func (s StoreImpl) GetCandidateRecommendations(recruiterID ULID, page Page, excl
 // GetReactionsByCandidateID returns paginated reactions made by a candidate.
 func (s StoreImpl) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions []Reaction, nextCursor ULID, err error) {
 	rows, err := s.Postgres.Query(`
-		SELECT recommendation_id, reactor_type, reactor_id, reaction_type, created_at
-		FROM v1.reactions
-		WHERE reactor_id = $1
-		  AND reactor_type = 'candidate'
-		  AND ($2 = '' OR recommendation_id > $2)
-		ORDER BY recommendation_id ASC
-		LIMIT $3
+		select recommendation_id, reactor_type, reactor_id, reaction_type, created_at
+		from v1.reactions
+		where reactor_id = $1
+		  and reactor_type = 'candidate'
+		  and ($2 = '' or recommendation_id > $2)
+		order by recommendation_id asc
+		limit $3
 	`, candidateID, page.Cursor, page.Limit+1)
 	if err != nil {
 		return nil, "", err
@@ -605,13 +601,13 @@ func (s StoreImpl) GetReactionsByCandidateID(candidateID ULID, page Page) (react
 // GetMatchesByCandidateID returns paginated matches for a candidate.
 func (s StoreImpl) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []Match, nextCursor ULID, err error) {
 	rows, err := s.Postgres.Query(`
-		SELECT m.position_id, p.title, p.description, COALESCE(p.company, ''), m.created_at
-		FROM v1.matches m
-		JOIN v1.positions p ON p.id = m.position_id
-		WHERE m.candidate_id = $1
-		  AND ($2 = '' OR m.position_id > $2)
-		ORDER BY m.position_id ASC
-		LIMIT $3
+		select m.position_id, p.title, p.description, coalesce(p.company, ''), m.created_at
+		from v1.matches m
+		join v1.positions p on p.id = m.position_id
+		where m.candidate_id = $1
+		  and ($2 = '' or m.position_id > $2)
+		order by m.position_id asc
+		limit $3
 	`, candidateID, page.Cursor, page.Limit+1)
 	if err != nil {
 		return nil, "", err
@@ -642,7 +638,11 @@ func (s StoreImpl) GetMatchesByCandidateID(candidateID ULID, page Page) (matches
 func (s StoreImpl) GetRecruiterByUserID(userID ULID) (*Recruiter, error) {
 	var rec Recruiter
 	err := s.Postgres.QueryRow(
-		`SELECT id, user_id FROM v1.recruiters WHERE user_id = $1 LIMIT 1`,
+		`
+			select id, user_id 
+			from v1.recruiters 
+			where user_id = $1 limit 1
+		`,
 		userID,
 	).Scan(&rec.ID, &rec.UserID)
 	if err != nil {
