@@ -5,20 +5,19 @@ package main
 
 import (
 	"flag"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path"
 	"runtime"
 	"strings"
 
-	"github.com/akvachan/hirevec-backend/cmd/common"
+	"github.com/akvachan/hirevec-core/cmd/common"
 )
 
 var (
 	initSQLPath   = path.Join("cmd", "setup", "init.sql")
 	devSQLPath    = path.Join("cmd", "setup", "dev.sql")
-	sentinelTable = "general.users"
+	sentinelTable = "v1.users"
 )
 
 var requiredVars = []string{
@@ -27,18 +26,16 @@ var requiredVars = []string{
 	"POSTGRES_DB",
 }
 
-var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
 func main() {
 	dev := flag.Bool("dev", false, "apply additional dev SQL")
 	flag.Parse()
 
 	if err := common.Loadenv(".env"); err != nil {
-		log.Warn("failed to load .env, using system environment", "err", err)
+		common.Log.Warn("failed to load .env, using system environment", "err", err)
 	}
+	common.CheckEnvVars(requiredVars)
 
 	checkPostgres()
-	checkEnvVars()
 	createUserAndDB()
 	initDB()
 
@@ -62,7 +59,7 @@ func checkPostgres() {
 	}
 
 	out, _ := exec.Command("psql", "--version").Output()
-	log.Info("psql found", "version", strings.TrimSpace(string(out)))
+	common.Log.Info("psql found", "version", strings.TrimSpace(string(out)))
 
 	host := common.Getenv("POSTGRES_HOST", "localhost")
 	port := common.Getenv("POSTGRES_PORT", "5432")
@@ -71,22 +68,8 @@ func checkPostgres() {
 		if err := exec.Command(path, "-h", host, "-p", port).Run(); err != nil {
 			common.Exit("postgres not reachable, start it first", "host", host, "port", port)
 		}
-		log.Info("postgres is reachable", "host", host, "port", port)
+		common.Log.Info("postgres is reachable", "host", host, "port", port)
 	}
-}
-
-func checkEnvVars() {
-	var missing []string
-	for _, v := range requiredVars {
-		if os.Getenv(v) == "" {
-			missing = append(missing, v)
-		}
-	}
-	if len(missing) > 0 {
-		log.Error("missing required environment variables", "vars", missing)
-		os.Exit(1)
-	}
-	log.Info("all required environment variables are set")
 }
 
 func createUserAndDB() {
@@ -94,11 +77,10 @@ func createUserAndDB() {
 	password := os.Getenv("POSTGRES_PASSWORD")
 	dbName := os.Getenv("POSTGRES_DB")
 
-	superuser := detectSuperuser()
-	log.Info("provisioning user via superuser", "user", user, "db", dbName)
+	superuser := common.DetectSuperuser()
+	common.Log.Info("provisioning user via superuser", "user", user, "db", dbName)
 
-	runSuper(
-		superuser, "create role",
+	common.RunPsqlSuper(superuser, "postgres", "create role",
 		`
 		do $$ 
 		begin
@@ -109,116 +91,46 @@ func createUserAndDB() {
 		`,
 	)
 
-	out, err := psqlSuper(superuser, "-tAc",
+	out, err := common.PsqlSuper(superuser, "postgres", "-tAc",
 		"select 1 from pg_database where datname = '"+dbName+"';",
 	).Output()
 	if err != nil {
 		common.Exit("failed to check database existence", "err", err)
 	}
 	if strings.TrimSpace(string(out)) != "1" {
-		runSuper(superuser, "create database", "CREATE DATABASE "+dbName+" OWNER "+user+";")
+		common.RunPsqlSuper(superuser, "postgres", "create database", "create database "+dbName+" owner "+user+";")
 	} else {
-		log.Info("database already exists, skipping creation", "db", dbName)
+		common.Log.Info("database already exists, skipping creation", "db", dbName)
 	}
 
-	runSuper(superuser, "grant privileges", "GRANT ALL PRIVILEGES ON DATABASE "+dbName+" TO "+user+";")
+	common.RunPsqlSuper(superuser, "postgres", "grant privileges", "grant all privileges on database "+dbName+" TO "+user+";")
+	common.RunPsqlSuper(superuser, dbName, "creating extension", "create extension if not exists vector;")
 
-	log.Info("role and database ready", "user", user, "db", dbName)
+	common.Log.Info("role and database ready", "user", user, "db", dbName)
 }
 
 func initDB() {
-	out, err := psqlApp("-c", "select to_regclass('"+sentinelTable+"');").Output()
+	out, err := common.Psql("-c", "select to_regclass('"+sentinelTable+"');").Output()
 	if err != nil {
 		common.Exit("failed to query database", "err", err)
 	}
 
 	if strings.Contains(string(out), sentinelTable) {
-		log.Info("database already initialized, skipping init.sql")
+		common.Log.Info("database already initialized, skipping init.sql")
 		return
 	}
 
-	log.Info("initializing database", "file", initSQLPath)
-	cmd := psqlApp("-f", initSQLPath)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		common.Exit("database initialization failed", "err", err)
-	}
-	log.Info("database initialized")
-}
-
-func detectSuperuser() string {
-	if v := os.Getenv("POSTGRES_SUPERUSER"); v != "" {
-		return v
-	}
-
-	host := common.Getenv("POSTGRES_HOST", "localhost")
-	port := common.Getenv("POSTGRES_PORT", "5432")
-
-	candidates := []string{"postgres"}
-	if u, err := osUsername(); err == nil && u != "postgres" {
-		candidates = append(candidates, u)
-	}
-
-	for _, u := range candidates {
-		cmd := exec.Command("psql", "-h", host, "-p", port, "-U", u, "-d", "postgres", "-c", "SELECT 1;")
-		if err := cmd.Run(); err == nil {
-			return u
-		}
-	}
-
-	if u, err := osUsername(); err == nil {
-		return u
-	}
-	return "postgres"
-}
-
-func osUsername() (string, error) {
-	out, err := exec.Command("id", "-un").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func runSuper(superuser, op, stmt string) {
-	cmd := psqlSuper(superuser, "-c", stmt)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		common.Exit("provisioning failed", "op", op, "err", err)
-	}
-}
-
-func psqlSuper(superuser string, args ...string) *exec.Cmd {
-	base := []string{
-		"-h", common.Getenv("POSTGRES_HOST", "localhost"),
-		"-p", common.Getenv("POSTGRES_PORT", "5432"),
-		"-U", superuser,
-		"-d", "postgres",
-	}
-	return exec.Command("psql", append(base, args...)...)
-}
-
-func psqlApp(args ...string) *exec.Cmd {
-	base := []string{
-		"-h", common.Getenv("POSTGRES_HOST", "localhost"),
-		"-p", common.Getenv("POSTGRES_PORT", "5432"),
-		"-U", os.Getenv("POSTGRES_USER"),
-		"-d", os.Getenv("POSTGRES_DB"),
-	}
-	cmd := exec.Command("psql", append(base, args...)...)
-	cmd.Env = append(os.Environ(), "PGPASSWORD="+os.Getenv("POSTGRES_PASSWORD"))
-	return cmd
+	common.Log.Info("initializing database", "file", initSQLPath)
+	common.RunPsql(common.Psql("-f", initSQLPath), "init db")
+	common.Log.Info("database initialized")
 }
 
 func ingestData() {
 	if _, err := os.Stat(devSQLPath); err == nil {
-		log.Info("applying dev SQL", "file", devSQLPath)
-		cmd := psqlApp("-f", devSQLPath)
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			common.Exit("dev SQL execution failed", "err", err)
-		}
+		common.Log.Info("applying dev SQL", "file", devSQLPath)
+		common.RunPsql(common.Psql("-f", devSQLPath), "ingest data")
+		common.Log.Info("ingesting embeddings")
 	} else {
-		log.Warn("dev flag set but dev.sql not found, skipping")
+		common.Log.Warn("dev flag set but dev.sql not found, skipping")
 	}
 }

@@ -1,4 +1,4 @@
-module github.com/akvachan/hirevec-backend
+module github.com/akvachan/hirevec-core
 
 go 1.25.5
 

@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/akvachan/hirevec-backend"
-	"github.com/akvachan/hirevec-backend/cmd/common"
+	"github.com/akvachan/hirevec-core"
+	"github.com/akvachan/hirevec-core/cmd/common"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -20,22 +20,22 @@ func main() {
 	if err := hirevec.RunApp(
 		hirevec.AppConfig{
 			// Server
-			Protocol:            os.Getenv("PROTOCOL"),
-			Host:                os.Getenv("HOST"),
-			Port:                os.Getenv("PORT"),
-			RequestReadTimeout:  os.Getenv("REQUEST_READ_TIMEOUT"),
-			RequestWriteTimeout: os.Getenv("REQUEST_WRITE_TIMEOUT"),
-			GracePeriod:         os.Getenv("GRACE_PERIOD"),
+			Protocol:            common.Getenv("PROTOCOL", "http"),
+			Host:                common.Getenv("HOST", "localhost"),
+			Port:                common.Getenv("PORT", "8080"),
+			RequestReadTimeout:  common.Getenv("REQUEST_READ_TIMEOUT", "2000"),
+			RequestWriteTimeout: common.Getenv("REQUEST_WRITE_TIMEOUT", "2000"),
+			GracePeriod:         common.Getenv("GRACE_PERIOD", "5000"),
 
 			// DB
-			PostgresHost:     os.Getenv("POSTGRES_HOST"),
-			PostgresPort:     os.Getenv("POSTGRES_PORT"),
-			PostgresDB:       os.Getenv("POSTGRES_DB"),
+			PostgresHost:     common.Getenv("POSTGRES_HOST", "localhost"),
+			PostgresPort:     common.Getenv("POSTGRES_PORT", "5432"),
+			PostgresDB:       common.Getenv("POSTGRES_DB", "hirevec"),
 			PostgresUser:     os.Getenv("POSTGRES_USER"),
 			PostgresPassword: os.Getenv("POSTGRES_PASSWORD"),
 
 			// Logger
-			LogLevel: os.Getenv("LOG_LEVEL"),
+			LogLevel: common.Getenv("LOG_LEVEL", "DEBUG"),
 
 			// Crypto
 			SymmetricKey:       os.Getenv("SYMMETRIC_KEY"),

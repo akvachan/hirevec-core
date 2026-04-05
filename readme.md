@@ -1,8 +1,8 @@
-# Hirevec Backend
+# Hirevec Core
 
 ## About Hirevec
-Hirevec is a (placeholder) application that uses a recommendation engine to match candidates with positions and recruiters with candidates.
-This repository contains the backend server implementation.
+Hirevec is application that uses a recommendation engine to match candidates with positions and recruiters with candidates.
+This repository contains the core server implementation.
 
 ## Philosophy
 - The server strives to be simple and lightweight, we intentionally avoid heavy fullstack frameworks.
@@ -30,19 +30,26 @@ This repository contains the backend server implementation.
 ## Quick Start
 
 ### Requirements
-- go >= 1.25.5 
-- postgres >= 17.9
+- [go](https://go.dev/) >= 1.25.0
+- [postgres](https://www.postgresql.org/) >= 18.0
+- [pgvector](https://github.com/pgvector/pgvector) >= 0.8.0
 
-1. Set up required environment variables in `.env` as shown in [.example.env](.example.env).
-2. Set up server (creates a new database, with a new database user) dependencies:
+1. Copy `.example.env` and rename it to `.env`:
+```
+cp .example.env .env
+```
+2. Set environment variables in `.env`:
+    - Choose your own `POSTGRES_USER` and `POSTGRES_PASSWORD`.
+    - Generate your own `SYMMETRIC_KEY` and `ASYMMETRIC_KEY`.
+3. Set up server dependencies:
 ```bash
 go run cmd/setup/main.go --dev
 ```
-3. Run the Go server:
+4. Run the Go server:
 ```
 go run cmd/server/main.go
 ```
-4. Open [http://localhost:8080/health](http://localhost:8080/health).
+5. Open [http://localhost:8080/health](http://localhost:8080/health).
 
 ## Cleanup
 In case, for whatever reason, you want to completely remove the database and everything created by the setup script, run cleanup script:

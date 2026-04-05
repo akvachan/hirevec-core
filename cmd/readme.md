@@ -12,7 +12,11 @@ Common is just a set of helper functions that are used across all scripts.
 
 ## Server
 
-Server script can be used to start local server.
+Server script can be used to start local server instance.
+
+## Embedding
+
+Embedding script can be used to start a local embedding worker.
 
 ## Setup
 

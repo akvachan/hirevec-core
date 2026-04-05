@@ -6,10 +6,9 @@ package main
 import (
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 
-	"github.com/akvachan/hirevec-backend/cmd/common"
+	"github.com/akvachan/hirevec-core/cmd/common"
 )
 
 var requiredVars = []string{
@@ -23,11 +22,11 @@ func main() {
 	if err := common.Loadenv(".env"); err != nil {
 		log.Warn("failed to load .env, using system environment", "err", err)
 	}
-	checkEnvVars()
+	common.CheckEnvVars(requiredVars)
 
 	user := os.Getenv("POSTGRES_USER")
 	dbName := os.Getenv("POSTGRES_DB")
-	superuser := detectSuperuser()
+	superuser := common.DetectSuperuser()
 
 	log.Info("starting cleanup", "superuser", superuser, "user", user, "db", dbName)
 
@@ -37,21 +36,9 @@ func main() {
 	log.Info("cleanup complete")
 }
 
-func checkEnvVars() {
-	var missing []string
-	for _, v := range requiredVars {
-		if os.Getenv(v) == "" {
-			missing = append(missing, v)
-		}
-	}
-	if len(missing) > 0 {
-		common.Exit("missing required environment variables", "vars", missing)
-	}
-}
-
 func dropDB(superuser string, dbName string) {
-	out, err := psqlSuper(superuser, "-tAc",
-		"SELECT 1 FROM pg_database WHERE datname = '"+dbName+"';",
+	out, err := common.PsqlSuper(superuser, "postgres", "-tAc",
+		"select 1 from pg_database where datname = '"+dbName+"';",
 	).Output()
 	if err != nil {
 		common.Exit("failed to check database existence", "err", err)
@@ -61,17 +48,17 @@ func dropDB(superuser string, dbName string) {
 		return
 	}
 
-	runSuper(superuser, "terminate connections",
-		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '"+dbName+"' AND pid <> pg_backend_pid();",
+	common.RunPsqlSuper(superuser, "postgres", "terminate connections",
+		"select pg_terminate_backend(pid) from pg_stat_activity where datname = '"+dbName+"' and pid <> pg_backend_pid();",
 	)
 
-	runSuper(superuser, "drop database", "DROP DATABASE "+dbName+";")
+	common.RunPsqlSuper(superuser, "postgres", "drop database", "DROP DATABASE "+dbName+";")
 	log.Info("database dropped", "db", dbName)
 }
 
 func dropRole(superuser, user string) {
-	out, err := psqlSuper(superuser, "-tAc",
-		"SELECT 1 FROM pg_roles WHERE rolname = '"+user+"';",
+	out, err := common.PsqlSuper(superuser, "postgres", "-tAc",
+		"select 1 from pg_roles where rolname = '"+user+"';",
 	).Output()
 	if err != nil {
 		common.Exit("failed to check role existence", "err", err)
@@ -81,65 +68,6 @@ func dropRole(superuser, user string) {
 		return
 	}
 
-	runSuper(superuser, "drop role", "DROP ROLE "+user+";")
+	common.RunPsqlSuper(superuser, "postgres", "drop role", "DROP ROLE "+user+";")
 	log.Info("role dropped", "role", user)
-}
-
-func detectSuperuser() string {
-	if v := os.Getenv("POSTGRES_SUPERUSER"); v != "" {
-		return v
-	}
-
-	host := envOr("POSTGRES_HOST", "localhost")
-	port := envOr("POSTGRES_PORT", "5432")
-
-	candidates := []string{"postgres"}
-	if u, err := osUsername(); err == nil && u != "postgres" {
-		candidates = append(candidates, u)
-	}
-
-	for _, u := range candidates {
-		cmd := exec.Command("psql", "-h", host, "-p", port, "-U", u, "-d", "postgres", "-c", "SELECT 1;")
-		if err := cmd.Run(); err == nil {
-			return u
-		}
-	}
-
-	if u, err := osUsername(); err == nil {
-		return u
-	}
-	return "postgres"
-}
-
-func osUsername() (string, error) {
-	out, err := exec.Command("id", "-un").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func runSuper(superuser, op, stmt string) {
-	cmd := psqlSuper(superuser, "-c", stmt)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		common.Exit("cleanup failed", "op", op, "err", err)
-	}
-}
-
-func psqlSuper(superuser string, args ...string) *exec.Cmd {
-	base := []string{
-		"-h", envOr("POSTGRES_HOST", "localhost"),
-		"-p", envOr("POSTGRES_PORT", "5432"),
-		"-U", superuser,
-		"-d", "postgres",
-	}
-	return exec.Command("psql", append(base, args...)...)
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

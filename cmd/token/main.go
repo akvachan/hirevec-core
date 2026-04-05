@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akvachan/hirevec-backend"
-	"github.com/akvachan/hirevec-backend/cmd/common"
+	"github.com/akvachan/hirevec-core"
+	"github.com/akvachan/hirevec-core/cmd/common"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 

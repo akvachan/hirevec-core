@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akvachan/hirevec-backend/cmd/common"
+	"github.com/akvachan/hirevec-core/cmd/common"
 )
 
 var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
