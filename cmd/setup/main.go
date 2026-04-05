@@ -129,7 +129,6 @@ func ingestData() {
 	if _, err := os.Stat(devSQLPath); err == nil {
 		common.Log.Info("applying dev SQL", "file", devSQLPath)
 		common.RunPsql(common.Psql("-f", devSQLPath), "ingest data")
-		common.Log.Info("ingesting embeddings")
 	} else {
 		common.Log.Warn("dev flag set but dev.sql not found, skipping")
 	}
