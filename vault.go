@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -34,7 +35,14 @@ const (
 	StateTokenAudience = "oauth-state"
 )
 
+const (
+	skFile = ".sk"
+	akFile = ".ak"
+)
+
 var (
+	ErrFailedSaveSymmetricKey         = errors.New("failed to create or load symmetric key")
+	ErrFailedSaveAsymmetricKey        = errors.New("failed to create or load asymmetric key")
 	ErrFailedSetScope                 = errors.New("failed to set scope")
 	ErrFailedCreateAccessToken        = errors.New("failed to create access token")
 	ErrFailedCreateAppleOIDCProvider  = errors.New("failed to create Apple OIDC provider")
@@ -84,14 +92,7 @@ func ToProvider(str string, def Provider) (Provider, error) {
 }
 
 func (p Provider) Raw() string {
-	switch p {
-	case ProviderApple:
-		return "apple"
-	case ProviderGoogle:
-		return "google"
-	default:
-		return ""
-	}
+	return string(p)
 }
 
 type Role string
@@ -156,10 +157,8 @@ type VaultInterface interface {
 }
 
 type VaultConfig struct {
-	Host                   string
-	Port                   string
-	SymmetricKeyHex        string
-	AsymmetricKeyHex       string
+	ServerHost             string
+	ServerPort             string
 	GoogleClientID         string
 	GoogleClientSecret     string
 	AppleClientID          string
@@ -205,23 +204,16 @@ func NewVault(ctx context.Context, cfg VaultConfig) (*VaultImpl, error) {
 	stateTokenParser.AddRule(paseto.NotExpired())
 	stateTokenParser.AddRule(paseto.NotBeforeNbf())
 
-	symmetricKey, err := paseto.V4SymmetricKeyFromHex(cfg.SymmetricKeyHex)
+	sk, err := loadOrCreateSymmetricKey()
 	if err != nil {
-		slog.Error(
-			"Failed to load a symmetric key",
-			"err", err,
-		)
-		return nil, ErrFailedLoadSymmetricKey
+		slog.Error("failed to init symmetric key", "err", err)
+		return nil, ErrFailedSaveSymmetricKey
 	}
 
-	asymmetricKey, err := paseto.NewV4AsymmetricSecretKeyFromHex(cfg.AsymmetricKeyHex)
+	ak, err := loadOrCreateAsymmetricKey()
 	if err != nil {
-		slog.Error(
-			"Failed to load an asymmetric key",
-			"err", err,
-			"key", cfg.AsymmetricKeyHex,
-		)
-		return nil, ErrFailedLoadAsymmetricKey
+		slog.Error("failed to init asymmetric key", "err", err)
+		return nil, ErrFailedSaveAsymmetricKey
 	}
 
 	googleProvider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
@@ -234,18 +226,18 @@ func NewVault(ctx context.Context, cfg VaultConfig) (*VaultImpl, error) {
 		return nil, ErrFailedCreateAppleOIDCProvider
 	}
 
-	return &VaultImpl{
+	vault := VaultImpl{
 		AccessTokenParser:     accessTokenParser,
 		RefreshTokenParser:    refreshTokenParser,
 		StateTokenParser:      stateTokenParser,
-		V4AsymmetricSecretKey: asymmetricKey,
-		V4AsymmetricPublicKey: asymmetricKey.Public(),
-		V4SymmetricKey:        symmetricKey,
+		V4AsymmetricSecretKey: ak,
+		V4AsymmetricPublicKey: ak.Public(),
+		V4SymmetricKey:        sk,
 		GoogleOIDCConfig: OIDCConfig{
 			OAuth2Config: &oauth2.Config{
 				ClientID:     cfg.GoogleClientID,
 				ClientSecret: cfg.GoogleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s/oauth/callback", cfg.Host),
+				RedirectURL:  fmt.Sprintf("%s/oauth/callback", cfg.ServerHost),
 				Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 				Endpoint:     googleProvider.Endpoint(),
 			},
@@ -255,7 +247,7 @@ func NewVault(ctx context.Context, cfg VaultConfig) (*VaultImpl, error) {
 			OAuth2Config: &oauth2.Config{
 				ClientID:     cfg.AppleClientID,
 				ClientSecret: cfg.AppleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s/oauth/callback", cfg.Host),
+				RedirectURL:  fmt.Sprintf("%s/oauth/callback", cfg.ServerHost),
 				Scopes:       []string{oidc.ScopeOpenID, "name", "email"},
 				Endpoint:     appleProvider.Endpoint(),
 			},
@@ -263,7 +255,9 @@ func NewVault(ctx context.Context, cfg VaultConfig) (*VaultImpl, error) {
 		},
 		RefreshTokenExpiration: cfg.RefreshTokenExpiration,
 		AccessTokenExpiration:  cfg.AccessTokenExpiration,
-	}, nil
+	}
+
+	return &vault, nil
 }
 
 type StateTokenClaims struct {
@@ -705,4 +699,44 @@ func (v VaultImpl) CreateTokenPair(userID ULID, provider Provider, jti ULID, rol
 		Scope:        scope.Raw(),
 		UserID:       userID,
 	}, nil
+}
+
+func loadOrCreateSymmetricKey() (paseto.V4SymmetricKey, error) {
+	if data, err := os.ReadFile(skFile); err == nil {
+		key, err := paseto.V4SymmetricKeyFromBytes(data)
+		if err != nil {
+			return key, err
+		}
+		return key, nil
+	}
+
+	key := paseto.NewV4SymmetricKey()
+	f, err := os.Create(skFile)
+	defer f.Close()
+	if err != nil {
+		return key, err
+	}
+	fmt.Fprint(f, key.ExportHex())
+
+	return key, nil
+}
+
+func loadOrCreateAsymmetricKey() (paseto.V4AsymmetricSecretKey, error) {
+	if data, err := os.ReadFile(akFile); err == nil {
+		key, err := paseto.NewV4AsymmetricSecretKeyFromBytes(data)
+		if err != nil {
+			return key, err
+		}
+		return key, nil
+	}
+
+	key := paseto.NewV4AsymmetricSecretKey()
+	f, err := os.Create(akFile)
+	defer f.Close()
+	if err != nil {
+		return key, err
+	}
+	fmt.Fprint(f, key.ExportHex())
+
+	return key, nil
 }

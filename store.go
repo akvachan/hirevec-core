@@ -5,21 +5,33 @@ package hirevec
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"strings"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 var (
-	ErrFailedConnectDB       = errors.New("failed to connect to database")
-	ErrFailedPingDB          = errors.New("failed to ping database")
-	ErrUserNoRole            = errors.New("user has no role")
-	ErrUserNotFound          = errors.New("user not found")
-	ErrRecommendationExists  = errors.New("recommendation already exists")
-	ErrCandidateNotFound     = errors.New("candidate not found")
-	ErrRecruiterNotFound     = errors.New("recruiter not found")
-	ErrReactionAlreadyExists = errors.New("reaction already exists")
+	ErrFailedReadInitSQL           = errors.New("failed to read init.sql")
+	ErrFailedReadDevSQL            = errors.New("failed to read dev.sql")
+	ErrRecommendationAlreadyExists = errors.New("recommendation already exists")
+	ErrUserAlreadyExists           = errors.New("user already exists")
+	ErrCandidateAlreadyExists      = errors.New("candidate already exists")
+	ErrRecruiterAlreadyExists      = errors.New("recruiter already exists")
+	ErrFailedConnectDB             = errors.New("failed to connect to DB")
+	ErrFailedPingDB                = errors.New("failed to ping DB")
+	ErrUserNoRole                  = errors.New("user has no role")
+	ErrUserNotFound                = errors.New("user not found")
+	ErrRecommendationExists        = errors.New("recommendation already exists")
+	ErrCandidateNotFound           = errors.New("candidate not found")
+	ErrRecruiterNotFound           = errors.New("recruiter not found")
+	ErrReactionAlreadyExists       = errors.New("reaction already exists")
 )
 
 type ReactionType string
@@ -45,9 +57,72 @@ const (
 	ReactorTypeRecruiter ReactorType = "recruiter"
 )
 
-type (
-	ULID string
+type EmbeddingObjectType string
 
+const (
+	EmbeddingObjectTypePosition  EmbeddingObjectType = "position"
+	EmbeddingObjectTypeCandidate EmbeddingObjectType = "candidate"
+)
+
+type ULID string
+
+const enc = "0123456789abcdefghjkmnpqrstvwxyz"
+
+func newULID(prefix string) (ULID, error) {
+	var id [16]byte
+	out := make([]byte, 26)
+
+	ts := uint64(time.Now().UnixMilli())
+
+	if _, err := rand.Read(id[6:]); err != nil {
+		return "", err
+	}
+
+	for i := 9; i >= 0; i-- {
+		out[i] = enc[ts%32]
+		ts /= 32
+	}
+
+	for i := 0; i < 16; i++ {
+		out[10+i] = enc[id[6+i%10]%32]
+	}
+
+	return ULID(prefix + string(out)), nil
+}
+
+func NewCandidateULID() (ULID, error) {
+	return newULID("can_")
+}
+
+func NewRecruiterULID() (ULID, error) {
+	return newULID("rec_")
+}
+
+func NewUserULID() (ULID, error) {
+	return newULID("usr_")
+}
+
+func NewRecommendationULID() (ULID, error) {
+	return newULID("rcm_")
+}
+
+func NewJTIULID() (ULID, error) {
+	return newULID("jti_")
+}
+
+func NewPositionULID() (ULID, error) {
+	return newULID("pos_")
+}
+
+func NewPositionEmbeddingJobULID() (ULID, error) {
+	return newULID("job_pos_")
+}
+
+func NewCandidateEmbeddingJobULID() (ULID, error) {
+	return newULID("job_can_")
+}
+
+type (
 	// User represents a system user
 	User struct {
 		ID             ULID     `json:"id,omitempty"`
@@ -60,9 +135,10 @@ type (
 
 	// Candidate represents a candidate profile
 	Candidate struct {
-		ID     ULID   `json:"id"`
-		UserID ULID   `json:"user_id,omitempty"`
-		About  string `json:"about"`
+		ID                ULID      `json:"id"`
+		UserID            ULID      `json:"user_id,omitempty"`
+		About             string    `json:"about"`
+		LastRecommendedAt time.Time `json:"last_recommended_at"`
 	}
 
 	// Recruiter represents a recruiter profile
@@ -84,6 +160,7 @@ type (
 		Title       string `json:"title"`
 		Description string `json:"description"`
 		Company     string `json:"company"`
+		IsActive    bool   `json:"is_active"`
 	}
 
 	Match struct {
@@ -128,46 +205,98 @@ type (
 )
 
 type StoreInterface interface {
+	MarkJobs(jobs []EmbeddingJob, status EmbeddingJobStatus) error
+	MarkJob(jobID ULID, status EmbeddingJobStatus) error
+	FetchPendingEmbeddingJobs(limit uint16) ([]EmbeddingJob, error)
+	UpsertEmbedding(entityType EntityType, entityID ULID, embedding Embedding) error
+
 	CreateCandidate(Candidate) error
 	CreateReaction(Reaction) error
-	CreateRecommendation(positionID, candidateID ULID) (ULID, error)
+	CreateRecommendation(Recommendation) error
 	CreateRecruiter(Recruiter) error
-	CreateRefreshToken(userID ULID, expiresAt time.Time) (jti ULID, err error)
-	CreateUser(User) (userID ULID, err error)
-	GetReactionsByCandidateID(ULID, Page) (reactions []Reaction, nextCursor ULID, err error)
+	CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) error
+	CreateUser(User) error
+
+	GetCandidate(ID ULID) (*Candidate, error)
+	GetCandidateRecommendations(candidateID ULID, page Page, excludeReacted bool) (candidateRecommenations []CandidateRecommendation, nextCursor ULID, err error)
 	GetMatchesByCandidateID(ULID, Page) (matches []Match, nextCursos ULID, err error)
 	GetPosition(ULID) (*Position, error)
-	GetUserByProvider(Provider, string) (ULID, map[Role]ULID, error)
-	GetRecommendation(ULID) (*Recommendation, error)
-	GetUserRoles(ULID, Provider) (map[Role]ULID, error)
 	GetPositionRecommendations(candidateID ULID, page Page, excludeReacted bool) (positionRecommendations []PositionRecommendation, nextCursor ULID, err error)
-	GetCandidateRecommendations(candidateID ULID, page Page, excludeReacted bool) (candidateRecommenations []CandidateRecommendation, nextCursor ULID, err error)
+	GetPositionsByIDs(IDs []ULID) ([]Position, error)
+	GetReactionsByCandidateID(ULID, Page) (reactions []Reaction, nextCursor ULID, err error)
+	GetRecommendation(ULID) (*Recommendation, error)
+	GetUserByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error)
+	GetUserRoles(ULID, Provider) (map[Role]ULID, error)
+
 	IsActiveSession(jti ULID) (bool, error)
 }
 
-type StoreConfig struct {
-	PostgresHost     string
-	PostgresPort     uint16
-	PostgresDB       string
-	PostgresUser     string
-	PostgresPassword string
-}
-
 type StoreImpl struct {
-	Postgres *sql.DB
+	DB *sql.DB
 }
 
-func NewStore(c StoreConfig) (*StoreImpl, error) {
-	dbConnString := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s",
-		c.PostgresHost,
-		c.PostgresPort,
-		c.PostgresUser,
-		c.PostgresPassword,
-		c.PostgresDB,
-	)
+func NewStore() (*StoreImpl, error) {
+	db, err := ConnectToDB()
+	if err != nil {
+		return nil, err
+	}
 
-	db, err := sql.Open("pgx", dbConnString)
+	if err := InitDB(db); err != nil {
+		return nil, err
+	}
+
+	if err := IngestData(db); err != nil {
+		return nil, err
+	}
+
+	return &StoreImpl{db}, nil
+}
+
+type QdrantCollection string
+
+const (
+	QdrantCollectionPositions  QdrantCollection = "positions"
+	QdrantCollectionCandidates QdrantCollection = "candidates"
+)
+
+func (c QdrantCollection) Raw() string {
+	return string(c)
+}
+
+const EmbeddingSize uint64 = 0
+
+func InitDB(db *sql.DB) error {
+	sqlBytes, err := os.ReadFile("init.sql")
+	if err != nil {
+		return ErrFailedReadInitSQL
+	}
+
+	_, err = db.Exec(string(sqlBytes))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func IngestData(db *sql.DB) error {
+	sqlBytes, err := os.ReadFile("dev.sql")
+	if err != nil {
+		return ErrFailedReadDevSQL
+	}
+
+	_, err = db.Exec(string(sqlBytes))
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func ConnectToDB() (*sql.DB, error) {
+	slog.Debug("connecting to DB")
+
+	db, err := sql.Open("sqlite", ".db")
 	if err != nil {
 		return nil, ErrFailedConnectDB
 	}
@@ -180,23 +309,18 @@ func NewStore(c StoreConfig) (*StoreImpl, error) {
 	if err := db.PingContext(context.Background()); err != nil {
 		return nil, ErrFailedPingDB
 	}
-	return &StoreImpl{Postgres: db}, nil
+
+	return db, nil
 }
 
 func (s StoreImpl) GetCandidate(id ULID) (*Candidate, error) {
 	var c Candidate
 
-	err := s.Postgres.QueryRow(
-		`
-			select id, about
-			from v1.candidates
-			where id = $1
-		`,
-		id,
-	).Scan(
-		&c.ID,
-		&c.About,
-	)
+	err := s.DB.QueryRow(`
+		select id, about
+		from v1.candidates
+		where id = $1
+	`, id).Scan(&c.ID, &c.About)
 	if err != nil {
 		return nil, err
 	}
@@ -207,18 +331,11 @@ func (s StoreImpl) GetCandidate(id ULID) (*Candidate, error) {
 func (s StoreImpl) GetRecommendation(id ULID) (*Recommendation, error) {
 	var r Recommendation
 
-	err := s.Postgres.QueryRow(
-		`
-			select id, candidate_id, position_id
-			from v1.recommendations
-			where id = $1
-		`,
-		id,
-	).Scan(
-		&r.ID,
-		&r.CandidateID,
-		&r.PositionID,
-	)
+	err := s.DB.QueryRow(`
+		select id, candidate_id, position_id
+		from v1.recommendations
+		where id = $1
+	`, id).Scan(&r.ID, &r.CandidateID, &r.PositionID)
 	if err != nil {
 		return nil, err
 	}
@@ -229,20 +346,11 @@ func (s StoreImpl) GetRecommendation(id ULID) (*Recommendation, error) {
 func (s StoreImpl) GetPosition(id ULID) (*Position, error) {
 	var p Position
 
-	err := s.Postgres.QueryRow(
-		`
-			select id, recruiter_id, title, description, company
-			from v1.positions
-			where id = $1
-		`,
-		id,
-	).Scan(
-		&p.ID,
-		&p.RecruiterID,
-		&p.Title,
-		&p.Description,
-		&p.Company,
-	)
+	err := s.DB.QueryRow(`
+		select id, recruiter_id, title, description, company
+		from v1.positions
+		where id = $1
+	`, id).Scan(&p.ID, &p.RecruiterID, &p.Title, &p.Description, &p.Company)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +361,7 @@ func (s StoreImpl) GetPosition(id ULID) (*Position, error) {
 // GetCandidateByUserID fetches a candidate by their associated user ID.
 func (s StoreImpl) GetCandidateByUserID(userID ULID) (*Candidate, error) {
 	var c Candidate
-	err := s.Postgres.QueryRow(`
+	err := s.DB.QueryRow(`
 		select id, user_id, about
 		from v1.candidates
 		where user_id = $1
@@ -273,21 +381,17 @@ func (s StoreImpl) GetCandidateByUserID(userID ULID) (*Candidate, error) {
 func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error) {
 	var userID ULID
 	var candidateID, recruiterID sql.NullString
-	err := s.Postgres.QueryRow(
-		`
-			select
-					u.id,
-					c.id as candidate_id,
-					r.id as recruiter_id
-			from v1.users u
-			left join v1.candidates c on c.user_id = u.id
-			left join v1.recruiters r on r.user_id = u.id
-			where u.provider = $1
-					and u.provider_user_id = $2
-    `,
-		provider,
-		providerUserID,
-	).Scan(&userID, &candidateID, &recruiterID)
+	err := s.DB.QueryRow(`
+		select
+				u.id,
+				c.id as candidate_id,
+				r.id as recruiter_id
+		from v1.users u
+		left join v1.candidates c on c.user_id = u.id
+		left join v1.recruiters r on r.user_id = u.id
+		where u.provider = $1
+				and u.provider_user_id = $2
+   `, provider, providerUserID).Scan(&userID, &candidateID, &recruiterID)
 	if err == sql.ErrNoRows {
 		return "", nil, fmt.Errorf("%w: userID=%s", ErrUserNotFound, userID)
 	}
@@ -311,18 +415,14 @@ func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (
 // GetUserRoles fetches user roles by user's ID and provider.
 func (s StoreImpl) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, error) {
 	var candidateID, recruiterID sql.NullString
-	err := s.Postgres.QueryRow(
-		`
-			select
-					(select c.id from v1.candidates c where c.user_id = u.id) as candidate_id,
-					(select r.id from v1.recruiters r where r.user_id = u.id) as recruiter_id
-			from v1.users u
-			where u.user_id = $1
-				and u.provider = $2
-		`,
-		userID,
-		provider,
-	).Scan(&candidateID, &recruiterID)
+	err := s.DB.QueryRow(`
+		select
+				(select c.id from v1.candidates c where c.user_id = u.id) as candidate_id,
+				(select r.id from v1.recruiters r where r.user_id = u.id) as recruiter_id
+		from v1.users u
+		where u.user_id = $1
+			and u.provider = $2
+	`, userID, provider).Scan(&candidateID, &recruiterID)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("%w: userID=%s", ErrUserNotFound, userID)
 	}
@@ -343,48 +443,33 @@ func (s StoreImpl) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, 
 	return roles, nil
 }
 
-// CreateUser generates a unique username and inserts a new user record.
-func (s StoreImpl) CreateUser(u User) (ULID, error) {
-	var userID ULID
-	err := s.Postgres.QueryRow(
-		`
-			insert into v1.users (
-				provider,
-				provider_user_id, 
-				email,
-				full_name,
-				user_name
-			)
-			values ($1, $2, $3, $4, $5)
-			returning id
-		`,
-		u.Provider,
-		u.ProviderUserID,
-		u.Email,
-		u.FullName,
-		u.UserName,
-	).Scan(&userID)
-	return userID, err
+// CreateUser inserts a new user record.
+func (s StoreImpl) CreateUser(u User) error {
+	result, err := s.DB.Exec(`
+		insert into v1.users (id, provider, provider_user_id, email, full_name, user_name)
+		values ($1, $2, $3, $4, $5, $6) 
+		on conflict (provider, provider_user_id) do nothing
+	`, u.ID, u.Provider, u.ProviderUserID, u.Email, u.FullName, u.UserName)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrUserAlreadyExists
+	}
+	return err
 }
 
 // CreateReaction records a reaction (from a candidate or recruiter) to a recommendation.
 func (s StoreImpl) CreateReaction(r Reaction) error {
-	result, err := s.Postgres.Exec(
-		`
-			insert into v1.reactions (
-				recommendation_id,
-				reactor_type,
-				reactor_id,
-				reaction_type
-			)
-			values ($1, $2, $3, $4)
-			on conflict (recommendation_id, reactor_type, reactor_id) do nothing
-		`,
-		r.RecommendationID,
-		r.ReactorType,
-		r.ReactorID,
-		r.ReactionType,
-	)
+	result, err := s.DB.Exec(`
+		insert into v1.reactions (recommendation_id, reactor_type, reactor_id, reaction_type)
+		values ($1, $2, $3, $4)
+		on conflict (recommendation_id, reactor_type, reactor_id) do nothing
+	`, r.RecommendationID, r.ReactorType, r.ReactorID, r.ReactionType)
 	if err != nil {
 		return err
 	}
@@ -400,89 +485,93 @@ func (s StoreImpl) CreateReaction(r Reaction) error {
 
 // CreateCandidate creates a candidate
 func (s StoreImpl) CreateCandidate(c Candidate) error {
-	_, err := s.Postgres.Exec(
-		`
-			insert into v1.candidates (
-				user_id,
-				about
-			)
-			values ($1, $2)
-		`,
-		c.UserID,
-		c.About,
-	)
-	return err
+	result, err := s.DB.Exec(`
+		insert into v1.candidates (id, user_id, about)
+		values ($1, $2, $3)
+		on conflict (id) do nothing
+	`, c.ID, c.UserID, c.About)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrCandidateAlreadyExists
+	}
+	return nil
 }
 
 // CreateRecruiter creates a recruiter
 func (s StoreImpl) CreateRecruiter(r Recruiter) error {
-	_, err := s.Postgres.Exec(
-		`
-			insert into v1.recruiters (
-				user_id
-			)
-			values ($1)
-		`,
-		r.UserID,
-	)
-	return err
+	result, err := s.DB.Exec(`
+		insert into v1.recruiters (id, user_id)
+		values ($1, $2)
+		on conflict (id) do nothing
+	`, r.ID, r.UserID)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrRecruiterAlreadyExists
+	}
+	return nil
 }
 
 // IsActiveSession checks if the JTI exists and is not expired.
 func (s StoreImpl) IsActiveSession(jti ULID) (bool, error) {
 	var isActive bool
-	return isActive, s.Postgres.QueryRow(
-		`
-			select revoked 
-			from v1.refresh_tokens 
-			where jti = $1 
-			and expires_at > now()
-		`,
-		jti,
-	).Scan(&isActive)
+	return isActive, s.DB.QueryRow(`
+		select revoked 
+		from v1.refresh_tokens 
+		where jti = $1 
+		and expires_at > now()
+	`, jti).Scan(&isActive)
 }
 
 // CreateRefreshToken creates a new refresh token record.
-func (s StoreImpl) CreateRefreshToken(userID ULID, expiresAt time.Time) (jti ULID, err error) {
-	err = s.Postgres.QueryRow(
+func (s StoreImpl) CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) error {
+	_, err := s.DB.Exec(
 		`
-		insert into v1.refresh_tokens (
-			user_id,
-			expires_at
-		)
-		values ($1, $2) 
-		returning jti
+		insert into v1.refresh_tokens (jti, user_id, expires_at)
+		values ($1, $2, $3) 
+		on conflict (jti, user_id, expires_at) do nothing
 		`,
+		jti,
 		userID,
 		expiresAt,
-	).Scan(&jti)
-	return jti, err
+	)
+	return err
 }
 
 // CreateRecommendation inserts a new recommendation for a candidate and a position.
-func (s StoreImpl) CreateRecommendation(positionID, candidateID ULID) (ULID, error) {
-	var recID ULID
-	if err := s.Postgres.QueryRow(`
-		insert into v1.recommendations (position_id, candidate_id)
-		values ($1, $2)
-		on conflict (position_id, candidate_id) do nothing
-		returning id
-	`, positionID, candidateID).Scan(&recID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", ErrRecommendationExists
-		}
-		return "", err
+func (s StoreImpl) CreateRecommendation(recommendation Recommendation) error {
+	result, err := s.DB.Exec(`
+		insert into v1.recommendations (recommendation_id, position_id, candidate_id)
+		values ($1, $2, $3)
+		on conflict (recommendation_id, position_id, candidate_id) do nothing
+	`, recommendation.ID, recommendation.PositionID, recommendation.CandidateID)
+	if err != nil {
+		return err
 	}
-	if recID == "" {
-		return "", ErrRecommendationExists
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
 	}
-
-	return recID, nil
+	if rows == 0 {
+		return ErrRecommendationAlreadyExists
+	}
+	return nil
 }
 
 // GetPositionRecommendations returns paginated position recommendations for a candidate.
 func (s StoreImpl) GetPositionRecommendations(candidateID ULID, page Page, excludeReacted bool) (positionRecommendations []PositionRecommendation, nextCursor ULID, err error) {
-	rows, err := s.Postgres.Query(`
+	rows, err := s.DB.Query(`
 		select r.id, p.id, p.title, p.company, p.description
 		from v1.recommendations r
 		join v1.positions p on p.id = r.position_id
@@ -521,7 +610,7 @@ func (s StoreImpl) GetPositionRecommendations(candidateID ULID, page Page, exclu
 }
 
 func (s StoreImpl) GetCandidateRecommendations(recruiterID ULID, page Page, excludeReacted bool) ([]CandidateRecommendation, ULID, error) {
-	rows, err := s.Postgres.Query(`
+	rows, err := s.DB.Query(`
 		select r.id, c.id, u.full_name, c.about
 		from v1.recommendations r
 		join v1.positions p on p.id = r.position_id
@@ -564,7 +653,7 @@ func (s StoreImpl) GetCandidateRecommendations(recruiterID ULID, page Page, excl
 
 // GetReactionsByCandidateID returns paginated reactions made by a candidate.
 func (s StoreImpl) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions []Reaction, nextCursor ULID, err error) {
-	rows, err := s.Postgres.Query(`
+	rows, err := s.DB.Query(`
 		select recommendation_id, reactor_type, reactor_id, reaction_type, created_at
 		from v1.reactions
 		where reactor_id = $1
@@ -586,9 +675,6 @@ func (s StoreImpl) GetReactionsByCandidateID(candidateID ULID, page Page) (react
 		}
 		results = append(results, rx)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
-	}
 
 	if len(results) > page.Limit {
 		results = results[:page.Limit]
@@ -600,7 +686,7 @@ func (s StoreImpl) GetReactionsByCandidateID(candidateID ULID, page Page) (react
 
 // GetMatchesByCandidateID returns paginated matches for a candidate.
 func (s StoreImpl) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []Match, nextCursor ULID, err error) {
-	rows, err := s.Postgres.Query(`
+	rows, err := s.DB.Query(`
 		select m.position_id, p.title, p.description, coalesce(p.company, ''), m.created_at
 		from v1.matches m
 		join v1.positions p on p.id = m.position_id
@@ -637,14 +723,11 @@ func (s StoreImpl) GetMatchesByCandidateID(candidateID ULID, page Page) (matches
 // GetRecruiterByUserID fetches a recruiter by their associated user ID.
 func (s StoreImpl) GetRecruiterByUserID(userID ULID) (*Recruiter, error) {
 	var rec Recruiter
-	err := s.Postgres.QueryRow(
-		`
-			select id, user_id 
-			from v1.recruiters 
-			where user_id = $1 limit 1
-		`,
-		userID,
-	).Scan(&rec.ID, &rec.UserID)
+	err := s.DB.QueryRow(`
+		select id, user_id 
+		from v1.recruiters 
+		where user_id = $1 limit 1
+	`, userID).Scan(&rec.ID, &rec.UserID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrRecruiterNotFound
@@ -652,4 +735,168 @@ func (s StoreImpl) GetRecruiterByUserID(userID ULID) (*Recruiter, error) {
 		return nil, err
 	}
 	return &rec, nil
+}
+
+func (s StoreImpl) UpsertEmbeddings(GoogleEmbeddingsResponseBody) error {
+	return nil
+}
+
+type EntityType string
+
+const (
+	EntityTypePosition  = "position"
+	EntityTypeCandidate = "candidate"
+)
+
+type EmbeddingJobStatus string
+
+const (
+	EmbeddingJobStatusPending = "pending"
+	EmbeddingJobStatusDone    = "done"
+	EmbeddingJobStatusFailed  = "failed"
+)
+
+type EmbeddingJob struct {
+	ID         ULID
+	EntityType EntityType
+	EntityID   ULID
+	Status     EmbeddingJobStatus
+}
+
+func (s StoreImpl) FetchPendingEmbeddingJobs(limit uint16) ([]EmbeddingJob, error) {
+	rows, err := s.DB.Query(`
+        select entity_type, entity_id
+        from embedding_jobs
+        where status in ('pending', 'failed')
+        order by updated_at asc
+        limit ?
+    `, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []EmbeddingJob
+
+	for rows.Next() {
+		var j EmbeddingJob
+		if err := rows.Scan(&j.EntityType, &j.EntityID); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+
+	return jobs, rows.Err()
+}
+
+func (s StoreImpl) MarkJobs(jobs []EmbeddingJob, status EmbeddingJobStatus) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	ids := make([]interface{}, len(jobs))
+	placeholders := make([]string, len(jobs))
+
+	for i, job := range jobs {
+		ids[i] = job.ID
+		placeholders[i] = "?"
+	}
+
+	query := fmt.Sprintf(`
+		 update embedding_jobs 
+		 set status = ? 
+		 where id in (%s)
+		`,
+		strings.Join(placeholders, ","),
+	)
+
+	args := append([]interface{}{status}, ids...)
+
+	_, err := s.DB.Exec(query, args...)
+	return err
+}
+
+func (s StoreImpl) MarkJob(jobID ULID, status EmbeddingJobStatus) error {
+	_, err := s.DB.Exec(`
+		 update embedding_jobs 
+		 set status = ? 
+		 where id = ?
+		`,
+		status,
+		jobID,
+	)
+	return err
+}
+
+func (s StoreImpl) UpsertEmbedding(entityType EntityType, entityID ULID, embedding Embedding) error {
+	var table string
+
+	switch entityType {
+	case EntityTypeCandidate:
+		table = "candidate_embeddings"
+	case EntityTypePosition:
+		table = "position_embeddings"
+	default:
+		return fmt.Errorf("unknown entity type: %s", entityType)
+	}
+
+	_, err := s.DB.Exec(
+		fmt.Sprintf(`
+			insert into %s (rowid, embedding)
+			values (?, ?)
+			on conflict(rowid) do update set embedding = excluded.embedding
+		`, table),
+		entityID,
+		embedding,
+	)
+
+	return err
+}
+
+func placeholders(n int) string {
+	ps := make([]string, n)
+	for i := range ps {
+		ps[i] = "?"
+	}
+	return strings.Join(ps, ",")
+}
+
+func (s StoreImpl) GetPositionsByIDs(ids []ULID) ([]Position, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	query := `
+		select id, title, description, is_active
+		from positions
+		where id in (` + placeholders(len(ids)) + `)
+	`
+
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var positions []Position
+
+	for rows.Next() {
+		var p Position
+		if err := rows.Scan(
+			&p.ID,
+			&p.Title,
+			&p.Description,
+			&p.IsActive,
+		); err != nil {
+			return nil, err
+		}
+		positions = append(positions, p)
+	}
+
+	return positions, nil
 }

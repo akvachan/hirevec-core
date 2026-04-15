@@ -26,9 +26,10 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# env files
 *env
 .env.*
+.ak
 !.example.env
 
 # Editor/IDE
@@ -40,3 +41,15 @@ go.work.sum
 
 # Some other crap
 .air.toml
+
+# Dependencies
+.qdrant/
+
+# Misc cache
+cache/
+
+# pycache
+__pycache__
+
+# Database
+.db

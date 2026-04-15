@@ -4,6 +4,7 @@
 package hirevec
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -24,37 +25,362 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const (
-	DefaultReadTimeout   = 2000 * time.Millisecond
-	DefaultWriteTimeout  = 2000 * time.Millisecond
-	DefaultGracePeriod   = 5000 * time.Millisecond
-	DefaultPageSizeLimit = 50
-	PageSizeMaxLimit     = 100
-)
-
 var (
-	ErrAboutForbiddenChars          = errors.New("about contains forbidden characters")
-	ErrAboutTooLong                 = errors.New("about too long")
-	ErrAboutTooShort                = errors.New("about too short")
-	ErrEmailNotVerified             = errors.New("email not verified")
-	ErrExtraDataDecoded             = errors.New("extra data decoded")
-	ErrFailedBindAddress            = errors.New("failed to bind address")
-	ErrFailedDecode                 = errors.New("failed to decode")
-	ErrFailedGenerateUsernameSuffix = errors.New("failed to generate random username suffix")
-	ErrFailedShutdownServer         = errors.New("failed to shutdown server")
-	ErrNameForbiddenChars           = errors.New("name contains forbidden characters")
-	ErrNameTooLong                  = errors.New("name too long")
-	ErrNameTooShort                 = errors.New("name too short")
-	ErrFailedCloseRequestBody       = errors.New("failed to close request body")
+	ErrFailedEmbeddingConnection        = errors.New("failed to connect to the embedding API")
+	ErrAboutForbiddenChars              = errors.New("about contains forbidden characters")
+	ErrAboutTooLong                     = errors.New("about too long")
+	ErrAboutTooShort                    = errors.New("about too short")
+	ErrEmailNotVerified                 = errors.New("email not verified")
+	ErrExtraDataDecoded                 = errors.New("extra data decoded")
+	ErrFailedBindAddress                = errors.New("failed to bind address")
+	ErrFailedCloseRequestBody           = errors.New("failed to close request body")
+	ErrFailedCreatePosEmbeddings        = errors.New("failed to create position embeddings")
+	ErrFailedCreateCanEmbeddings        = errors.New("failed to create candidate embeddings")
+	ErrFailedDecode                     = errors.New("failed to decode")
+	ErrFailedGenerateUsernameSuffix     = errors.New("failed to generate random username suffix")
+	ErrFailedGetPendingEmbeddingObjects = errors.New("failed to get pending embedding objects")
+	ErrFailedShutdownServer             = errors.New("failed to shutdown server")
+	ErrFailedUpsertPosEmbeddings        = errors.New("failed to upsert position embeddings")
+	ErrFailedUpsertCanEmbeddings        = errors.New("failed to upsert candidate embeddings")
+	ErrFailedDecodeEmbeddingsResponse   = errors.New("failed to decode embeddings response")
+	ErrFailedEncodeEmbeddingsRequest    = errors.New("failed to encode embeddings request")
+	ErrNameForbiddenChars               = errors.New("name contains forbidden characters")
+	ErrEmbeddingsCountMismatch          = errors.New("mismatched IDs and embeddings count")
+	ErrNameTooLong                      = errors.New("name too long")
+	ErrNameTooShort                     = errors.New("name too short")
+	ErrFailedCreateEmbeddingsRequest    = errors.New("embedding endpoint returned non-200 status")
 )
 
 type ServerConfig struct {
 	Protocol     string
 	Host         string
 	Port         uint16
+	AIProtocol   string
+	AIHost       string
+	AIPort       uint16
+	AIAPIKey     string
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	GracePeriod  time.Duration
+}
+
+type Part struct {
+	Text string `json:"text"`
+}
+
+type Embedding struct {
+	Values []float32 `json:"values"`
+	Shape  []int     `json:"shape"`
+}
+
+type EmbeddingsBatchIn struct {
+	IDs   []ULID `json:"ids"`
+	Parts []Part `json:"parts"`
+}
+
+type GoogleEmbeddingsResponseBody struct {
+	Embeddings []Embedding `json:"embeddings"`
+}
+
+type EmbeddingsBatchOut struct {
+	IDs        []ULID      `json:"ids"`
+	Embeddings []Embedding `json:"embeddings"`
+}
+
+const (
+	GoogleEmbeddingsEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
+	GoogleEmbeddingsModel    = "models/gemini-embedding-001"
+)
+
+func CreateEmbeddings(r EmbeddingsBatchIn) (*EmbeddingsBatchOut, error) {
+	var response GoogleEmbeddingsResponseBody
+
+	payload, err := json.Marshal(r)
+	if err != nil {
+		slog.Error("failed to encode embeddings request", "err", err)
+		return nil, ErrFailedEncodeEmbeddingsRequest
+	}
+
+	resp, err := http.Post(GoogleEmbeddingsEndpoint, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		slog.Error("create embeddings request failed", "err", err)
+		return nil, ErrFailedCreateEmbeddingsRequest
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		slog.Error("create embeddings request failed", "status", resp.Status)
+		return nil, ErrFailedCreateEmbeddingsRequest
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		slog.Error("failed to decode API response", "err", err)
+		return nil, ErrFailedDecodeEmbeddingsResponse
+	}
+
+	return &EmbeddingsBatchOut{
+		IDs:        r.IDs,
+		Embeddings: response.Embeddings,
+	}, nil
+}
+
+func LoadEmbeddingSources(s StoreInterface, jobs []EmbeddingJob) (*EmbeddingsBatchIn, error) {
+	in := EmbeddingsBatchIn{
+		IDs:   make([]ULID, 0, len(jobs)),
+		Parts: make([]Part, 0, len(jobs)),
+	}
+
+	for _, job := range jobs {
+		var text string
+
+		switch job.EntityType {
+		case EntityTypeCandidate:
+			candidate, err := s.GetCandidate(job.EntityID)
+			if err != nil {
+				return nil, err
+			}
+			text = fmt.Sprintf(`
+			# Candidate Profile
+
+			## About
+			%s
+			`, candidate.About)
+		case EntityTypePosition:
+			position, err := s.GetPosition(job.EntityID)
+			if err != nil {
+				return nil, err
+			}
+			text = fmt.Sprintf(`
+			# Job Posting
+
+			## Title
+			%s
+			
+			## Company
+			%s
+
+			## Description
+			%s
+			`, position.Title, position.Company, position.Description)
+		default:
+			return nil, errors.New("unknown entity type provided")
+		}
+
+		in.IDs = append(in.IDs, job.EntityID)
+		in.Parts = append(in.Parts, Part{text})
+	}
+
+	return &in, nil
+}
+
+const DefaultEmbeddingBatchSize uint16 = 64
+
+func RunEmbeddingsWorker(s StoreInterface) error {
+	jobs, err := s.FetchPendingEmbeddingJobs(DefaultEmbeddingBatchSize)
+	if err != nil {
+		return err
+	}
+	if len(jobs) == 0 {
+		return nil
+	}
+
+	batchIn, err := LoadEmbeddingSources(s, jobs)
+	if err != nil {
+		return err
+	}
+
+	batchOut, err := CreateEmbeddings(*batchIn)
+	if err != nil {
+		return s.MarkJobs(jobs, EmbeddingJobStatusPending)
+	}
+
+	for i := range batchOut.Embeddings {
+		job := jobs[i]
+
+		if err := s.UpsertEmbedding(job.EntityType, job.EntityID, batchOut.Embeddings[i]); err != nil {
+			return err
+		}
+
+		if err := s.MarkJob(job.ID, EmbeddingJobStatusDone); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func RunRecommendationsWorker(s StoreInterface, batchSize int, dailyLimit int) error {
+	rows, err := s.DB.Query(`
+		select c.id
+		from candidates c
+		join candidate_embeddings ce on ce.rowid = c.id
+		where date(c.last_recommended_at) < date('now')
+		limit ?
+	`, batchSize)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var candidateIDs []ULID
+	for rows.Next() {
+		var id ULID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		candidateIDs = append(candidateIDs, id)
+	}
+
+	for _, candidateID := range candidateIDs {
+		var embedding Embedding
+		err := db.QueryRow(`
+			select embedding
+			from candidate_embeddings
+			where rowid = ?
+		`, candidateID).Scan(&embedding)
+		if err != nil {
+			slog.Error("failed to load embedding for candidate %s: %v", candidateID, err)
+			continue
+		}
+
+		rows, err := db.Query(`
+			select pe.rowid
+			from position_embeddings pe
+			order by cosine(pe.embedding, ?) asc
+			limit 100
+		`, embedding)
+		if err != nil {
+			slog.Error("vector search failed: %v", err)
+			continue
+		}
+
+		var positionIDs []ULID
+		for rows.Next() {
+			var pid ULID
+			if err := rows.Scan(&pid); err != nil {
+				rows.Close()
+				continue
+			}
+			positionIDs = append(positionIDs, pid)
+		}
+		rows.Close()
+
+		if len(positionIDs) == 0 {
+			continue
+		}
+
+		query := `
+			select p.id
+			from positions p
+			where p.id in (` + placeholders(len(positionIDs)) + `)
+			and p.active = 1
+			and p.id not in (
+				select position_id from recommendations where candidate_id = ?
+			)
+		`
+
+		args := make([]any, 0, len(positionIDs)+1)
+		for _, id := range positionIDs {
+			args = append(args, id)
+		}
+		args = append(args, candidateID)
+
+		rows, err = db.Query(query, args...)
+		if err != nil {
+			slog.Error("filter query failed: %v", err)
+			continue
+		}
+
+		var filtered []ULID
+		for rows.Next() {
+			var id ULID
+			if err := rows.Scan(&id); err == nil {
+				filtered = append(filtered, id)
+			}
+		}
+		rows.Close()
+
+		if len(filtered) == 0 {
+			continue
+		}
+
+		var positions []Position
+		for _, pid := range filtered {
+			p, err := s.GetPosition(pid)
+			if err != nil {
+				continue
+			}
+			positions = append(positions, *p)
+		}
+
+		if len(positions) == 0 {
+			continue
+		}
+
+		ranked, err := RerankWithRetry(candidateID, positions)
+		if err != nil {
+			slog.Error("rerank failed for candidate %s: %v", candidateID, err)
+			continue
+		}
+
+		if len(ranked) > dailyLimit {
+			ranked = ranked[:dailyLimit]
+		}
+
+		tx, err := db.Begin()
+		if err != nil {
+			slog.Error("tx begin failed: %v", err)
+			continue
+		}
+
+		success := true
+
+		for _, p := range ranked {
+			ulid, err := NewRecommendationULID()
+			if err != nil {
+				return err
+			}
+			rec := Recommendation{
+				ID:          ulid,
+				CandidateID: candidateID,
+				PositionID:  p.ID,
+			}
+
+			_, err = tx.Exec(`
+				insert or ignore into recommendations (id, candidate_id, position_id)
+				values (?, ?, ?)
+			`, rec.ID, rec.CandidateID, rec.PositionID)
+			if err != nil {
+				slog.Error("insert recommendation failed: %v", err)
+				success = false
+				break
+			}
+		}
+
+		if success {
+			_, err = tx.Exec(`
+				update candidates
+				set last_recommended_at = current_timestamp
+				where id = ?
+			`, candidateID)
+			if err != nil {
+				slog.Error("update candidate failed: %v", err)
+				success = false
+			}
+		}
+
+		if success {
+			if err := tx.Commit(); err != nil {
+				slog.Error("commit failed: %v", err)
+				continue
+			}
+		} else {
+			tx.Rollback()
+			continue
+		}
+	}
+
+	return nil
 }
 
 func RunServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInterface) error {
@@ -80,6 +406,40 @@ func RunServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInt
 	}()
 	slog.Info("HTTP server ready", "addr", server.Addr)
 
+	embeddingsWorkerTicker := time.NewTicker(5 * time.Second) // once every 5 seconds
+	defer embeddingsWorkerTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("embeddings worker shutting down")
+				return
+			case <-embeddingsWorkerTicker.C:
+				if err := RunEmbeddingsWorker(s); err != nil {
+					slog.Error("embeddings worker failed", "err", err)
+				}
+			}
+		}
+	}()
+
+	recommendationsWorkerTicker := time.NewTicker(24 * time.Hour) // once per day
+	defer recommendationsWorkerTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("recommendations worker shutting down")
+				return
+			case <-recommendationsWorkerTicker.C:
+				if err := RunRecommendationsWorker(); err != nil {
+					slog.Error("recommendations worker failed", "err", err)
+				}
+			}
+		}
+	}()
+
 	return WaitAndShutdown(ctx, server, errCh, c.GracePeriod)
 }
 
@@ -88,7 +448,7 @@ func NewServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInt
 		Addr:         fmt.Sprintf("%s:%v", c.Host, c.Port),
 		ReadTimeout:  c.ReadTimeout,
 		WriteTimeout: c.WriteTimeout,
-		Handler:      RootMux(s, v),
+		Handler:      RootMux(c, s, v),
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
 	}, nil
@@ -172,14 +532,19 @@ func GetClaims(r *http.Request) (*AccessTokenClaims, bool) {
 	return claims, ok
 }
 
+const (
+	DefaultPageSize = 32
+	MaxPageSize     = 128
+)
+
 func GetPagination(r *http.Request) Page {
 	p := Page{
 		Cursor: r.URL.Query().Get("cursor"),
-		Limit:  DefaultPageSizeLimit,
+		Limit:  DefaultPageSize,
 	}
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
-			p.Limit = min(parsed, PageSizeMaxLimit)
+			p.Limit = min(parsed, MaxPageSize)
 		}
 	}
 	return p
@@ -311,7 +676,7 @@ func ProtectedRoute(cfg RouteConfig, v VaultInterface) {
 	)
 }
 
-func RootMux(s StoreInterface, v VaultInterface) http.Handler {
+func RootMux(c ServerConfig, s StoreInterface, v VaultInterface) http.Handler {
 	mux := http.NewServeMux()
 
 	PublicRoute(RouteConfig{
@@ -739,13 +1104,22 @@ func FinishAuthFlow(s StoreInterface, v VaultInterface, w http.ResponseWriter, u
 	userID, roles, err := s.GetUserByProvider(user.Provider, user.ProviderUserID)
 
 	if errors.Is(err, ErrUserNotFound) {
+		userID, ulidErr := NewUserULID()
+		if ulidErr != nil {
+			slog.Error("ULID generation failed", "err", err)
+			AuthError(w, AuthInvalidRequest, "internal server error")
+			return
+		}
+		user.ID = userID
+
 		user.UserName, err = GenerateUsername()
 		if err != nil {
 			slog.Error("username generation failed", "err", err)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
-		userID, err := s.CreateUser(user)
+
+		err := s.CreateUser(user)
 		if err != nil {
 			slog.Error("query failed", "err", err)
 			AuthError(w, AuthInvalidRequest, "internal server error")
@@ -779,7 +1153,14 @@ func CreateOnboardingToken(v VaultInterface, w http.ResponseWriter, userID ULID,
 }
 
 func CreateTokenPair(s StoreInterface, v VaultInterface, w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
-	jti, err := s.CreateRefreshToken(userID, time.Now().UTC().Add(DefaultRefreshTokenExpiration.Abs()))
+	jti, err := NewJTIULID()
+	if err != nil {
+		slog.Error("ULID generation failed", "err", err)
+		AuthError(w, AuthInvalidRequest, "internal server error")
+		return
+	}
+
+	err = s.CreateRefreshToken(jti, userID, time.Now().UTC().Add(DefaultRefreshTokenExpiration.Abs()))
 	if err != nil {
 		slog.Error("query failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")

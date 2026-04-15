@@ -9,6 +9,8 @@ import (
 	"os"
 )
 
+var Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 func Exit(msg string, args ...any) {
 	slog.Error(msg, args...)
 	os.Exit(1)

@@ -1,66 +1,38 @@
-# Hirevec Backend
+# Hirevec Core
 
 ## About Hirevec
-Hirevec is a (placeholder) application that uses a recommendation engine to match candidates with positions and recruiters with candidates.
-This repository contains the backend server implementation.
-
-## Philosophy
-- The server strives to be simple and lightweight, we intentionally avoid heavy fullstack frameworks.
-- The server follows HATEOAS philosophy, meaning that we provide next available actions (`_links`) in the response body where it is appropriate:
-```json
-{
-    "_links": {
-      "reaction": {
-        "href": "/v1/me/recommendations/rcm_01kmahehzgtq01pq9vy17579ve/reaction"
-      },
-      "self": {
-        "href": "/v1/me/recommendations/rcm_01kmahehzgtq01pq9vy17579ve"
-      }
-    },
-    "about": "Test candidate with full-stack experience",
-    "candidate_id": "can_01kmahehzfmh1s64qg7d4szfrk",
-    "full_name": "Test User",
-    "recommendation_id": "rcm_01kmahehzgtq01pq9vy17579ve"
-}
-```
-- The server does not use any external build systems, package managers or shell scripts, thus trying to be as cross-platform as possible.
-- The system is designed to operate without additional infrastructure such as Redis or vector databases.
-- The server follows best practices and implements RFCs wherever it can. We do not make up our own concepts or conventions.
+Hirevec is a job recommendation engine.
+It helps candidates find suitable positions based on their profile and helps recruiters find suitable candidates.
 
 ## Quick Start
 
-### Requirements
-- go >= 1.25.5 
-- postgres >= 17.9
-
-1. Set up required environment variables in `.env` as shown in [.example.env](.example.env).
-2. Set up server (creates a new database, with a new database user) dependencies:
-```bash
-go run cmd/setup/main.go --dev
-```
-3. Run the Go server:
-```
-go run cmd/server/main.go
-```
-4. Open [http://localhost:8080/health](http://localhost:8080/health).
-
-## Cleanup
-In case, for whatever reason, you want to completely remove the database and everything created by the setup script, run cleanup script:
-```bash
-go run cmd/cleanup/main.go
+```sh
+go run cmd/core/main.go
 ```
 
-## CLI API Client
-1. Generate access token (token gives access to a test user with some data bound to it already):
-```
-go run cmd/token/main.go
-```
-2. Set `ACCESS_TOKEN` either in shell environment variables or `.env`.
-3. Call the script with a path:
-```
-go run cmd/api/main.go "/v1/me/recommendations"
-```
-or 
-```
-go run cmd/api/main.go "/v1/me/recommendations/{id}/reaction" POST '{"reaction_type":"positive"}'
-```
+## Features
+
+- SQLite with a custom vector search extension under the hood.
+- Utilizes `gemini-embedding-001` embeddings for semantic encodig. 
+- If offline or no `GOOGLE_API_KEY` provided as environment variable, then uses [Okapi BM25](https://en.wikipedia.org/wiki/Okapi_BM25).
+
+## Notes
+
+Embeddings Job (once every 30 seconds):
+1. Select up to N pending or failed embedding jobs with attempts < max_attempts.
+2. For each job, load the source data.
+3. Batch data and send batches to the embedding serevice.
+4. For each embedding, If the source changed during processing, leave status as pending; otherwise upsert and mark completed.
+5. On transient failure, leave status as pending.
+6. On permanent failure, increment attempts and mark failed if max reached.
+
+Recommendation Job (once every 24 hours):
+1. Select candidates with completed embeddings who haven’t been given recommendations today, limited by batch size.
+2. Load the candidate’s embedding vector.
+3. Perform vector search to find top positions.
+4. Filter out inactive or already recommended positions.
+5. Fetch position details from the database.
+6. Call rerank service with retries on transient failures.
+7. Take the top daily_limit positions from reranked results.
+8. In a transaction, insert recommendations and update the candidate’s last_recommended_at.
+9. On transaction failure, rollback, log, and continue to next candidate.

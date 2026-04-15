@@ -72,26 +72,37 @@ func ParseUint16WithDefault(value string, defaultValue uint16) uint16 {
 	return uint16(parsedValue)
 }
 
+func ParseIntWithDefault(value string, defaultValue int) int {
+	parsedValue, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		slog.Warn(
+			"failed to parse int, using default",
+			"value", value,
+			"default", defaultValue,
+		)
+		return defaultValue
+	}
+	return int(parsedValue)
+}
+
 type AppConfig struct {
-	Protocol            string
 	Host                string
 	Port                string
+	LogLevel            string
 	RequestReadTimeout  string
 	RequestWriteTimeout string
 	GracePeriod         string
-	PostgresHost        string
-	PostgresPort        string
-	PostgresDB          string
-	PostgresUser        string
-	PostgresPassword    string
-	LogLevel            string
-	SymmetricKey        string
-	AsymmetricKey       string
 	GoogleClientID      string
 	GoogleClientSecret  string
 	AppleClientID       string
 	AppleClientSecret   string
 }
+
+const (
+	DefaultReadTimeout  = 2000 * time.Millisecond
+	DefaultWriteTimeout = 2000 * time.Millisecond
+	DefaultGracePeriod  = 5000 * time.Millisecond
+)
 
 func RunApp(c AppConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -106,29 +117,19 @@ func RunApp(c AppConfig) error {
 	vault, err := NewVault(
 		ctx,
 		VaultConfig{
-			Host:               c.Host,
-			Port:               c.Port,
+			ServerHost:         c.Host,
+			ServerPort:         c.Port,
 			GoogleClientID:     c.GoogleClientID,
 			GoogleClientSecret: c.GoogleClientSecret,
 			AppleClientID:      c.AppleClientID,
 			AppleClientSecret:  c.AppleClientSecret,
-			SymmetricKeyHex:    c.SymmetricKey,
-			AsymmetricKeyHex:   c.AsymmetricKey,
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("vault init failed: %w", err)
 	}
 
-	store, err := NewStore(
-		StoreConfig{
-			PostgresHost:     c.PostgresHost,
-			PostgresPort:     ParseUint16WithDefault(c.PostgresPort, 5432),
-			PostgresDB:       c.PostgresDB,
-			PostgresUser:     c.PostgresUser,
-			PostgresPassword: c.PostgresPassword,
-		},
-	)
+	store, err := NewStore()
 	if err != nil {
 		return fmt.Errorf("store init failed: %w", err)
 	}
@@ -136,7 +137,6 @@ func RunApp(c AppConfig) error {
 	return RunServer(
 		ctx,
 		ServerConfig{
-			Protocol:     c.Protocol,
 			Host:         c.Host,
 			Port:         ParseUint16WithDefault(c.Port, 8080),
 			ReadTimeout:  ParseDurationWithDefault(c.RequestReadTimeout, DefaultReadTimeout),
