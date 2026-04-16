@@ -16,14 +16,13 @@ create table if not exists refresh_tokens (
     revoked boolean default false,
     unique(jti)
 );
-
-create index if not exists idx_refresh_tokens_user_id
-on refresh_tokens(user_id);
+create index if not exists idx_refresh_tokens_user_id on refresh_tokens(user_id);
 
 create table if not exists candidates (
     id text primary key not null,
     user_id text not null references users(id) on delete cascade,
     about text not null,
+    aggregated_info text not null,
     last_recommended_at timestamp not null default current_timestamp
     unique(user_id)
 );
@@ -39,9 +38,11 @@ create table if not exists positions (
     title text not null,
     description text not null,
     company text,
+    aggregated_info text not null,
     is_active integer not null default 1 check (is_active in (0, 1))
     unique(title, description, company)
 );
+create index idx_positions_active on positions(active);
 
 create table if not exists recommendations (
     id text primary key not null,
@@ -49,15 +50,10 @@ create table if not exists recommendations (
     candidate_id text not null references candidates(id) on delete cascade,
     unique(position_id, candidate_id)
 );
-
-create index if not exists idx_recommendations_position
-on recommendations(position_id);
-
-create index if not exists idx_recommendations_candidate
-on recommendations(candidate_id);
-
-create index if not exists idx_recommendations_candidate_id
-on recommendations(candidate_id, id);
+create index idx_recommendations_candidate_position on recommendations(candidate_id, position_id);
+create index if not exists idx_recommendations_position on recommendations(position_id);
+create index if not exists idx_recommendations_candidate on recommendations(candidate_id);
+create index if not exists idx_recommendations_candidate_id on recommendations(candidate_id, id);
 
 create table if not exists reactions (
     recommendation_id text not null references recommendations(id) on delete cascade,
@@ -67,9 +63,7 @@ create table if not exists reactions (
     created_at timestamp not null default current_timestamp,
     primary key (recommendation_id, reactor_type, reactor_id)
 );
-
-create index if not exists idx_reactions_recommendation
-on reactions(recommendation_id);
+create index if not exists idx_reactions_recommendation on reactions(recommendation_id);
 
 create table if not exists matches (
     candidate_id text not null references candidates(id) on delete cascade,
@@ -85,8 +79,8 @@ create table if not exists embedding_jobs (
     status text not null check (status in ('pending', 'done', 'failed')),
 );
 
-create table if not exists candidate_embeddings
-using vec(dim=768, metric="cosine");
+create table if not exists candidate_embeddings using vec(dim=768, metric="cosine");
+create index idx_position_embeddings_rowid on position_embeddings(rowid);
 
-create table if not exists position_embeddings
-using vec(dim=768, metric="cosine");
+create table if not exists position_embeddings using vec(dim=768, metric="cosine");
+create index idx_position_embeddings_rowid on position_embeddings(rowid);

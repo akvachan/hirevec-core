@@ -1,7 +1,7 @@
 # Hirevec Core
 
 ## About Hirevec
-Hirevec is a job recommendation engine.
+Hirevec is a job recommendation engine, implemented in pure Go with minimal dependencies.
 It helps candidates find suitable positions based on their profile and helps recruiters find suitable candidates.
 
 ## Quick Start
@@ -9,6 +9,18 @@ It helps candidates find suitable positions based on their profile and helps rec
 ```sh
 go run cmd/core/main.go
 ```
+
+## Development tips and shit
+
+Use Linux kernel sybsystem `inotify` to hot-reload the server when source code changes:
+```sh
+while inotifywait -e close_write,moved_to,create -r .; do
+  clear
+  go run .
+done
+```
+
+I have this saved in my kitty session, such that when session starts this little loop starts with it.
 
 ## Features
 

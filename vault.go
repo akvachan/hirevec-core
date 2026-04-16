@@ -103,7 +103,10 @@ const (
 	RoleOnboarding Role = "onboarding"
 )
 
-type Scope []ScopeValue
+type (
+	ScopeValue string
+	Scope      []ScopeValue
+)
 
 func (s Scope) Raw() string {
 	var result []string
@@ -113,48 +116,12 @@ func (s Scope) Raw() string {
 	return strings.Join(result, " ")
 }
 
-type ScopeValue string
-
-const (
-	ScopeValueCandidate  ScopeValue = "role:candidate"
-	ScopeValueRecruiter  ScopeValue = "role:recruiter"
-	ScopeValueOnboarding ScopeValue = "role:onboarding"
-)
-
-func ToScopeValue(str string) (ScopeValue, error) {
-	switch str {
-	case "role:candidate":
-		return ScopeValueCandidate, nil
-	case "role:recruiter":
-		return ScopeValueRecruiter, nil
-	case "role:onboarding":
-		return ScopeValueOnboarding, nil
-	default:
-		return "", ErrInvalidScopeValue
-	}
-}
-
 type IssuedTokenType string
 
 const (
 	IssuedTokenTypeRefreshToken IssuedTokenType = "urn:ietf:params:oauth:token-type:refresh_token"
 	IssuedTokenTypeAccessToken  IssuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
 )
-
-type VaultInterface interface {
-	CreateAccessToken(userID ULID, provider Provider, roles map[Role]ULID) (*AccessToken, error)
-	CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error)
-	CreateRefreshToken(userID ULID, provider Provider, jti ULID) (*RefreshToken, error)
-	CreateTokenPair(userID ULID, provider Provider, jti ULID, roles map[Role]ULID) (*TokenPair, error)
-	CreateStateToken(provider Provider) (string, error)
-	ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifier *http.Cookie) (string, error)
-	ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifier *http.Cookie) (string, error)
-	ParseAccessToken(token string) (*AccessTokenClaims, error)
-	ParseRefreshToken(token string) (*RefreshTokenClaims, error)
-	ParseStateToken(token string) (*StateTokenClaims, error)
-	VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (*User, error)
-	VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (*User, error)
-}
 
 type VaultConfig struct {
 	ServerHost             string
@@ -167,7 +134,7 @@ type VaultConfig struct {
 	AccessTokenExpiration  time.Duration
 }
 
-type VaultImpl struct {
+type Vault struct {
 	AccessTokenParser      paseto.Parser
 	RefreshTokenParser     paseto.Parser
 	StateTokenParser       paseto.Parser
@@ -185,7 +152,7 @@ type OIDCConfig struct {
 	Verifier     *oidc.IDTokenVerifier
 }
 
-func NewVault(ctx context.Context, cfg VaultConfig) (*VaultImpl, error) {
+func NewVault(ctx context.Context, cfg VaultConfig) (*Vault, error) {
 	accessTokenParser := paseto.NewParser()
 	accessTokenParser.AddRule(paseto.ForAudience(TokenAudience))
 	accessTokenParser.AddRule(paseto.IssuedBy(TokenIssuer))
@@ -226,7 +193,7 @@ func NewVault(ctx context.Context, cfg VaultConfig) (*VaultImpl, error) {
 		return nil, ErrFailedCreateAppleOIDCProvider
 	}
 
-	vault := VaultImpl{
+	vault := Vault{
 		AccessTokenParser:     accessTokenParser,
 		RefreshTokenParser:    refreshTokenParser,
 		StateTokenParser:      stateTokenParser,
@@ -265,7 +232,7 @@ type StateTokenClaims struct {
 	CSRF     string   `json:"csrf"`
 }
 
-func (v VaultImpl) CreateStateToken(provider Provider) (string, error) {
+func (v Vault) CreateStateToken(provider Provider) (string, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
@@ -290,7 +257,7 @@ func (v VaultImpl) CreateStateToken(provider Provider) (string, error) {
 	return token.V4Encrypt(v.V4SymmetricKey, nil), nil
 }
 
-func (v VaultImpl) ParseStateToken(raw string) (*StateTokenClaims, error) {
+func (v Vault) ParseStateToken(raw string) (*StateTokenClaims, error) {
 	token, err := v.StateTokenParser.ParseV4Local(v.V4SymmetricKey, raw, nil)
 	if err != nil {
 		return nil, ErrInvalidStateToken
@@ -316,7 +283,7 @@ func (v VaultImpl) ParseStateToken(raw string) (*StateTokenClaims, error) {
 	}, nil
 }
 
-func (v VaultImpl) CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error) {
+func (v Vault) CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error) {
 	var config *oauth2.Config
 
 	switch provider {
@@ -332,7 +299,7 @@ func (v VaultImpl) CreateAuthCodeURL(state string, verifier string, provider Pro
 	return url, nil
 }
 
-func (v VaultImpl) ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
+func (v Vault) ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
 	tok, err := v.GoogleOIDCConfig.OAuth2Config.Exchange(
 		ctx,
 		code,
@@ -350,7 +317,7 @@ func (v VaultImpl) ExchangeGoogleCodeForIDToken(ctx context.Context, code string
 	return rawIDToken, nil
 }
 
-func (v VaultImpl) ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
+func (v Vault) ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
 	tok, err := v.AppleOIDCConfig.OAuth2Config.Exchange(
 		ctx,
 		code,
@@ -368,7 +335,7 @@ func (v VaultImpl) ExchangeAppleCodeForIDToken(ctx context.Context, code string,
 	return rawIDToken, nil
 }
 
-func (v VaultImpl) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (*User, error) {
+func (v Vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (*User, error) {
 	idToken, err := v.GoogleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return nil, ErrInvalidIDToken
@@ -403,7 +370,7 @@ func (v VaultImpl) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken s
 	}, nil
 }
 
-func (v VaultImpl) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (*User, error) {
+func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (*User, error) {
 	idToken, err := v.AppleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return nil, ErrInvalidIDToken
@@ -481,7 +448,7 @@ type (
 	}
 )
 
-func (v VaultImpl) ParseAccessToken(tokenString string) (*AccessTokenClaims, error) {
+func (v Vault) ParseAccessToken(tokenString string) (*AccessTokenClaims, error) {
 	parsedToken, err := v.AccessTokenParser.ParseV4Public(v.V4AsymmetricPublicKey, tokenString, nil)
 	if err != nil {
 		return nil, ErrInvalidAccessToken
@@ -518,7 +485,7 @@ func (v VaultImpl) ParseAccessToken(tokenString string) (*AccessTokenClaims, err
 	}, nil
 }
 
-func (v VaultImpl) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, error) {
+func (v Vault) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, error) {
 	parsedToken, err := v.RefreshTokenParser.ParseV4Local(v.V4SymmetricKey, tokenString, nil)
 	if err != nil {
 		return nil, ErrInvalidRefreshToken
@@ -575,7 +542,7 @@ func RolesToScope(roles map[Role]ULID) (*Scope, error) {
 	return &scope, nil
 }
 
-func (v VaultImpl) CreateAccessToken(userID ULID, provider Provider, roles map[Role]ULID) (*AccessToken, error) {
+func (v Vault) CreateAccessToken(userID ULID, provider Provider, roles map[Role]ULID) (*AccessToken, error) {
 	now := time.Now().UTC()
 
 	_, hasOnboarding := roles[RoleOnboarding]
@@ -641,7 +608,7 @@ func (v VaultImpl) CreateAccessToken(userID ULID, provider Provider, roles map[R
 	}, nil
 }
 
-func (v VaultImpl) CreateRefreshToken(userID ULID, provider Provider, jti ULID) (*RefreshToken, error) {
+func (v Vault) CreateRefreshToken(userID ULID, provider Provider, jti ULID) (*RefreshToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
@@ -675,7 +642,7 @@ func (v VaultImpl) CreateRefreshToken(userID ULID, provider Provider, jti ULID) 
 	}, nil
 }
 
-func (v VaultImpl) CreateTokenPair(userID ULID, provider Provider, jti ULID, roles map[Role]ULID) (*TokenPair, error) {
+func (v Vault) CreateTokenPair(userID ULID, provider Provider, jti ULID, roles map[Role]ULID) (*TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, roles)
 	if err != nil {
 		return nil, ErrFailedCreateAccessToken

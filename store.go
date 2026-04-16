@@ -204,38 +204,11 @@ type (
 	}
 )
 
-type StoreInterface interface {
-	MarkJobs(jobs []EmbeddingJob, status EmbeddingJobStatus) error
-	MarkJob(jobID ULID, status EmbeddingJobStatus) error
-	FetchPendingEmbeddingJobs(limit uint16) ([]EmbeddingJob, error)
-	UpsertEmbedding(entityType EntityType, entityID ULID, embedding Embedding) error
-
-	CreateCandidate(Candidate) error
-	CreateReaction(Reaction) error
-	CreateRecommendation(Recommendation) error
-	CreateRecruiter(Recruiter) error
-	CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) error
-	CreateUser(User) error
-
-	GetCandidate(ID ULID) (*Candidate, error)
-	GetCandidateRecommendations(candidateID ULID, page Page, excludeReacted bool) (candidateRecommenations []CandidateRecommendation, nextCursor ULID, err error)
-	GetMatchesByCandidateID(ULID, Page) (matches []Match, nextCursos ULID, err error)
-	GetPosition(ULID) (*Position, error)
-	GetPositionRecommendations(candidateID ULID, page Page, excludeReacted bool) (positionRecommendations []PositionRecommendation, nextCursor ULID, err error)
-	GetPositionsByIDs(IDs []ULID) ([]Position, error)
-	GetReactionsByCandidateID(ULID, Page) (reactions []Reaction, nextCursor ULID, err error)
-	GetRecommendation(ULID) (*Recommendation, error)
-	GetUserByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error)
-	GetUserRoles(ULID, Provider) (map[Role]ULID, error)
-
-	IsActiveSession(jti ULID) (bool, error)
-}
-
-type StoreImpl struct {
+type Store struct {
 	DB *sql.DB
 }
 
-func NewStore() (*StoreImpl, error) {
+func NewStore() (*Store, error) {
 	db, err := ConnectToDB()
 	if err != nil {
 		return nil, err
@@ -249,18 +222,7 @@ func NewStore() (*StoreImpl, error) {
 		return nil, err
 	}
 
-	return &StoreImpl{db}, nil
-}
-
-type QdrantCollection string
-
-const (
-	QdrantCollectionPositions  QdrantCollection = "positions"
-	QdrantCollectionCandidates QdrantCollection = "candidates"
-)
-
-func (c QdrantCollection) Raw() string {
-	return string(c)
+	return &Store{db}, nil
 }
 
 const EmbeddingSize uint64 = 0
@@ -313,7 +275,7 @@ func ConnectToDB() (*sql.DB, error) {
 	return db, nil
 }
 
-func (s StoreImpl) GetCandidate(id ULID) (*Candidate, error) {
+func (s Store) GetCandidate(id ULID) (*Candidate, error) {
 	var c Candidate
 
 	err := s.DB.QueryRow(`
@@ -328,7 +290,7 @@ func (s StoreImpl) GetCandidate(id ULID) (*Candidate, error) {
 	return &c, nil
 }
 
-func (s StoreImpl) GetRecommendation(id ULID) (*Recommendation, error) {
+func (s Store) GetRecommendation(id ULID) (*Recommendation, error) {
 	var r Recommendation
 
 	err := s.DB.QueryRow(`
@@ -343,7 +305,7 @@ func (s StoreImpl) GetRecommendation(id ULID) (*Recommendation, error) {
 	return &r, nil
 }
 
-func (s StoreImpl) GetPosition(id ULID) (*Position, error) {
+func (s Store) GetPosition(id ULID) (*Position, error) {
 	var p Position
 
 	err := s.DB.QueryRow(`
@@ -359,7 +321,7 @@ func (s StoreImpl) GetPosition(id ULID) (*Position, error) {
 }
 
 // GetCandidateByUserID fetches a candidate by their associated user ID.
-func (s StoreImpl) GetCandidateByUserID(userID ULID) (*Candidate, error) {
+func (s Store) GetCandidateByUserID(userID ULID) (*Candidate, error) {
 	var c Candidate
 	err := s.DB.QueryRow(`
 		select id, user_id, about
@@ -378,7 +340,7 @@ func (s StoreImpl) GetCandidateByUserID(userID ULID) (*Candidate, error) {
 }
 
 // GetUserByProvider retrieves an existing user and his role based on their provider details.
-func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error) {
+func (s Store) GetUserByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error) {
 	var userID ULID
 	var candidateID, recruiterID sql.NullString
 	err := s.DB.QueryRow(`
@@ -413,7 +375,7 @@ func (s StoreImpl) GetUserByProvider(provider Provider, providerUserID string) (
 }
 
 // GetUserRoles fetches user roles by user's ID and provider.
-func (s StoreImpl) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, error) {
+func (s Store) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, error) {
 	var candidateID, recruiterID sql.NullString
 	err := s.DB.QueryRow(`
 		select
@@ -444,7 +406,7 @@ func (s StoreImpl) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, 
 }
 
 // CreateUser inserts a new user record.
-func (s StoreImpl) CreateUser(u User) error {
+func (s Store) CreateUser(u User) error {
 	result, err := s.DB.Exec(`
 		insert into v1.users (id, provider, provider_user_id, email, full_name, user_name)
 		values ($1, $2, $3, $4, $5, $6) 
@@ -464,7 +426,7 @@ func (s StoreImpl) CreateUser(u User) error {
 }
 
 // CreateReaction records a reaction (from a candidate or recruiter) to a recommendation.
-func (s StoreImpl) CreateReaction(r Reaction) error {
+func (s Store) CreateReaction(r Reaction) error {
 	result, err := s.DB.Exec(`
 		insert into v1.reactions (recommendation_id, reactor_type, reactor_id, reaction_type)
 		values ($1, $2, $3, $4)
@@ -484,7 +446,7 @@ func (s StoreImpl) CreateReaction(r Reaction) error {
 }
 
 // CreateCandidate creates a candidate
-func (s StoreImpl) CreateCandidate(c Candidate) error {
+func (s Store) CreateCandidate(c Candidate) error {
 	result, err := s.DB.Exec(`
 		insert into v1.candidates (id, user_id, about)
 		values ($1, $2, $3)
@@ -504,7 +466,7 @@ func (s StoreImpl) CreateCandidate(c Candidate) error {
 }
 
 // CreateRecruiter creates a recruiter
-func (s StoreImpl) CreateRecruiter(r Recruiter) error {
+func (s Store) CreateRecruiter(r Recruiter) error {
 	result, err := s.DB.Exec(`
 		insert into v1.recruiters (id, user_id)
 		values ($1, $2)
@@ -524,7 +486,7 @@ func (s StoreImpl) CreateRecruiter(r Recruiter) error {
 }
 
 // IsActiveSession checks if the JTI exists and is not expired.
-func (s StoreImpl) IsActiveSession(jti ULID) (bool, error) {
+func (s Store) IsActiveSession(jti ULID) (bool, error) {
 	var isActive bool
 	return isActive, s.DB.QueryRow(`
 		select revoked 
@@ -535,7 +497,7 @@ func (s StoreImpl) IsActiveSession(jti ULID) (bool, error) {
 }
 
 // CreateRefreshToken creates a new refresh token record.
-func (s StoreImpl) CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) error {
+func (s Store) CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) error {
 	_, err := s.DB.Exec(
 		`
 		insert into v1.refresh_tokens (jti, user_id, expires_at)
@@ -550,7 +512,7 @@ func (s StoreImpl) CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time
 }
 
 // CreateRecommendation inserts a new recommendation for a candidate and a position.
-func (s StoreImpl) CreateRecommendation(recommendation Recommendation) error {
+func (s Store) CreateRecommendation(recommendation Recommendation) error {
 	result, err := s.DB.Exec(`
 		insert into v1.recommendations (recommendation_id, position_id, candidate_id)
 		values ($1, $2, $3)
@@ -570,7 +532,7 @@ func (s StoreImpl) CreateRecommendation(recommendation Recommendation) error {
 }
 
 // GetPositionRecommendations returns paginated position recommendations for a candidate.
-func (s StoreImpl) GetPositionRecommendations(candidateID ULID, page Page, excludeReacted bool) (positionRecommendations []PositionRecommendation, nextCursor ULID, err error) {
+func (s Store) GetPositionRecommendations(candidateID ULID, page Page, excludeReacted bool) (positionRecommendations []PositionRecommendation, nextCursor ULID, err error) {
 	rows, err := s.DB.Query(`
 		select r.id, p.id, p.title, p.company, p.description
 		from v1.recommendations r
@@ -609,7 +571,7 @@ func (s StoreImpl) GetPositionRecommendations(candidateID ULID, page Page, exclu
 	return results, nextCursor, nil
 }
 
-func (s StoreImpl) GetCandidateRecommendations(recruiterID ULID, page Page, excludeReacted bool) ([]CandidateRecommendation, ULID, error) {
+func (s Store) GetCandidateRecommendations(recruiterID ULID, page Page, excludeReacted bool) ([]CandidateRecommendation, ULID, error) {
 	rows, err := s.DB.Query(`
 		select r.id, c.id, u.full_name, c.about
 		from v1.recommendations r
@@ -652,7 +614,7 @@ func (s StoreImpl) GetCandidateRecommendations(recruiterID ULID, page Page, excl
 }
 
 // GetReactionsByCandidateID returns paginated reactions made by a candidate.
-func (s StoreImpl) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions []Reaction, nextCursor ULID, err error) {
+func (s Store) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions []Reaction, nextCursor ULID, err error) {
 	rows, err := s.DB.Query(`
 		select recommendation_id, reactor_type, reactor_id, reaction_type, created_at
 		from v1.reactions
@@ -685,7 +647,7 @@ func (s StoreImpl) GetReactionsByCandidateID(candidateID ULID, page Page) (react
 }
 
 // GetMatchesByCandidateID returns paginated matches for a candidate.
-func (s StoreImpl) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []Match, nextCursor ULID, err error) {
+func (s Store) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []Match, nextCursor ULID, err error) {
 	rows, err := s.DB.Query(`
 		select m.position_id, p.title, p.description, coalesce(p.company, ''), m.created_at
 		from v1.matches m
@@ -721,7 +683,7 @@ func (s StoreImpl) GetMatchesByCandidateID(candidateID ULID, page Page) (matches
 }
 
 // GetRecruiterByUserID fetches a recruiter by their associated user ID.
-func (s StoreImpl) GetRecruiterByUserID(userID ULID) (*Recruiter, error) {
+func (s Store) GetRecruiterByUserID(userID ULID) (*Recruiter, error) {
 	var rec Recruiter
 	err := s.DB.QueryRow(`
 		select id, user_id 
@@ -737,7 +699,7 @@ func (s StoreImpl) GetRecruiterByUserID(userID ULID) (*Recruiter, error) {
 	return &rec, nil
 }
 
-func (s StoreImpl) UpsertEmbeddings(GoogleEmbeddingsResponseBody) error {
+func (s Store) UpsertEmbeddings(GoogleEmbeddingsResponseBody) error {
 	return nil
 }
 
@@ -763,7 +725,7 @@ type EmbeddingJob struct {
 	Status     EmbeddingJobStatus
 }
 
-func (s StoreImpl) FetchPendingEmbeddingJobs(limit uint16) ([]EmbeddingJob, error) {
+func (s Store) FetchPendingEmbeddingJobs(limit uint16) ([]EmbeddingJob, error) {
 	rows, err := s.DB.Query(`
         select entity_type, entity_id
         from embedding_jobs
@@ -789,12 +751,12 @@ func (s StoreImpl) FetchPendingEmbeddingJobs(limit uint16) ([]EmbeddingJob, erro
 	return jobs, rows.Err()
 }
 
-func (s StoreImpl) MarkJobs(jobs []EmbeddingJob, status EmbeddingJobStatus) error {
+func (s Store) MarkJobs(jobs []EmbeddingJob, status EmbeddingJobStatus) error {
 	if len(jobs) == 0 {
 		return nil
 	}
 
-	ids := make([]interface{}, len(jobs))
+	ids := make([]any, len(jobs))
 	placeholders := make([]string, len(jobs))
 
 	for i, job := range jobs {
@@ -810,13 +772,13 @@ func (s StoreImpl) MarkJobs(jobs []EmbeddingJob, status EmbeddingJobStatus) erro
 		strings.Join(placeholders, ","),
 	)
 
-	args := append([]interface{}{status}, ids...)
+	args := append([]any{status}, ids...)
 
 	_, err := s.DB.Exec(query, args...)
 	return err
 }
 
-func (s StoreImpl) MarkJob(jobID ULID, status EmbeddingJobStatus) error {
+func (s Store) MarkJob(jobID ULID, status EmbeddingJobStatus) error {
 	_, err := s.DB.Exec(`
 		 update embedding_jobs 
 		 set status = ? 
@@ -828,7 +790,7 @@ func (s StoreImpl) MarkJob(jobID ULID, status EmbeddingJobStatus) error {
 	return err
 }
 
-func (s StoreImpl) UpsertEmbedding(entityType EntityType, entityID ULID, embedding Embedding) error {
+func (s Store) UpsertEmbedding(entityType EntityType, entityID ULID, embedding Embedding) error {
 	var table string
 
 	switch entityType {
@@ -861,7 +823,7 @@ func placeholders(n int) string {
 	return strings.Join(ps, ",")
 }
 
-func (s StoreImpl) GetPositionsByIDs(ids []ULID) ([]Position, error) {
+func (s Store) GetPositionsByIDs(ids []ULID) ([]Position, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}

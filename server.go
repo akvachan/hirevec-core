@@ -124,7 +124,7 @@ func CreateEmbeddings(r EmbeddingsBatchIn) (*EmbeddingsBatchOut, error) {
 	}, nil
 }
 
-func LoadEmbeddingSources(s StoreInterface, jobs []EmbeddingJob) (*EmbeddingsBatchIn, error) {
+func LoadEmbeddingSources(s Store, jobs []EmbeddingJob) (*EmbeddingsBatchIn, error) {
 	in := EmbeddingsBatchIn{
 		IDs:   make([]ULID, 0, len(jobs)),
 		Parts: make([]Part, 0, len(jobs)),
@@ -175,7 +175,7 @@ func LoadEmbeddingSources(s StoreInterface, jobs []EmbeddingJob) (*EmbeddingsBat
 
 const DefaultEmbeddingBatchSize uint16 = 64
 
-func RunEmbeddingsWorker(s StoreInterface) error {
+func RunEmbeddingsWorker(s Store) error {
 	jobs, err := s.FetchPendingEmbeddingJobs(DefaultEmbeddingBatchSize)
 	if err != nil {
 		return err
@@ -209,117 +209,21 @@ func RunEmbeddingsWorker(s StoreInterface) error {
 	return nil
 }
 
-func RunRecommendationsWorker(s StoreInterface, batchSize int, dailyLimit int) error {
-	rows, err := s.DB.Query(`
-		select c.id
-		from candidates c
-		join candidate_embeddings ce on ce.rowid = c.id
-		where date(c.last_recommended_at) < date('now')
-		limit ?
-	`, batchSize)
+func RunRecommendationsWorker(s Store, batchSize int, dailyLimit int) error {
+	candidates, err := s.FetchCandidates(batchSize)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
-	var candidateIDs []ULID
-	for rows.Next() {
-		var id ULID
-		if err := rows.Scan(&id); err != nil {
-			return err
+	for _, c := range candidates {
+		positions, err := s.FindSimilarPositions(c.id, c.embedding, 100)
+		if err != nil || len(positions) == 0 {
+			continue
 		}
-		candidateIDs = append(candidateIDs, id)
-	}
 
-	for _, candidateID := range candidateIDs {
-		var embedding Embedding
-		err := db.QueryRow(`
-			select embedding
-			from candidate_embeddings
-			where rowid = ?
-		`, candidateID).Scan(&embedding)
+		ranked, err := RerankWithRetry(c.id, positions)
 		if err != nil {
-			slog.Error("failed to load embedding for candidate %s: %v", candidateID, err)
-			continue
-		}
-
-		rows, err := db.Query(`
-			select pe.rowid
-			from position_embeddings pe
-			order by cosine(pe.embedding, ?) asc
-			limit 100
-		`, embedding)
-		if err != nil {
-			slog.Error("vector search failed: %v", err)
-			continue
-		}
-
-		var positionIDs []ULID
-		for rows.Next() {
-			var pid ULID
-			if err := rows.Scan(&pid); err != nil {
-				rows.Close()
-				continue
-			}
-			positionIDs = append(positionIDs, pid)
-		}
-		rows.Close()
-
-		if len(positionIDs) == 0 {
-			continue
-		}
-
-		query := `
-			select p.id
-			from positions p
-			where p.id in (` + placeholders(len(positionIDs)) + `)
-			and p.active = 1
-			and p.id not in (
-				select position_id from recommendations where candidate_id = ?
-			)
-		`
-
-		args := make([]any, 0, len(positionIDs)+1)
-		for _, id := range positionIDs {
-			args = append(args, id)
-		}
-		args = append(args, candidateID)
-
-		rows, err = db.Query(query, args...)
-		if err != nil {
-			slog.Error("filter query failed: %v", err)
-			continue
-		}
-
-		var filtered []ULID
-		for rows.Next() {
-			var id ULID
-			if err := rows.Scan(&id); err == nil {
-				filtered = append(filtered, id)
-			}
-		}
-		rows.Close()
-
-		if len(filtered) == 0 {
-			continue
-		}
-
-		var positions []Position
-		for _, pid := range filtered {
-			p, err := s.GetPosition(pid)
-			if err != nil {
-				continue
-			}
-			positions = append(positions, *p)
-		}
-
-		if len(positions) == 0 {
-			continue
-		}
-
-		ranked, err := RerankWithRetry(candidateID, positions)
-		if err != nil {
-			slog.Error("rerank failed for candidate %s: %v", candidateID, err)
+			slog.Error("rerank failed", "candidate", c.id, "err", err)
 			continue
 		}
 
@@ -327,63 +231,15 @@ func RunRecommendationsWorker(s StoreInterface, batchSize int, dailyLimit int) e
 			ranked = ranked[:dailyLimit]
 		}
 
-		tx, err := db.Begin()
-		if err != nil {
-			slog.Error("tx begin failed: %v", err)
-			continue
-		}
-
-		success := true
-
-		for _, p := range ranked {
-			ulid, err := NewRecommendationULID()
-			if err != nil {
-				return err
-			}
-			rec := Recommendation{
-				ID:          ulid,
-				CandidateID: candidateID,
-				PositionID:  p.ID,
-			}
-
-			_, err = tx.Exec(`
-				insert or ignore into recommendations (id, candidate_id, position_id)
-				values (?, ?, ?)
-			`, rec.ID, rec.CandidateID, rec.PositionID)
-			if err != nil {
-				slog.Error("insert recommendation failed: %v", err)
-				success = false
-				break
-			}
-		}
-
-		if success {
-			_, err = tx.Exec(`
-				update candidates
-				set last_recommended_at = current_timestamp
-				where id = ?
-			`, candidateID)
-			if err != nil {
-				slog.Error("update candidate failed: %v", err)
-				success = false
-			}
-		}
-
-		if success {
-			if err := tx.Commit(); err != nil {
-				slog.Error("commit failed: %v", err)
-				continue
-			}
-		} else {
-			tx.Rollback()
-			continue
+		if err := s.InsertRecommendations(c.id, ranked); err != nil {
+			slog.Error("insert failed", "candidate", c.id, "err", err)
 		}
 	}
 
 	return nil
 }
 
-func RunServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInterface) error {
+func RunServer(ctx context.Context, c ServerConfig, s Store, v Vault) error {
 	server, err := NewServer(ctx, c, s, v)
 	if err != nil {
 		return err
@@ -443,7 +299,7 @@ func RunServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInt
 	return WaitAndShutdown(ctx, server, errCh, c.GracePeriod)
 }
 
-func NewServer(ctx context.Context, c ServerConfig, s StoreInterface, v VaultInterface) (*http.Server, error) {
+func NewServer(ctx context.Context, c ServerConfig, s Store, v Vault) (*http.Server, error) {
 	return &http.Server{
 		Addr:         fmt.Sprintf("%s:%v", c.Host, c.Port),
 		ReadTimeout:  c.ReadTimeout,
@@ -550,7 +406,7 @@ func GetPagination(r *http.Request) Page {
 	return p
 }
 
-func Authentication(v VaultInterface, allowedRoles []Role) Middleware {
+func Authentication(v Vault, allowedRoles []Role) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			var bearer string
@@ -661,7 +517,7 @@ func PublicRoute(cfg RouteConfig) {
 	)
 }
 
-func ProtectedRoute(cfg RouteConfig, v VaultInterface) {
+func ProtectedRoute(cfg RouteConfig, v Vault) {
 	handler := Chain(
 		cfg.Handler,
 		Logger,
@@ -676,7 +532,7 @@ func ProtectedRoute(cfg RouteConfig, v VaultInterface) {
 	)
 }
 
-func RootMux(c ServerConfig, s StoreInterface, v VaultInterface) http.Handler {
+func RootMux(c ServerConfig, s Store, v Vault) http.Handler {
 	mux := http.NewServeMux()
 
 	PublicRoute(RouteConfig{
@@ -854,7 +710,7 @@ func Unauthorized(w http.ResponseWriter, code AuthErrorCode, description string)
 	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{Error: code, ErrorDescription: description})
 }
 
-func OAuthToken(s StoreInterface, v VaultInterface) http.HandlerFunc {
+func OAuthToken(s Store, v Vault) http.HandlerFunc {
 	type RequestBodyCreateToken struct {
 		GrantType    string `json:"grant_type"`
 		RefreshToken string `json:"refresh_token"`
@@ -933,7 +789,7 @@ func OAuthToken(s StoreInterface, v VaultInterface) http.HandlerFunc {
 	}
 }
 
-func OAuthAuthorize(v VaultInterface) http.HandlerFunc {
+func OAuthAuthorize(v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provider, err := ToProvider(r.URL.Query().Get("provider"), DefaultProvider)
 		if err != nil {
@@ -989,7 +845,7 @@ func OAuthAuthorize(v VaultInterface) http.HandlerFunc {
 	}
 }
 
-func OAuthCallback(s StoreInterface, v VaultInterface) http.HandlerFunc {
+func OAuthCallback(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), DefaultStateTokenExpiration)
 		defer cancel()
@@ -1100,7 +956,7 @@ func OAuthCallback(s StoreInterface, v VaultInterface) http.HandlerFunc {
 	}
 }
 
-func FinishAuthFlow(s StoreInterface, v VaultInterface, w http.ResponseWriter, user User) {
+func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	userID, roles, err := s.GetUserByProvider(user.Provider, user.ProviderUserID)
 
 	if errors.Is(err, ErrUserNotFound) {
@@ -1141,7 +997,7 @@ func FinishAuthFlow(s StoreInterface, v VaultInterface, w http.ResponseWriter, u
 	CreateTokenPair(s, v, w, userID, user.Provider, roles)
 }
 
-func CreateOnboardingToken(v VaultInterface, w http.ResponseWriter, userID ULID, provider Provider) {
+func CreateOnboardingToken(v Vault, w http.ResponseWriter, userID ULID, provider Provider) {
 	accessToken, err := v.CreateAccessToken(userID, provider, map[Role]ULID{RoleOnboarding: ""})
 	if err != nil {
 		slog.Error("failed to create access token", "err", err)
@@ -1152,7 +1008,7 @@ func CreateOnboardingToken(v VaultInterface, w http.ResponseWriter, userID ULID,
 	AuthAccessToken(w, *accessToken)
 }
 
-func CreateTokenPair(s StoreInterface, v VaultInterface, w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
+func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
 	jti, err := NewJTIULID()
 	if err != nil {
 		slog.Error("ULID generation failed", "err", err)
@@ -1429,7 +1285,7 @@ func Health(w http.ResponseWriter, r *http.Request) {
 }
 
 // Returns position recommendations for the authenticated candidate.
-func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
+func GetMeRecommendations(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
@@ -1551,7 +1407,7 @@ func GetMeRecommendations(s StoreInterface) http.HandlerFunc {
 }
 
 // Records a candidate's reaction to a position recommendation.
-func CreateMeReaction(s StoreInterface) http.HandlerFunc {
+func CreateMeReaction(s Store) http.HandlerFunc {
 	type RequestBody struct {
 		ReactionType ReactionType `json:"reaction_type"`
 	}
@@ -1632,7 +1488,7 @@ func CreateMeReaction(s StoreInterface) http.HandlerFunc {
 }
 
 // Returns all reactions made by the authenticated candidate.
-func GetMeReactions(s StoreInterface) http.HandlerFunc {
+func GetMeReactions(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
@@ -1693,7 +1549,7 @@ func GetMeReactions(s StoreInterface) http.HandlerFunc {
 }
 
 // Returns all mutual matches for the authenticated candidate.
-func GetMeMatches(s StoreInterface) http.HandlerFunc {
+func GetMeMatches(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {

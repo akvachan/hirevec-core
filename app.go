@@ -143,7 +143,7 @@ func RunApp(c AppConfig) error {
 			WriteTimeout: ParseDurationWithDefault(c.RequestWriteTimeout, DefaultWriteTimeout),
 			GracePeriod:  ParseDurationWithDefault(c.GracePeriod, DefaultGracePeriod),
 		},
-		store,
-		vault,
+		*store,
+		*vault,
 	)
 }
