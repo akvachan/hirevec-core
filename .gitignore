@@ -55,3 +55,6 @@ __pycache__
 
 # Database
 .db
+
+# Binaries
+bin
