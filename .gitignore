@@ -54,6 +54,7 @@ __pycache__
 
 # Database
 .db
+bm25_cache.json
 
 # Binaries
 bin
