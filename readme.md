@@ -10,7 +10,7 @@ The server implements **Okapi BM25** and uses **SQLite** by default.
 
 To start server:
 ```sh
-go run cmd/server/main.go
+go run cmd/run/main.go
 ```
 
 ## API
