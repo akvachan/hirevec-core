@@ -1,31 +1,33 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: MIT
 
-package server
+package main
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
-	"github.com/akvachan/hirevec-core/internal"
+	"github.com/akvachan/hirevec-core"
 )
 
 func main() {
+	hirevec.InitLogger(slog.LevelWarn)
+
 	if err := hirevec.Loadenv(".env"); err != nil {
-		print("could not load .env, using system environment")
+		slog.Warn("could not load .env, using system environment", "err")
 	}
 
 	if err := hirevec.RunApp(
 		hirevec.AppConfig{
-			Host:                hirevec.Getenv("HIREVEC_HOST", "localhost"),
-			Port:                hirevec.ParseUint16WithDefault(os.Getenv("HIREVEC_PORT"), 8080),
+			ServerBaseURL:       hirevec.Getenv("HIREVEC_BASE_URL", "localhost:8888"),
 			RequestReadTimeout:  hirevec.ParseDurationWithDefault(os.Getenv("HIREVEC_REQUEST_READ_TIMEOUT"), 2000*time.Millisecond),
 			RequestWriteTimeout: hirevec.ParseDurationWithDefault(os.Getenv("HIREVEC_REQUEST_WRITE_TIMEOUT"), 2000*time.Millisecond),
 			GracePeriod:         hirevec.ParseDurationWithDefault(os.Getenv("HIREVEC_GRACE_PERIOD"), 5000*time.Millisecond),
-			LogLevel:            hirevec.ParseLogLevelWithDefault(os.Getenv("HIREVEC_LOG_LEVEL"), slog.LevelDebug),
-			PostgresDatabaseURL: hirevec.Getenv("POSTGRES_DATABASE_URL", fmt.Sprintf("postgres://%s@localhost:5432/postgres?sslmode=disable", os.Getenv("USER"))),
+			LogLevel:            hirevec.ParseLogLevelWithDefault(os.Getenv("HIREVEC_LOG_LEVEL"), slog.LevelError),
+			PostgresDatabaseURL: os.Getenv("POSTGRES_DATABASE_URL"),
+			TEIBaseURL:          os.Getenv("TEI_BASE_URL"),
+			TEIAPIKey:           os.Getenv("TEI_API_KEY"),
 			SymmetricKey:        os.Getenv("SYMMETRIC_KEY"),
 			AsymmetricKey:       os.Getenv("ASYMMETRIC_KEY"),
 			GoogleClientID:      os.Getenv("GOOGLE_CLIENT_ID"),
@@ -34,6 +36,6 @@ func main() {
 			AppleClientSecret:   os.Getenv("APPLE_CLIENT_SECRET"),
 		},
 	); err != nil {
-		print("app crashed: ", err.Error())
+		slog.Error("app crashed: ", err)
 	}
 }

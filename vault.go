@@ -85,9 +85,11 @@ type (
 
 func (s Scope) Raw() string {
 	var result []string
+
 	for _, role := range s {
 		result = append(result, string(role))
 	}
+
 	return strings.Join(result, " ")
 }
 
@@ -99,10 +101,11 @@ const (
 )
 
 type VaultConfig struct {
-	ServerHost             string
-	ServerPort             uint16
+	ServerBaseURL          string
 	SymmetricKey           string
 	AsymmetricKey          string
+	UseGoogleSSO           bool
+	UseAppleSSO            bool
 	GoogleClientID         string
 	GoogleClientSecret     string
 	AppleClientID          string
@@ -118,8 +121,10 @@ type Vault struct {
 	V4AsymmetricPublicKey  paseto.V4AsymmetricPublicKey
 	V4AsymmetricSecretKey  paseto.V4AsymmetricSecretKey
 	V4SymmetricKey         paseto.V4SymmetricKey
-	GoogleOIDCConfig       OIDCConfig
-	AppleOIDCConfig        OIDCConfig
+	UseGoogleSSO           bool
+	UseAppleSSO            bool
+	GoogleOIDCConfig       *OIDCConfig
+	AppleOIDCConfig        *OIDCConfig
 	RefreshTokenExpiration time.Duration
 	AccessTokenExpiration  time.Duration
 }
@@ -129,7 +134,9 @@ type OIDCConfig struct {
 	Verifier     *oidc.IDTokenVerifier
 }
 
-func NewVault(ctx context.Context, cfg VaultConfig) (*Vault, error) {
+func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
+	slog.Debug("initializing vault")
+
 	accessTokenParser := paseto.NewParser()
 	accessTokenParser.AddRule(paseto.ForAudience(TokenAudience))
 	accessTokenParser.AddRule(paseto.IssuedBy(TokenIssuer))
@@ -148,68 +155,77 @@ func NewVault(ctx context.Context, cfg VaultConfig) (*Vault, error) {
 	stateTokenParser.AddRule(paseto.NotExpired())
 	stateTokenParser.AddRule(paseto.NotBeforeNbf())
 
-	sk, err := LoadOrCreateSymmetricKey(cfg.SymmetricKey)
+	sk, err := LoadOrCreateSymmetricKey(c.SymmetricKey)
 	if err != nil {
 		slog.Error("failed to init symmetric key", "err", err)
 		return nil, err
 	}
 
-	ak, err := LoadOrCreateAsymmetricKey(cfg.AsymmetricKey)
+	ak, err := LoadOrCreateAsymmetricKey(c.AsymmetricKey)
 	if err != nil {
 		slog.Error("failed to init asymmetric key", "err", err)
 		return nil, err
 	}
 
-	slog.Debug("connecting to SSO provider", "provider", "google")
-	googleProvider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
-	if err != nil {
-		return nil, err
-	}
-
-	slog.Debug("connecting to SSO provider", "provider", "apple")
-	appleProvider, err := oidc.NewProvider(ctx, "https://appleid.apple.com")
-	if err != nil {
-		return nil, err
-	}
-
-	accessTokenExpiration := DefaultAccessTokenExpiration
-	if cfg.AccessTokenExpiration != 0 {
-		accessTokenExpiration = cfg.AccessTokenExpiration
-	}
-
-	refreshTokenExpiration := DefaultRefreshTokenExpiration
-	if cfg.AccessTokenExpiration != 0 {
-		refreshTokenExpiration = cfg.RefreshTokenExpiration
-	}
-
-	slog.Debug("initializing vault")
-	vault := Vault{
-		AccessTokenParser:     accessTokenParser,
-		RefreshTokenParser:    refreshTokenParser,
-		StateTokenParser:      stateTokenParser,
-		V4AsymmetricSecretKey: ak,
-		V4AsymmetricPublicKey: ak.Public(),
-		V4SymmetricKey:        sk,
-		GoogleOIDCConfig: OIDCConfig{
+	var googleOIDCConfig *OIDCConfig
+	if c.UseGoogleSSO {
+		slog.Debug("connecting to SSO provider", "provider", "google")
+		googleProvider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
+		if err != nil {
+			return nil, err
+		}
+		googleOIDCConfig = &OIDCConfig{
 			OAuth2Config: &oauth2.Config{
-				ClientID:     cfg.GoogleClientID,
-				ClientSecret: cfg.GoogleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s/oauth/callback", cfg.ServerHost),
+				ClientID:     c.GoogleClientID,
+				ClientSecret: c.GoogleClientSecret,
+				RedirectURL:  fmt.Sprintf("%s/oauth/callback", c.ServerBaseURL),
 				Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 				Endpoint:     googleProvider.Endpoint(),
 			},
-			Verifier: googleProvider.Verifier(&oidc.Config{ClientID: cfg.GoogleClientID}),
-		},
-		AppleOIDCConfig: OIDCConfig{
+			Verifier: googleProvider.Verifier(&oidc.Config{ClientID: c.GoogleClientID}),
+		}
+	}
+
+	var appleOIDCConfig *OIDCConfig
+	if c.UseAppleSSO {
+		slog.Debug("connecting to SSO provider", "provider", "apple")
+		appleProvider, err := oidc.NewProvider(ctx, "https://appleid.apple.com")
+		if err != nil {
+			return nil, err
+		}
+		appleOIDCConfig = &OIDCConfig{
 			OAuth2Config: &oauth2.Config{
-				ClientID:     cfg.AppleClientID,
-				ClientSecret: cfg.AppleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s/oauth/callback", cfg.ServerHost),
+				ClientID:     c.AppleClientID,
+				ClientSecret: c.AppleClientSecret,
+				RedirectURL:  fmt.Sprintf("%s/oauth/callback", c.ServerBaseURL),
 				Scopes:       []string{oidc.ScopeOpenID, "name", "email"},
 				Endpoint:     appleProvider.Endpoint(),
 			},
-			Verifier: appleProvider.Verifier(&oidc.Config{ClientID: cfg.AppleClientID}),
-		},
+			Verifier: appleProvider.Verifier(&oidc.Config{ClientID: c.AppleClientID}),
+		}
+	}
+
+	accessTokenExpiration := DefaultAccessTokenExpiration
+	if c.AccessTokenExpiration != 0 {
+		accessTokenExpiration = c.AccessTokenExpiration
+	}
+
+	refreshTokenExpiration := DefaultRefreshTokenExpiration
+	if c.AccessTokenExpiration != 0 {
+		refreshTokenExpiration = c.RefreshTokenExpiration
+	}
+
+	vault := Vault{
+		AccessTokenParser:      accessTokenParser,
+		RefreshTokenParser:     refreshTokenParser,
+		StateTokenParser:       stateTokenParser,
+		V4AsymmetricSecretKey:  ak,
+		V4AsymmetricPublicKey:  ak.Public(),
+		V4SymmetricKey:         sk,
+		UseGoogleSSO:           c.UseGoogleSSO,
+		UseAppleSSO:            c.UseAppleSSO,
+		GoogleOIDCConfig:       googleOIDCConfig,
+		AppleOIDCConfig:        appleOIDCConfig,
 		RefreshTokenExpiration: refreshTokenExpiration,
 		AccessTokenExpiration:  accessTokenExpiration,
 	}
@@ -516,15 +532,15 @@ func (v Vault) ParseRefreshToken(tokenString string) (*RefreshTokenClaims, error
 }
 
 func RolesToScope(roles map[Role]ULID) (*Scope, error) {
-	var scope Scope
+	scope := make(Scope, 0, 3)
 	for role := range roles {
 		switch {
 		case role == RoleCandidate:
-			scope = append(scope, ScopeValue("role:"+string(RoleCandidate)))
+			scope[0] = ScopeValue("role:" + string(RoleCandidate))
 		case role == RoleOnboarding:
-			scope = append(scope, ScopeValue("role:"+string(RoleOnboarding)))
+			scope[1] = ScopeValue("role:" + string(RoleOnboarding))
 		case role == RoleRecruiter:
-			scope = append(scope, ScopeValue("role:"+string(RoleRecruiter)))
+			scope[2] = ScopeValue("role:" + string(RoleRecruiter))
 		default:
 			return nil, ErrInvalidRole
 		}

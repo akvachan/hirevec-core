@@ -42,14 +42,6 @@ func ParseLogLevelWithDefault(value string, defaultValue slog.Level) slog.Level 
 	}
 }
 
-func ParseUint16WithDefault(value string, defaultValue uint16) uint16 {
-	parsedValue, err := strconv.ParseUint(value, 10, 16)
-	if err != nil {
-		return defaultValue
-	}
-	return uint16(parsedValue)
-}
-
 func ParseIntWithDefault(value string, defaultValue int) int {
 	parsedValue, err := strconv.ParseInt(value, 10, 64)
 	if err != nil {
@@ -58,16 +50,23 @@ func ParseIntWithDefault(value string, defaultValue int) int {
 	return int(parsedValue)
 }
 
+func ParseBoolWithDefault(value string, defaultValue bool) bool {
+	parsedValue, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsedValue
+}
+
 type AppConfig struct {
-	Host                string
-	Port                uint16
+	ServerBaseURL       string
 	LogLevel            slog.Level
 	RequestReadTimeout  time.Duration
 	RequestWriteTimeout time.Duration
 	GracePeriod         time.Duration
 	PostgresDatabaseURL string
-	TestTokenUserID     string
-	TestTokenProvider   string
+	TEIBaseURL          string
+	TEIAPIKey           string
 	SymmetricKey        string
 	AsymmetricKey       string
 	GoogleClientID      string
@@ -80,15 +79,25 @@ func RunApp(c AppConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	InitLogger(c.LogLevel)
+	slog.SetLogLoggerLevel(c.LogLevel)
+
+	useGoogleSSO := true
+	useAppleSSO := true
+	if c.GoogleClientID == "" || c.GoogleClientSecret == "" {
+		useGoogleSSO = false
+	}
+	if c.AppleClientID == "" || c.AppleClientSecret == "" {
+		useAppleSSO = false
+	}
 
 	vault, err := NewVault(
 		ctx,
 		VaultConfig{
-			ServerHost:         c.Host,
-			ServerPort:         c.Port,
+			ServerBaseURL:      c.ServerBaseURL,
 			SymmetricKey:       c.SymmetricKey,
 			AsymmetricKey:      c.AsymmetricKey,
+			UseGoogleSSO:       useGoogleSSO,
+			UseAppleSSO:        useAppleSSO,
 			GoogleClientID:     c.GoogleClientID,
 			GoogleClientSecret: c.GoogleClientSecret,
 			AppleClientID:      c.AppleClientID,
@@ -99,21 +108,42 @@ func RunApp(c AppConfig) error {
 		return fmt.Errorf("vault init failed: %w", err)
 	}
 
+	usePostgres := true
+	if c.PostgresDatabaseURL == "" {
+		usePostgres = false
+	}
+
 	store, err := NewStore(StoreConfig{
+		UsePostgres:         usePostgres,
 		PostgresDatabaseURL: c.PostgresDatabaseURL,
 	})
 	if err != nil {
 		return fmt.Errorf("store init failed: %w", err)
 	}
 
+	useEmbeddings := true
+	useReranker := true
+	if !usePostgres {
+		useEmbeddings = false
+	}
+	if c.TEIBaseURL == "" || c.TEIAPIKey == "" {
+		useEmbeddings = false
+		useReranker = false
+	}
+
 	return RunServer(
 		ctx,
 		ServerConfig{
-			Host:         c.Host,
-			Port:         c.Port,
-			ReadTimeout:  c.RequestReadTimeout,
-			WriteTimeout: c.RequestWriteTimeout,
-			GracePeriod:  c.GracePeriod,
+			ServerBaseURL:       c.ServerBaseURL,
+			RequestReadTimeout:  c.RequestReadTimeout,
+			RequestWriteTimeout: c.RequestWriteTimeout,
+			GracePeriod:         c.GracePeriod,
+			UseGoogleSSO:        useGoogleSSO,
+			UseAppleSSO:         useAppleSSO,
+			TEIBaseURL:          c.TEIBaseURL,
+			TEIAPIKey:           c.TEIAPIKey,
+			UseEmbeddings:       useEmbeddings,
+			UseReranker:         useReranker,
 		},
 		*store,
 		*vault,

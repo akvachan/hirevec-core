@@ -4,6 +4,7 @@
 package hirevec
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -17,10 +18,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/oauth2"
 )
@@ -41,18 +45,18 @@ var (
 )
 
 type ServerConfig struct {
-	Protocol           string
-	Host               string
-	Port               uint16
-	EmbeddingsModel    string
-	EmbeddingsEndpoint string
-	EmbeddingsAPIKey   string
-	RerankerModel      string
-	RerankerEndpoint   string
-	RerankerAPIKey     string
-	ReadTimeout        time.Duration
-	WriteTimeout       time.Duration
-	GracePeriod        time.Duration
+	ServerBaseURL       string
+	RequestReadTimeout  time.Duration
+	RequestWriteTimeout time.Duration
+	GracePeriod         time.Duration
+	UseGoogleSSO        bool
+	UseAppleSSO         bool
+	TEIBaseURL          string
+	TEIAPIKey           string
+	EmbeddingsModel     string
+	RerankerModel       string
+	UseEmbeddings       bool
+	UseReranker         bool
 }
 
 type EmbeddingsBatchOut struct {
@@ -60,27 +64,21 @@ type EmbeddingsBatchOut struct {
 	Embeddings [][]float32
 }
 
-type VoyageRequest struct {
+type EmbeddingsRequest struct {
 	Input []string `json:"input"`
 	Model string   `json:"model"`
 }
 
-type VoyageResponse struct {
-	Data []struct {
-		Embedding []float32 `json:"embedding"`
-	} `json:"data"`
+type EmbeddingEntity struct {
+	Embedding []float32 `json:"embedding"`
 }
 
-func CreateEmbeddingsWithVoyage(c ServerConfig, embeddingsMeta map[ULID]EmbeddingsMetadata) (*EmbeddingsBatchOut, error) {
-	ids := make([]ULID, 0, len(embeddingsMeta))
-	input := make([]string, 0, len(embeddingsMeta))
+type EmbeddingsResponse struct {
+	Data []EmbeddingEntity `json:"data"`
+}
 
-	for id, data := range embeddingsMeta {
-		ids = append(ids, id)
-		input = append(input, data.AggregatedInfo)
-	}
-
-	reqBody, err := json.Marshal(VoyageRequest{
+func CreateEmbeddings(c AIConfig, input []string) ([]EmbeddingEntity, error) {
+	reqBody, err := json.Marshal(EmbeddingsRequest{
 		Input: input,
 		Model: c.EmbeddingsModel,
 	})
@@ -88,13 +86,14 @@ func CreateEmbeddingsWithVoyage(c ServerConfig, embeddingsMeta map[ULID]Embeddin
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.EmbeddingsEndpoint, bytes.NewReader(reqBody))
+	reader := bytes.NewReader(reqBody)
+	req, err := http.NewRequest(http.MethodPost, c.TEIBaseURL, reader)
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.EmbeddingsAPIKey)
+	req.Header.Set("Authorization", "Bearer "+c.TEIAPIKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -106,38 +105,171 @@ func CreateEmbeddingsWithVoyage(c ServerConfig, embeddingsMeta map[ULID]Embeddin
 		return nil, ErrFailedCreateEmbeddingsRequest
 	}
 
-	var parsed VoyageResponse
+	var parsed EmbeddingsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return nil, err
 	}
 
-	if len(parsed.Data) != len(ids) {
-		return nil, fmt.Errorf("voyage: embedding count mismatch (got %d, expected %d)", len(parsed.Data), len(ids))
+	if len(parsed.Data) != len(input) {
+		return nil, fmt.Errorf(
+			"embedding count mismatch (got %d, expected %d)",
+			len(parsed.Data),
+			len(input),
+		)
 	}
 
-	embeddings := make([][]float32, 0, len(embeddingsMeta))
-	for _, e := range parsed.Data {
-		embeddings = append(embeddings, e.Embedding)
-	}
-
-	return &EmbeddingsBatchOut{
-		IDs:        ids,
-		Embeddings: embeddings,
-	}, nil
+	return parsed.Data, nil
 }
 
-func RunEmbeddingsWorker(
-	c ServerConfig, s Store,
-	embeddingsBatchSize uint16,
-) error {
-	metadata, err := s.FetchPendingEmbeddingsMetadata(embeddingsBatchSize)
-	if err != nil || len(metadata) == 0 {
+var (
+	DefaultStopCharsPath = path.Join("data", "stopchars.txt")
+	DefaultStopWordsPath = path.Join("data", "stopwords.txt")
+	DefaultLemmasPath    = path.Join("data", "lemmas.csv")
+)
+
+var (
+	DefaultStopChars map[rune]bool     = make(map[rune]bool)
+	DefaultStopWords map[string]bool   = make(map[string]bool)
+	DefaultLemmas    map[string]string = make(map[string]string)
+)
+
+func LoadStopChars() error {
+	slog.Debug("loading stop characters")
+
+	f, err := os.Open(DefaultStopCharsPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	if scanner.Scan() {
+		line := scanner.Text()
+		for _, r := range line {
+			if r != '\n' && r != '\r' {
+				DefaultStopChars[r] = true
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
 		return err
 	}
 
-	batchOut, err := CreateEmbeddingsWithVoyage(c, metadata)
+	return nil
+}
+
+func LoadStopWords() error {
+	slog.Debug("loading stop words")
+
+	f, err := os.Open(DefaultStopWordsPath)
 	if err != nil {
-		return s.MarkEmbeddingsStatus(batchOut.IDs, EmbeddingStatusPending)
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		word := strings.TrimSpace(scanner.Text())
+		DefaultStopWords[word] = true
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func LoadLemmas() error {
+	slog.Debug("loading lemmas")
+
+	f, err := os.Open(DefaultLemmasPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		parts := strings.SplitN(line, ",", 2)
+		word := strings.TrimSpace(parts[0])
+		lemma := strings.TrimSpace(parts[1])
+		DefaultLemmas[word] = lemma
+	}
+
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func LoadLanguageData() error {
+	if err := LoadStopChars(); err != nil {
+		return err
+	}
+	if err := LoadStopWords(); err != nil {
+		return err
+	}
+	if err := LoadLemmas(); err != nil {
+		return err
+	}
+	return nil
+}
+
+var (
+	HTMLTagRe   = regexp.MustCompile(`(?s)<[^>]*>`)
+	ScriptTagRe = regexp.MustCompile(`(?is)<script.*?>.*?</script>`)
+	SQLRe       = regexp.MustCompile(`(?i)\b(select|insert|update|delete|drop|truncate|alter)\b`)
+)
+
+func PreprocessText(text string) []string {
+	text = strings.ToLower(text)
+	text = ScriptTagRe.ReplaceAllString(text, " ")
+	text = HTMLTagRe.ReplaceAllString(text, " ")
+	text = SQLRe.ReplaceAllString(text, " ")
+	text += " "
+
+	var result []string
+	token := make([]rune, 0, 32)
+
+	for _, r := range text {
+		if DefaultStopChars[r] || unicode.IsSpace(r) {
+			if len(token) > 0 {
+				word := string(token)
+				if !DefaultStopWords[word] {
+					if lemma, ok := DefaultLemmas[word]; ok {
+						word = lemma
+					}
+					result = append(result, word)
+				}
+				token = token[:0] // reset token
+			}
+			continue
+		}
+
+		token = append(token, r)
+	}
+
+	return result
+}
+
+const DefaultEmbeddingsBatchSize = 64
+
+func RunEmbeddingsJob(c AIConfig, s Store) error {
+	// TODO: test this store method, rethink it once more
+	ids, texts, err := s.FetchPendingEmbeddingsMetadata(DefaultEmbeddingsBatchSize)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+
+	// TODO: test this store method, rethink it once more
+	batchOut, err := CreateEmbeddings(c, texts)
+	if err != nil {
+		// TODO: test this store method, rethink it once more
+		return s.MarkEmbeddingsStatus(ids, EmbeddingStatusPending)
 	}
 
 	tx, err := s.DB.Begin()
@@ -145,12 +277,14 @@ func RunEmbeddingsWorker(
 		return err
 	}
 
-	if err := s.UpsertEmbeddings(tx, *batchOut); err != nil {
+	// TODO: test this store method, rethink it once more
+	if err := s.UpsertEmbeddings(tx, ids, batchOut); err != nil {
 		tx.Rollback()
 		return err
 	}
 
-	if err := s.MarkEmbeddingsStatusTx(tx, batchOut.IDs, EmbeddingStatusDone); err != nil {
+	// TODO: test this store method, rethink it once more
+	if err := s.MarkEmbeddingsStatusTx(tx, ids, EmbeddingStatusDone); err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -158,34 +292,93 @@ func RunEmbeddingsWorker(
 	return tx.Commit()
 }
 
-func RerankWithVoyage(info string, positions map[ULID]string) ([]ULID, error) {
+type AIConfig struct {
+	UseEmbeddings   bool
+	UseReranker     bool
+	TEIBaseURL      string
+	TEIAPIKey       string
+	EmbeddingsModel string
+	RerankerModel   string
+}
+
+func Rerank(
+	c AIConfig,
+	candidate string,
+	positions []ULID,
+) ([]ULID, error) {
 	return nil, nil
 }
 
-func RunRecommendationsWorker(
-	c ServerConfig, s Store,
-	candidatesBatchSize uint16, positionsBatchSize uint16, dailyLimit uint16,
-) error {
-	candidates, err := s.GetCandidates(candidatesBatchSize, time.Hour*24)
+const (
+	DefaultCandidatesBatchSize       = 32
+	DefaultRecommendationsDailyLimit = 32
+)
+
+const DefaultNearestNeighbors = 128
+
+func RunRecommendationsJob(c AIConfig, s Store) error {
+	// TODO: fix the reference table
+	candidateIDs, candidateTexts, err := s.GetCandidates(
+		DefaultCandidatesBatchSize,
+		DefaultRecommendationsJobFrequency,
+	)
 	if err != nil {
 		return err
 	}
 
-	for id, info := range candidates {
-		positions, err := s.FindPositionsForCandidate(id, positionsBatchSize)
-		if err != nil || len(positions) == 0 {
+	for i := range len(candidateIDs) {
+		var positionIDs []ULID
+
+		if c.UseEmbeddings {
+			// TODO: review this store function
+			positionIDs, err = s.GetPositionsForCandidateWithEmbedding(
+				candidateIDs[i],
+				DefaultNearestNeighbors,
+			)
+			if err != nil {
+				slog.Error(
+					"failed to find similar positions using embeddings",
+					"candidateID", candidateIDs[i],
+					"err", err,
+				)
+				continue
+			}
+		} else {
+			// use BM25
+		}
+
+		if len(candidateIDs) == 0 {
+			slog.Debug(
+				"failed to find suitable positions",
+				"candidateID", candidateIDs[i],
+			)
 			continue
 		}
 
-		rankedIDs, err := RerankWithVoyage(info, positions)
-		if err != nil {
-			slog.Error("rerank failed", "candidateID", id, "err", err)
-			continue
+		if c.UseReranker {
+			positionIDs, err = Rerank(c, candidateTexts[i], positionIDs)
+			if err != nil {
+				slog.Error("rerank failed", "candidateID", candidateIDs[i], "err", err)
+				continue
+			}
 		}
 
-		if err := s.CreateRecommendations(id, rankedIDs[:min(uint16(len(rankedIDs)), dailyLimit)]); err != nil {
-			slog.Error("insert failed", "candidateID", id, "err", err)
-			continue
+		limit := min(len(positionIDs), int(DefaultRecommendationsDailyLimit))
+		recommendations := make([]Recommendation, 0, limit)
+		for i := range limit {
+			recommendationID, err := NewRecommendationULID()
+			if err != nil {
+				return err
+			}
+			recommendations[i] = Recommendation{
+				ID:          recommendationID,
+				PositionID:  positionIDs[i],
+				CandidateID: candidateIDs[i],
+			}
+		}
+
+		if err := s.CreateRecommendations(recommendations); err != nil {
+			return err
 		}
 	}
 
@@ -193,10 +386,8 @@ func RunRecommendationsWorker(
 }
 
 const (
-	DefaultEmbeddingsBatchSize = 64
-	DefaultCandidatesBatchSize = 64
-	DefaultPositionsBatchSize  = 64
-	DefaultDailyLimit          = 32
+	DefaultEmbeddingsJobFrequency      = 1 * time.Hour
+	DefaultRecommendationsJobFrequency = 24 * time.Hour
 )
 
 func RunServer(ctx context.Context, c ServerConfig, s Store, v Vault) error {
@@ -211,68 +402,75 @@ func RunServer(ctx context.Context, c ServerConfig, s Store, v Vault) error {
 		return err
 	}
 
-	slog.Info(
-		"HTTP server starting",
-		"addr", server.Addr,
-	)
+	slog.Info("HTTP server starting", "addr", server.Addr)
 	errCh := make(chan error, 1)
 	go func() {
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := server.Serve(listener); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
 	slog.Info("HTTP server ready", "addr", server.Addr)
 
-	embeddingsWorkerTicker := time.NewTicker(5 * time.Second)
-	defer embeddingsWorkerTicker.Stop()
+	if err := LoadLanguageData(); err != nil {
+		return err
+	}
+
+	if err := LoadBM25Data(); err != nil {
+		return err
+	}
+
+	aiConfig := AIConfig{
+		UseEmbeddings:   c.UseEmbeddings,
+		UseReranker:     c.UseReranker,
+		TEIBaseURL:      c.TEIBaseURL,
+		TEIAPIKey:       c.TEIAPIKey,
+		EmbeddingsModel: c.EmbeddingsModel,
+		RerankerModel:   c.RerankerModel,
+	}
+
+	if c.UseEmbeddings {
+		go func() {
+			for range time.Tick(DefaultEmbeddingsJobFrequency) {
+				slog.Info("running embeddings job")
+				RunEmbeddingsJob(aiConfig, s)
+			}
+		}()
+	}
 
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				slog.Info("embeddings worker shutting down")
-				return
-			case <-embeddingsWorkerTicker.C:
-				if err := RunEmbeddingsWorker(c, s, DefaultEmbeddingsBatchSize); err != nil {
-					slog.Error("embeddings worker failed", "err", err)
-				}
-			}
-		}
-	}()
-
-	recommendationsWorkerTicker := time.NewTicker(24 * time.Hour)
-	defer recommendationsWorkerTicker.Stop()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				slog.Info("recommendations worker shutting down")
-				return
-			case <-recommendationsWorkerTicker.C:
-				if err := RunRecommendationsWorker(c, s, DefaultCandidatesBatchSize, DefaultPositionsBatchSize, DefaultDailyLimit); err != nil {
-					slog.Error("recommendations worker failed", "err", err)
-				}
-			}
+		for range time.Tick(DefaultRecommendationsJobFrequency) {
+			slog.Info("running recommendations job")
+			RunRecommendationsJob(aiConfig, s)
 		}
 	}()
 
 	return WaitAndShutdown(ctx, server, errCh, c.GracePeriod)
 }
 
-func NewServer(ctx context.Context, c ServerConfig, s Store, v Vault) (*http.Server, error) {
+func NewServer(
+	ctx context.Context,
+	c ServerConfig,
+	s Store,
+	v Vault,
+) (*http.Server, error) {
 	slog.Debug("initializing server")
 	return &http.Server{
-		Addr:         fmt.Sprintf("%s:%v", c.Host, c.Port),
-		ReadTimeout:  c.ReadTimeout,
-		WriteTimeout: c.WriteTimeout,
-		Handler:      RootMux(c, s, v),
+		Addr:         c.ServerBaseURL,
+		ReadTimeout:  c.RequestReadTimeout,
+		WriteTimeout: c.RequestWriteTimeout,
+		Handler:      RootMux(s, v),
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
 	}, nil
 }
 
-func WaitAndShutdown(ctx context.Context, server *http.Server, errCh chan error, gracePeriod time.Duration) error {
+func WaitAndShutdown(
+	ctx context.Context,
+	server *http.Server,
+	errCh chan error,
+	gracePeriod time.Duration,
+) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
@@ -316,10 +514,10 @@ func (rw *ResponseWriter) WriteHeader(code int) {
 
 type Middleware func(http.HandlerFunc) http.HandlerFunc
 
-func Chain(handler http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
-	wrapped := handler
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		wrapped = middlewares[i](wrapped)
+func Chain(handl http.HandlerFunc, mdws ...Middleware) http.HandlerFunc {
+	wrapped := handl
+	for i := len(mdws) - 1; i >= 0; i-- {
+		wrapped = mdws[i](wrapped)
 	}
 	return wrapped
 }
@@ -493,7 +691,7 @@ func ProtectedRoute(cfg RouteConfig, v Vault) {
 	)
 }
 
-func RootMux(c ServerConfig, s Store, v Vault) http.Handler {
+func RootMux(s Store, v Vault) http.Handler {
 	mux := http.NewServeMux()
 
 	PublicRoute(RouteConfig{
@@ -503,40 +701,45 @@ func RootMux(c ServerConfig, s Store, v Vault) http.Handler {
 		Handler: Health,
 	})
 
-	PublicRoute(RouteConfig{
-		Mux:     mux,
-		Method:  MethodPost,
-		Route:   RouteOAuthToken,
-		Handler: OAuthToken(s, v),
-	})
+	if v.UseGoogleSSO || v.UseAppleSSO {
+		PublicRoute(RouteConfig{
+			Mux:     mux,
+			Method:  MethodPost,
+			Route:   RouteOAuthToken,
+			Handler: OAuthToken(s, v),
+		})
 
-	PublicRoute(RouteConfig{
-		Mux:     mux,
-		Method:  MethodGet,
-		Route:   RouteOAuthAuthorize,
-		Handler: OAuthAuthorize(v),
-	})
+		PublicRoute(RouteConfig{
+			Mux:     mux,
+			Method:  MethodGet,
+			Route:   RouteOAuthAuthorize,
+			Handler: OAuthAuthorize(v),
+		})
 
-	PublicRoute(RouteConfig{
-		Mux:     mux,
-		Method:  MethodPost,
-		Route:   RouteOAuthAuthorize,
-		Handler: OAuthAuthorize(v),
-	})
+		PublicRoute(RouteConfig{
+			Mux:     mux,
+			Method:  MethodPost,
+			Route:   RouteOAuthAuthorize,
+			Handler: OAuthAuthorize(v),
+		})
 
-	PublicRoute(RouteConfig{
-		Mux:     mux,
-		Method:  MethodGet,
-		Route:   RouteOAuthCallback,
-		Handler: OAuthCallback(s, v),
-	})
+		PublicRoute(RouteConfig{
+			Mux:     mux,
+			Method:  MethodGet,
+			Route:   RouteOAuthCallback,
+			Handler: OAuthCallback(s, v),
+		})
 
-	PublicRoute(RouteConfig{
-		Mux:     mux,
-		Method:  MethodPost,
-		Route:   RouteOAuthCallback,
-		Handler: OAuthCallback(s, v),
-	})
+		PublicRoute(RouteConfig{
+			Mux:     mux,
+			Method:  MethodPost,
+			Route:   RouteOAuthCallback,
+			Handler: OAuthCallback(s, v),
+		})
+	} else {
+		slog.Warn(`SSO is not configured, /oauth/authorize
+			and /oauth/callback routes are disabled`)
+	}
 
 	ProtectedRoute(RouteConfig{
 		Mux:     mux,
@@ -657,17 +860,21 @@ func AuthTokenPair(w http.ResponseWriter, tokenPair TokenPair) {
 	WriteJSON(w, http.StatusOK, tokenPair)
 }
 
-func AuthError(w http.ResponseWriter, code AuthErrorCode, description string) {
+func AuthError(w http.ResponseWriter, code AuthErrorCode, desc string) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-	WriteJSON(w, http.StatusBadRequest, AuthErrorResponse{Error: code, ErrorDescription: description})
+
+	resp := AuthErrorResponse{Error: code, ErrorDescription: desc}
+	WriteJSON(w, http.StatusBadRequest, resp)
 }
 
-func Unauthorized(w http.ResponseWriter, code AuthErrorCode, description string) {
+func Unauthorized(w http.ResponseWriter, code AuthErrorCode, desc string) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
 	SetUnauthorizedHeaders(w)
-	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{Error: code, ErrorDescription: description})
+
+	resp := AuthErrorResponse{Error: code, ErrorDescription: desc}
+	WriteJSON(w, http.StatusUnauthorized, resp)
 }
 
 func OAuthToken(s Store, v Vault) http.HandlerFunc {
@@ -723,7 +930,10 @@ func OAuthToken(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 
-		roles, err := s.GetUserRoles(claims.UserID, Provider(claims.Provider))
+		roles, err := s.GetUserRoles(
+			claims.UserID,
+			Provider(claims.Provider),
+		)
 		if err != nil {
 			slog.Error(
 				"failed to get roles for the user",
@@ -734,7 +944,11 @@ func OAuthToken(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 
-		accessToken, err := v.CreateAccessToken(claims.UserID, claims.Provider, roles)
+		accessToken, err := v.CreateAccessToken(
+			claims.UserID,
+			claims.Provider,
+			roles,
+		)
 		if err != nil {
 			slog.Error(
 				"token creation failed",
@@ -751,9 +965,14 @@ func OAuthToken(s Store, v Vault) http.HandlerFunc {
 
 func OAuthAuthorize(v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		provider, err := ToProvider(r.URL.Query().Get("provider"), DefaultProvider)
+		providerRaw := r.URL.Query().Get("provider")
+		provider, err := ToProvider(providerRaw, DefaultProvider)
 		if err != nil {
-			AuthError(w, AuthInvalidRequest, "invalid provider; must be one of: google, apple")
+			AuthError(
+				w,
+				AuthInvalidRequest,
+				"invalid provider; must be one of: google, apple",
+			)
 			return
 		}
 
@@ -805,7 +1024,10 @@ func OAuthAuthorize(v Vault) http.HandlerFunc {
 
 func OAuthCallback(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), DefaultStateTokenExpiration)
+		ctx, cancel := context.WithTimeout(
+			r.Context(),
+			DefaultStateTokenExpiration,
+		)
 		defer cancel()
 
 		stateRaw := r.URL.Query().Get("state")
@@ -848,7 +1070,11 @@ func OAuthCallback(s Store, v Vault) http.HandlerFunc {
 		var user *User
 		switch state.Provider {
 		case ProviderGoogle:
-			rawIDToken, err := v.ExchangeGoogleCodeForIDToken(ctx, code, verifierCookie)
+			rawIDToken, err := v.ExchangeGoogleCodeForIDToken(
+				ctx,
+				code,
+				verifierCookie,
+			)
 			if errors.Is(err, ErrIDTokenRequired) {
 				AuthError(w, AuthInvalidRequest, "id_token is required")
 				return
@@ -879,7 +1105,11 @@ func OAuthCallback(s Store, v Vault) http.HandlerFunc {
 			}
 
 		case ProviderApple:
-			rawIDToken, err := v.ExchangeAppleCodeForIDToken(ctx, code, verifierCookie)
+			rawIDToken, err := v.ExchangeAppleCodeForIDToken(
+				ctx,
+				code,
+				verifierCookie,
+			)
 			if errors.Is(err, ErrIDTokenRequired) {
 				AuthError(w, AuthInvalidRequest, "id_token is required")
 				return
@@ -890,7 +1120,11 @@ func OAuthCallback(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 
-			user, err = v.VerifyAndParseAppleIDToken(ctx, rawIDToken, r.FormValue("user"))
+			user, err = v.VerifyAndParseAppleIDToken(
+				ctx,
+				rawIDToken,
+				r.FormValue("user"),
+			)
 			if errors.Is(err, ErrInvalidIDToken) {
 				AuthError(w, AuthInvalidRequest, "invalid id_token")
 				return
@@ -906,7 +1140,11 @@ func OAuthCallback(s Store, v Vault) http.HandlerFunc {
 			}
 
 		default:
-			AuthError(w, AuthInvalidRequest, "invalid provider; must be one of: google, apple")
+			AuthError(
+				w,
+				AuthInvalidRequest,
+				"invalid provider; must be one of: google, apple",
+			)
 			return
 		}
 
@@ -954,8 +1192,16 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	CreateTokenPair(s, v, w, userID, user.Provider, roles)
 }
 
-func CreateOnboardingToken(v Vault, w http.ResponseWriter, userID ULID, provider Provider) {
-	accessToken, err := v.CreateAccessToken(userID, provider, map[Role]ULID{RoleOnboarding: ""})
+func CreateOnboardingToken(
+	v Vault,
+	w http.ResponseWriter,
+	userID ULID, provider Provider,
+) {
+	accessToken, err := v.CreateAccessToken(
+		userID,
+		provider,
+		map[Role]ULID{RoleOnboarding: userID},
+	)
 	if err != nil {
 		slog.Error("failed to create access token", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
@@ -965,7 +1211,14 @@ func CreateOnboardingToken(v Vault, w http.ResponseWriter, userID ULID, provider
 	AuthAccessToken(w, *accessToken)
 }
 
-func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
+func CreateTokenPair(
+	s Store,
+	v Vault,
+	w http.ResponseWriter,
+	userID ULID,
+	provider Provider,
+	roles map[Role]ULID,
+) {
 	jti, err := NewJTIULID()
 	if err != nil {
 		slog.Error("ULID generation failed", "err", err)
@@ -973,7 +1226,10 @@ func CreateTokenPair(s Store, v Vault, w http.ResponseWriter, userID ULID, provi
 		return
 	}
 
-	err = s.CreateRefreshToken(jti, userID, time.Now().UTC().Add(DefaultRefreshTokenExpiration.Abs()))
+	err = s.CreateRefreshToken(jti,
+		userID,
+		time.Now().UTC().Add(DefaultRefreshTokenExpiration.Abs()),
+	)
 	if err != nil {
 		slog.Error("query failed", "err", err)
 		AuthError(w, AuthInvalidRequest, "internal server error")
@@ -1089,11 +1345,29 @@ type (
 
 var (
 	adjectives = []string{
-		"fast", "lazy", "clever", "curious", "brave", "mighty", "silent", "noisy", "happy", "grumpy",
+		"fast",
+		"lazy",
+		"clever",
+		"curious",
+		"brave",
+		"mighty",
+		"silent",
+		"noisy",
+		"happy",
+		"grumpy",
 	}
 
 	nouns = []string{
-		"lion", "tiger", "panda", "fox", "eagle", "shark", "wolf", "dragon", "otter", "koala",
+		"lion",
+		"tiger",
+		"panda",
+		"fox",
+		"eagle",
+		"shark",
+		"wolf",
+		"dragon",
+		"otter",
+		"koala",
 	}
 )
 
@@ -1101,7 +1375,7 @@ const (
 	// All went well, and (usually) some data was returned.
 	ResponseStatusSuccess = "success"
 
-	// There was a problem with the data submitted, or some pre-condition of the API call wasn't satisfied.
+	// There was a problem with the data submitted or some pre-condition failed
 	ResponseStatusFail = "fail"
 
 	// An error occurred in processing the request, i.e. an exception was thrown.
@@ -1119,16 +1393,16 @@ const (
 	// Refers to the next resource in a ordered series of resources.
 	RelTypeNext RelType = "next"
 
-	// An IRI that refers to the furthest preceding resource in a series of resources.
+	// An IRI that refers to the furthest preceding resource in a series.
 	RelTypeFirst RelType = "first"
 
-	// An IRI that refers to the furthest following resource in a series of resources.
+	// An IRI that refers to the furthest following resource in a series.
 	RelTypeLast RelType = "last"
 
 	// Refers to an index.
 	RelTypeIndex RelType = "index"
 
-	// Refers to a resource offering help (more information, links to other sources information, etc.).
+	// Refers to a resource offering help.
 	RelTypeHelp RelType = "help"
 
 	// Refers to a resource that can be used to edit the link's context.
@@ -1173,7 +1447,10 @@ func Error(w http.ResponseWriter, status int, message string) {
 		Code    ErrorCode      `json:"code,omitempty"`
 	}
 	SetDefaultHeaders(w)
-	WriteJSON(w, status, ErrorResponse{Status: ResponseStatusError, Message: message})
+	WriteJSON(w, status, ErrorResponse{
+		Status:  ResponseStatusError,
+		Message: message,
+	})
 }
 
 func Fail(w http.ResponseWriter, status int, data FailData) {
@@ -1269,7 +1546,11 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 
 		posCursor := q.Get("pos_cursor")
 		if isCandidate && q.Get("exclude_positions") != "true" && posCursor != "done" {
-			recs, cursor, err := s.GetPositionRecommendations(candidateID, Page{Cursor: posCursor, Limit: page.Limit}, excludeReacted)
+			recs, cursor, err := s.GetPositionRecommendations(
+				candidateID,
+				Page{Cursor: posCursor, Limit: page.Limit},
+				excludeReacted,
+			)
 			if err != nil {
 				slog.Error("failed to fetch position recommendations", "err", err)
 				Error(w, http.StatusInternalServerError, "internal server error")
@@ -1281,8 +1562,18 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 			for i, rec := range recs {
 				positions[i] = Resource{
 					Links: Links{
-						RelTypeSelf:         Link{Href: fmt.Sprintf("%s/%s", RouteMeRecommendations, rec.RecommendationID)},
-						RelType("reaction"): Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, rec.RecommendationID)},
+						RelTypeSelf: Link{
+							Href: fmt.Sprintf(
+								"%s/%s",
+								RouteMeRecommendations,
+								rec.RecommendationID),
+						},
+						RelType("reaction"): Link{
+							Href: fmt.Sprintf(
+								"%s/%s/reaction",
+								RouteMeRecommendations,
+								rec.RecommendationID),
+						},
 					}, Props: Props{
 						"recommendation_id": rec.RecommendationID,
 						"position_id":       rec.PositionID,
@@ -1298,8 +1589,14 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 		}
 
 		canCursor := q.Get("can_cursor")
-		if isRecruiter && q.Get("exclude_candidates") != "true" && canCursor != "done" {
-			recs, cursor, err := s.GetCandidateRecommendations(recruiterID, Page{Cursor: canCursor, Limit: page.Limit}, excludeReacted)
+		if isRecruiter &&
+			q.Get("exclude_candidates") != "true" &&
+			canCursor != "done" {
+			recs, cursor, err := s.GetCandidateRecommendations(
+				recruiterID,
+				Page{Cursor: canCursor, Limit: page.Limit},
+				excludeReacted,
+			)
 			if err != nil {
 				slog.Error("failed to fetch candidate recommendations", "err", err)
 				Error(w, http.StatusInternalServerError, "internal server error")
@@ -1311,8 +1608,20 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 			for i, rec := range recs {
 				candidates[i] = Resource{
 					Links: Links{
-						RelTypeSelf:         Link{Href: fmt.Sprintf("%s/%s", RouteMeRecommendations, rec.RecommendationID)},
-						RelType("reaction"): Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, rec.RecommendationID)},
+						RelTypeSelf: Link{
+							Href: fmt.Sprintf(
+								"%s/%s",
+								RouteMeRecommendations,
+								rec.RecommendationID,
+							),
+						},
+						RelType("reaction"): Link{
+							Href: fmt.Sprintf(
+								"%s/%s/reaction",
+								RouteMeRecommendations,
+								rec.RecommendationID,
+							),
+						},
 					},
 					Props: Props{
 						"recommendation_id": rec.RecommendationID,
@@ -1378,14 +1687,22 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 
 		recommendationID := ULID(r.PathValue("id"))
 		if recommendationID == "" {
-			Fail(w, http.StatusBadRequest, FailData{"id": "recommendation id is required"})
+			Fail(
+				w,
+				http.StatusBadRequest,
+				FailData{"id": "recommendation id is required"},
+			)
 			return
 		}
 
 		rec, err := s.GetRecommendation(recommendationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				Fail(w, http.StatusNotFound, FailData{"id": "recommendation not found"})
+				Fail(
+					w,
+					http.StatusNotFound,
+					FailData{"id": "recommendation not found"},
+				)
 				return
 			}
 			slog.Error("failed to fetch recommendation", "err", err)
@@ -1403,7 +1720,13 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 			return
 		}
 		if !body.ReactionType.IsValid() {
-			Fail(w, http.StatusBadRequest, FailData{"reaction_type": "must be one of: positive, negative, neutral"})
+			Fail(
+				w,
+				http.StatusBadRequest,
+				FailData{
+					"reaction_type": "must be one of: positive, negative, neutral",
+				},
+			)
 			return
 		}
 
@@ -1414,7 +1737,13 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 			ReactionType:     body.ReactionType,
 		}); err != nil {
 			if errors.Is(err, ErrReactionAlreadyExists) {
-				Fail(w, http.StatusConflict, FailData{"request": "reaction already exists; reactions are immutable"})
+				Fail(
+					w,
+					http.StatusConflict,
+					FailData{
+						"request": "reaction already exists; reactions are immutable",
+					},
+				)
 				return
 			}
 			slog.Error("failed to record reaction", "err", err)
@@ -1424,7 +1753,13 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 
 		Success(w, http.StatusCreated, Resource{
 			Links: Links{
-				RelTypeSelf:          Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, recommendationID)},
+				RelTypeSelf: Link{
+					Href: fmt.Sprintf(
+						"%s/%s/reaction",
+						RouteMeRecommendations,
+						recommendationID,
+					),
+				},
 				RelTypeUp:            Link{Href: RouteMeRecommendations},
 				RelType("reactions"): Link{Href: RouteMeReactions},
 				RelType("matches"):   Link{Href: RouteMeMatches},
@@ -1454,7 +1789,10 @@ func GetMeReactions(s Store) http.HandlerFunc {
 
 		page := GetPagination(r)
 
-		reactions, nextCursor, err := s.GetReactionsByCandidateID(candidateID, page)
+		reactions, nextCursor, err := s.GetReactionsByCandidateID(
+			candidateID,
+			page,
+		)
 		if err != nil {
 			slog.Error("failed to fetch candidate profile", "err", err)
 			Error(w, http.StatusInternalServerError, "internal server error")
@@ -1468,14 +1806,26 @@ func GetMeReactions(s Store) http.HandlerFunc {
 			RelTypeSelf: Link{Href: RouteMeReactions},
 		}
 		if nextCursor != "" {
-			links[RelTypeNext] = Link{Href: fmt.Sprintf("%s?cursor=%s", RouteMeReactions, nextCursor)}
+			links[RelTypeNext] = Link{
+				Href: fmt.Sprintf(
+					"%s?cursor=%s",
+					RouteMeReactions,
+					nextCursor,
+				),
+			}
 		}
 
 		embedded := make([]Resource, len(reactions))
 		for i, rx := range reactions {
 			embedded[i] = Resource{
 				Links: Links{
-					RelTypeSelf: Link{Href: fmt.Sprintf("%s/%s/reaction", RouteMeRecommendations, rx.RecommendationID)},
+					RelTypeSelf: Link{
+						Href: fmt.Sprintf(
+							"%s/%s/reaction",
+							RouteMeRecommendations,
+							rx.RecommendationID,
+						),
+					},
 				},
 				Props: Props{
 					"recommendation_id": rx.RecommendationID,
@@ -1527,7 +1877,14 @@ func GetMeMatches(s Store) http.HandlerFunc {
 			RelTypeSelf: Link{Href: RouteMeMatches},
 		}
 		if nextCursor != "" {
-			links[RelTypeNext] = Link{Href: fmt.Sprintf("%s?cursor=%s&limit=%d", RouteMeMatches, nextCursor, page.Limit)}
+			links[RelTypeNext] = Link{
+				Href: fmt.Sprintf(
+					"%s?cursor=%s&limit=%d",
+					RouteMeMatches,
+					nextCursor,
+					page.Limit,
+				),
+			}
 		}
 
 		embedded := make([]Resource, len(matches))

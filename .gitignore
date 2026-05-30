@@ -29,9 +29,7 @@ go.work.sum
 # env files
 *env
 .env.*
-.asymk
-.symk
-.apik
+*.apikey
 !.example.env
 
 # Editor/IDE
@@ -40,6 +38,7 @@ go.work.sum
 
 # Obsidian 
 .obsidian/
+todo.txt
 
 # Some other crap
 .air.toml
