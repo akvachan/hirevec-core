@@ -51,7 +51,7 @@ See your matches:
 curl
 ```
 
-> [!TIP] If you are developing, you can also run:
+> ![TIP] If you are developing, you can also run:
 > ```sh
 > go run cmd/create_test_data/main.go
 > ```
