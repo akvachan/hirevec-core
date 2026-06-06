@@ -352,7 +352,7 @@ func RunRecommendationsJob(c AIConfig, s Store) error {
 			// use BM25
 		}
 
-		if len(candidateIDs) == 0 {
+		if len(positionIDs) == 0 {
 			slog.Debug(
 				"failed to find suitable positions",
 				"candidateID", candidateIDs[i],
@@ -363,13 +363,17 @@ func RunRecommendationsJob(c AIConfig, s Store) error {
 		if c.UseReranker {
 			positionIDs, err = Rerank(c, candidateTexts[i], positionIDs)
 			if err != nil {
-				slog.Error("rerank failed", "candidateID", candidateIDs[i], "err", err)
+				slog.Error(
+					"failed to rerank",
+					"candidateID", candidateIDs[i],
+					"err", err,
+				)
 				continue
 			}
 		}
 
 		limit := min(len(positionIDs), int(DefaultRecommendationsDailyLimit))
-		recommendations := make([]Recommendation, 0, limit)
+		recommendations := make([]Recommendation, limit)
 		for i := range limit {
 			recommendationID, err := NewRecommendationULID()
 			if err != nil {
@@ -491,7 +495,10 @@ func WaitAndShutdown(
 		"timeout", gracePeriod,
 	)
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		slog.Error("graceful shutdown failed, forcing close", "err", err)
+		slog.Error(
+			"failed to gracefully shutdown, forcing close",
+			"err", err,
+		)
 		server.Close()
 		return ErrFailedShutdownServer
 	}
@@ -532,7 +539,7 @@ func PanicHandler(next http.HandlerFunc) http.HandlerFunc {
 		defer func() {
 			if err := recover(); err != nil {
 				slog.Error(
-					"panic recovered",
+					"recovered from panic",
 					"panic", err,
 					"method", r.Method,
 					"path", r.URL.Path,
@@ -689,28 +696,28 @@ const (
 	RouteMeReaction = "/v1/me/recommendations/{id}/reaction"
 )
 
-func PublicRoute(cfg RouteConfig) {
+func PublicRoute(c RouteConfig) {
 	handler := Chain(
-		cfg.Handler,
+		c.Handler,
 		Logger,
 		PanicHandler,
 		MaxBytesLimiter,
 	)
 
 	DefaultServeMux.Handle(
-		fmt.Sprintf("%s %s", cfg.Method, cfg.Route),
+		fmt.Sprintf("%s %s", c.Method, c.Route),
 		handler,
 	)
 }
 
-func ProtectedRoute(cfg RouteConfig, v Vault) {
+func ProtectedRoute(c RouteConfig, v Vault) {
 	rolesMap := make(map[Role]bool)
-	for _, role := range cfg.Roles {
+	for _, role := range c.Roles {
 		rolesMap[role] = true
 	}
 
 	handler := Chain(
-		cfg.Handler,
+		c.Handler,
 		Logger,
 		PanicHandler,
 		MaxBytesLimiter,
@@ -718,7 +725,7 @@ func ProtectedRoute(cfg RouteConfig, v Vault) {
 	)
 
 	DefaultServeMux.Handle(
-		fmt.Sprintf("%s %s", cfg.Method, cfg.Route),
+		fmt.Sprintf("%s %s", c.Method, c.Route),
 		handler,
 	)
 }
@@ -820,6 +827,16 @@ func ServeMux(s Store, v Vault) http.Handler {
 		Handler: HandlerCreateCandidateProfile(s, v),
 	}, v)
 
+	ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteUsersMe,
+		Handler: HandlerGetUsersMe(s, v),
+		Roles: []Role{
+			RoleRecruiter,
+			RoleCandidate,
+		},
+	}, v)
+
 	return DefaultServeMux
 }
 
@@ -902,18 +919,20 @@ func AuthTokenPair(w http.ResponseWriter, tokenPair TokenPair) {
 func AuthError(w http.ResponseWriter, code AuthErrorCode, desc string) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-
-	resp := AuthErrorResponse{Error: code, ErrorDescription: desc}
-	WriteJSON(w, http.StatusBadRequest, resp)
+	WriteJSON(w, http.StatusBadRequest, AuthErrorResponse{
+		Error:            code,
+		ErrorDescription: desc,
+	})
 }
 
 func Unauthorized(w http.ResponseWriter, code AuthErrorCode, desc string) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
 	SetUnauthorizedHeaders(w)
-
-	resp := AuthErrorResponse{Error: code, ErrorDescription: desc}
-	WriteJSON(w, http.StatusUnauthorized, resp)
+	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{
+		Error:            code,
+		ErrorDescription: desc,
+	})
 }
 
 func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
@@ -939,26 +958,40 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 
 		claims, err := v.ParseRefreshToken(req.RefreshToken)
 		if err != nil {
-			slog.Error("refresh token parsing failed", "err", err)
+			slog.Error(
+				"failed to parse refresh token",
+				"jti", claims.JTI,
+				"user_id", claims.UserID,
+				"ip", r.RemoteAddr,
+				"err", err,
+			)
 			AuthError(w, AuthInvalidGrant, "invalid refresh token")
 			return
 		}
 
-		revoked, err := s.IsRevokedRefreshToken(claims.JTI)
+		isRevoked, err := s.IsRevokedRefreshToken(claims.JTI)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
+				slog.Warn(
+					"refresh token not found",
+					"jti", claims.JTI,
+					"user_id", claims.UserID,
+					"ip", r.RemoteAddr,
+				)
 				AuthError(w, AuthInvalidGrant, "invalid refresh token")
 				return
 			}
 			slog.Error(
-				"db validation failed",
+				"failed to validate refresh token",
 				"err", err,
 				"jti", claims.JTI,
+				"user_id", claims.UserID,
+				"ip", r.RemoteAddr,
 			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
-		if revoked {
+		if isRevoked {
 			slog.Warn(
 				"revoked token reuse attempt",
 				"jti", claims.JTI,
@@ -975,9 +1008,10 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 		)
 		if err != nil {
 			slog.Error(
-				"failed to get roles for the user",
-				"err", err,
+				"failed to get user roles",
 				"user_id", claims.UserID,
+				"ip", r.RemoteAddr,
+				"err", err,
 			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
@@ -990,9 +1024,10 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 		)
 		if err != nil {
 			slog.Error(
-				"token creation failed",
-				"err", err,
+				"failed to create access token",
 				"user_id", claims.UserID,
+				"ip", r.RemoteAddr,
+				"err", err,
 			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
@@ -1051,7 +1086,10 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 				}
 			}
 			if err != nil {
-				slog.Error("query failed", "err", err)
+				slog.Error(
+					"failed to get user by email",
+					"err", err,
+				)
 				AuthError(w, AuthInvalidRequest, "internal server error")
 				return
 			}
@@ -1062,14 +1100,20 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 
 		state, err := v.CreateStateToken(provider)
 		if err != nil {
-			slog.Error("generation of state token failed", "err", err)
+			slog.Error(
+				"failed to generate state token",
+				"err", err,
+			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
 
 		parsed, err := v.ParseStateToken(state)
 		if err != nil {
-			slog.Error("failed to parse state token", "err", err)
+			slog.Error(
+				"failed to parse state token",
+				"err", err,
+			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -1097,7 +1141,10 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 
 		url, err := v.CreateAuthCodeURL(state, verifier, provider)
 		if err != nil {
-			slog.Error("generation of auth code url failed", "err", err)
+			slog.Error(
+				"failed to generate auth code URL",
+				"err", err,
+			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -1149,7 +1196,7 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 
-		DeleteCookies(w, []string{"oauth_csrf", "oauth_verifier"})
+		DeleteCookies(w, [2]string{"oauth_csrf", "oauth_verifier"})
 
 		var user *User
 		switch state.Provider {
@@ -1164,7 +1211,10 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 			if err != nil {
-				slog.Error("Google code exchange failed", "err", err)
+				slog.Error(
+					"failed to exchange Google code",
+					"err", err,
+				)
 				AuthError(w, AuthInvalidRequest, "internal server error")
 				return
 			}
@@ -1183,7 +1233,10 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 			if err != nil {
-				slog.Error("Google ID token verification failed", "err", err)
+				slog.Error(
+					"failed to verify Google ID token",
+					"err", err,
+				)
 				AuthError(w, AuthInvalidRequest, "internal server error")
 				return
 			}
@@ -1199,7 +1252,10 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 			if err != nil {
-				slog.Error("Apple code exchange failed", "err", err)
+				slog.Error(
+					"failed to exchange Apple code",
+					"err", err,
+				)
 				AuthError(w, AuthInvalidRequest, "internal server error")
 				return
 			}
@@ -1218,7 +1274,10 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 			if err != nil {
-				slog.Error("Apple ID token verification failed", "err", err)
+				slog.Error(
+					"failed to verify Apple ID token",
+					"err", err,
+				)
 				AuthError(w, AuthInvalidRequest, "internal server error")
 				return
 			}
@@ -1242,14 +1301,20 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	if errors.Is(err, ErrUserNotFound) {
 		userID, ulidErr := NewUserULID()
 		if ulidErr != nil {
-			slog.Error("ULID generation failed", "err", err)
+			slog.Error(
+				"failed to generate user ULID",
+				"err", err,
+			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
 
 		user.UserName, err = GenerateUsername()
 		if err != nil {
-			slog.Error("username generation failed", "err", err)
+			slog.Error(
+				"failed to generate username",
+				"err", err,
+			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -1266,7 +1331,10 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 
 		err = s.CreateUser(user)
 		if err != nil {
-			slog.Error("query failed", "err", err)
+			slog.Error(
+				"failed to create user",
+				"err", err,
+			)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
@@ -1290,7 +1358,10 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 		return
 	}
 	if err != nil {
-		slog.Error("query failed", "err", err)
+		slog.Error(
+			"failed to get user by provider",
+			"err", err,
+		)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -1311,7 +1382,10 @@ func CreateAccessToken(
 		roles,
 	)
 	if err != nil {
-		slog.Error("failed to create access token", "err", err)
+		slog.Error(
+			"failed to create access token",
+			"err", err,
+		)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -1329,7 +1403,10 @@ func CreateTokenPair(
 ) {
 	jti, err := NewJTIULID()
 	if err != nil {
-		slog.Error("ULID generation failed", "err", err)
+		slog.Error(
+			"failed to generate JTI ULID",
+			"err", err,
+		)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -1340,14 +1417,20 @@ func CreateTokenPair(
 		time.Now().UTC().Add(DefaultRefreshTokenExpiration),
 	)
 	if err != nil {
-		slog.Error("query failed", "err", err)
+		slog.Error(
+			"failed to create refresh token",
+			"err", err,
+		)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
 
 	tokenPair, err := v.CreateTokenPair(userID, provider, jti, roles)
 	if err != nil {
-		slog.Error("failed to create token pair", "err", err)
+		slog.Error(
+			"failed to create token pair",
+			"err", err,
+		)
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
@@ -1355,7 +1438,7 @@ func CreateTokenPair(
 	AuthTokenPair(w, *tokenPair)
 }
 
-func DeleteCookies(w http.ResponseWriter, names []string) {
+func DeleteCookies(w http.ResponseWriter, names [2]string) {
 	for _, name := range names {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
@@ -1424,7 +1507,7 @@ type (
 )
 
 var (
-	adjectives = []string{
+	adjectives = [...]string{
 		"fast",
 		"lazy",
 		"clever",
@@ -1437,7 +1520,7 @@ var (
 		"grumpy",
 	}
 
-	nouns = []string{
+	nouns = [...]string{
 		"lion",
 		"tiger",
 		"panda",
@@ -1506,7 +1589,10 @@ func (res Resource) MarshalJSON() ([]byte, error) {
 func WriteJSON(w http.ResponseWriter, status int, data any) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
-		slog.Error("failed to encode response data", "err", err)
+		slog.Error(
+			"failed to encode response data",
+			"err", err,
+		)
 	}
 }
 
@@ -1626,7 +1712,7 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 		candidateID, isCandidate := claims.Roles[RoleCandidate]
 		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
 		if !isCandidate && !isRecruiter {
-			slog.Error("user has neither candidate nor recruiter role")
+			slog.Error("failed to determine user's role")
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1639,7 +1725,10 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 				excludeReacted,
 			)
 			if err != nil {
-				slog.Error("failed to fetch position recommendations", "err", err)
+				slog.Error(
+					"failed to fetch position recommendations",
+					"err", err,
+				)
 				Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -1685,7 +1774,10 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 				excludeReacted,
 			)
 			if err != nil {
-				slog.Error("failed to fetch candidate recommendations", "err", err)
+				slog.Error(
+					"failed to fetch candidate recommendations",
+					"err", err,
+				)
 				Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
@@ -1792,7 +1884,10 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 				)
 				return
 			}
-			slog.Error("failed to fetch recommendation", "err", err)
+			slog.Error(
+				"failed to fetch recommendation",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1837,7 +1932,10 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 				)
 				return
 			}
-			slog.Error("failed to record reaction", "err", err)
+			slog.Error(
+				"failed to record reaction",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1885,7 +1983,10 @@ func HandlerGetMeReactions(s Store) http.HandlerFunc {
 			page,
 		)
 		if err != nil {
-			slog.Error("failed to fetch candidate profile", "err", err)
+			slog.Error(
+				"failed to fetch candidate profile",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -1956,7 +2057,10 @@ func HandlerGetMeMatches(s Store) http.HandlerFunc {
 
 		matches, nextCursor, err := s.GetMatchesByCandidateID(candidateID, page)
 		if err != nil {
-			slog.Error("failed to fetch matches", "err", err)
+			slog.Error(
+				"failed to fetch matches",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -2037,28 +2141,40 @@ func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 		if !exists && err != nil {
-			slog.Error("user exists check query failed", "err", err)
+			slog.Error(
+				"failed to check user existance",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		userName, err := GenerateUsername()
 		if err != nil {
-			slog.Error("failed to generate a username", "err", err)
+			slog.Error(
+				"failed to generate a username",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		ulid, err := NewUserULID()
 		if err != nil {
-			slog.Error("failed to generate a user ULID", "err", err)
+			slog.Error(
+				"failed to generate a user ULID",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		passwordHash, err := v.HashPassword(req.Password)
 		if err != nil {
-			slog.Error("failed to hash password", "err", err)
+			slog.Error(
+				"failed to hash password",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -2074,7 +2190,10 @@ func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
 		}
 		err = s.CreateUser(user)
 		if err != nil {
-			slog.Error("create user query failed", "err", err)
+			slog.Error(
+				"failed to create user",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -2093,7 +2212,10 @@ func HandlerCreateRecruiterProfile(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ulid, err := NewRecruiterULID()
 		if err != nil {
-			slog.Error("failed to generate a recruiter ULID", "err", err)
+			slog.Error(
+				"failed to generate a recruiter ULID",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -2115,14 +2237,20 @@ func HandlerCreateRecruiterProfile(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error("create recruiter profile query failed", "err", err)
+			slog.Error(
+				"failed to create recruiter profile",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		roles, err := s.GetUserRoles(claims.UserID, claims.Provider)
 		if err != nil {
-			slog.Error("get user roles query failed", "err", err)
+			slog.Error(
+				"failed to get user roles",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -2175,7 +2303,10 @@ func HandlerCreateCandidateProfile(s Store, v Vault) http.HandlerFunc {
 
 		ulid, err := NewCandidateULID()
 		if err != nil {
-			slog.Error("failed to generate a candidate ULID", "err", err)
+			slog.Error(
+				"failed to generate a candidate ULID",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -2202,14 +2333,20 @@ func HandlerCreateCandidateProfile(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 		if err != nil {
-			slog.Error("create candidate profile query failed", "err", err)
+			slog.Error(
+				"failed to create candidate profile",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		roles, err := s.GetUserRoles(claims.UserID, claims.Provider)
 		if err != nil {
-			slog.Error("get user roles query failed", "err", err)
+			slog.Error(
+				"failed to get user roles",
+				"err", err,
+			)
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -2221,5 +2358,16 @@ func HandlerCreateCandidateProfile(s Store, v Vault) http.HandlerFunc {
 		}
 
 		CreateTokenPair(s, v, w, claims.UserID, claims.Provider, roles)
+	}
+}
+
+func HandlerGetUsersMe(s Store, v Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 }

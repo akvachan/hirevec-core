@@ -147,13 +147,19 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 
 	sk, err := LoadOrCreateSymmetricKey(c.SymmetricKey)
 	if err != nil {
-		slog.Error("failed to init symmetric key", "err", err)
+		slog.Error(
+			"failed to init symmetric key",
+			"err", err,
+		)
 		return nil, err
 	}
 
 	ak, err := LoadOrCreateAsymmetricKey(c.AsymmetricKey)
 	if err != nil {
-		slog.Error("failed to init asymmetric key", "err", err)
+		slog.Error(
+			"failed to init asymmetric key",
+			"err", err,
+		)
 		return nil, err
 	}
 

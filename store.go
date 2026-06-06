@@ -114,7 +114,7 @@ type StoreConfig struct {
 	PostgresDatabaseURL string
 }
 
-func ConnectToPostgres(c StoreConfig) (*sql.DB, error) {
+func ConnectPostgres(c StoreConfig) (*sql.DB, error) {
 	slog.Debug("connecting to Postgres")
 	if c.PostgresDatabaseURL == "" {
 		return nil, ErrMissingDatabaseURL
@@ -139,7 +139,7 @@ func ConnectToPostgres(c StoreConfig) (*sql.DB, error) {
 
 var DefaultSQLitePath = ".db"
 
-func ConnectToSQLite() (*sql.DB, error) {
+func ConnectSQLite() (*sql.DB, error) {
 	slog.Debug("connecting to SQLite")
 	db, err := sql.Open("sqlite", DefaultSQLitePath)
 	if err != nil {
@@ -171,15 +171,21 @@ func NewStore(c StoreConfig) (s *Store, err error) {
 	var db *sql.DB
 
 	if c.UsePostgres {
-		db, err = ConnectToPostgres(c)
+		db, err = ConnectPostgres(c)
 		if err != nil {
-			slog.Error("connection to Postgres failed", "err", err)
+			slog.Error(
+				"failed to connect Postgres",
+				"err", err,
+			)
 			return nil, err
 		}
 	} else {
-		db, err = ConnectToSQLite()
+		db, err = ConnectSQLite()
 		if err != nil {
-			slog.Error("connection to SQLite failed", "err", err)
+			slog.Error(
+				"failed to connect SQLite",
+				"err", err,
+			)
 			return nil, err
 		}
 	}
@@ -433,13 +439,13 @@ func (s Store) CreateReaction(r Reaction) error {
 }
 
 func (s Store) IsRevokedRefreshToken(jti ULID) (bool, error) {
-	var isActive bool
-	return isActive, s.db.QueryRow(`
+	var isRevoked bool
+	return isRevoked, s.db.QueryRow(`
 		select revoked 
 		from refresh_tokens 
 		where jti = $1 
 		and expires_at > $2 
-	`, jti, time.Now().UTC()).Scan(&isActive)
+	`, jti, time.Now().UTC()).Scan(&isRevoked)
 }
 
 const DefaultMaxRefreshTokensCount = 5

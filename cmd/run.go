@@ -36,6 +36,9 @@ func main() {
 			AppleClientSecret:   os.Getenv("APPLE_CLIENT_SECRET"),
 		},
 	); err != nil {
-		slog.Error("app crashed: ", err)
+		slog.Error(
+			"failed to run app",
+			"err", err,
+		)
 	}
 }
