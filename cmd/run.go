@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Arsenii Kvachan
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Unlicense
 
 package main
 
@@ -15,7 +15,7 @@ func main() {
 	hirevec.InitLogger(slog.LevelWarn)
 
 	if err := hirevec.Loadenv(".env"); err != nil {
-		slog.Warn("could not load .env, using system environment", "err")
+		slog.Warn("could not load .env, using system environment", "err", err)
 	}
 
 	if err := hirevec.RunApp(
@@ -24,12 +24,12 @@ func main() {
 			RequestReadTimeout:  hirevec.ParseDurationWithDefault(os.Getenv("HIREVEC_REQUEST_READ_TIMEOUT"), 2000*time.Millisecond),
 			RequestWriteTimeout: hirevec.ParseDurationWithDefault(os.Getenv("HIREVEC_REQUEST_WRITE_TIMEOUT"), 2000*time.Millisecond),
 			GracePeriod:         hirevec.ParseDurationWithDefault(os.Getenv("HIREVEC_GRACE_PERIOD"), 5000*time.Millisecond),
-			LogLevel:            hirevec.ParseLogLevelWithDefault(os.Getenv("HIREVEC_LOG_LEVEL"), slog.LevelError),
+			LogLevel:            hirevec.ParseLogLevelWithDefault(os.Getenv("HIREVEC_LOG_LEVEL"), slog.LevelDebug),
 			PostgresDatabaseURL: os.Getenv("POSTGRES_DATABASE_URL"),
 			TEIBaseURL:          os.Getenv("TEI_BASE_URL"),
 			TEIAPIKey:           os.Getenv("TEI_API_KEY"),
-			SymmetricKey:        os.Getenv("SYMMETRIC_KEY"),
-			AsymmetricKey:       os.Getenv("ASYMMETRIC_KEY"),
+			SymmetricKey:        os.Getenv("HIREVEC_SYMMETRIC_KEY"),
+			AsymmetricKey:       os.Getenv("HIREVEC_ASYMMETRIC_KEY"),
 			GoogleClientID:      os.Getenv("GOOGLE_CLIENT_ID"),
 			GoogleClientSecret:  os.Getenv("GOOGLE_CLIENT_SECRET"),
 			AppleClientID:       os.Getenv("APPLE_CLIENT_ID"),

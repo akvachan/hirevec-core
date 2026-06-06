@@ -3,11 +3,12 @@ module github.com/akvachan/hirevec-core
 go 1.25.5
 
 require (
-	aidanwoods.dev/go-paseto v1.6.0
-	github.com/coreos/go-oidc/v3 v3.17.0
-	github.com/jackc/pgx/v5 v5.9.2
-	golang.org/x/oauth2 v0.34.0
-	modernc.org/sqlite v1.49.1
+	aidanwoods.dev/go-paseto v1.6.0 // PASETO, for access and refresh tokens
+	github.com/coreos/go-oidc/v3 v3.17.0 // OIDC (for Apple and Google SSO)
+	github.com/jackc/pgx/v5 v5.9.2 // Postgres driver
+	golang.org/x/crypto v0.48.0 // Crypto, for reliable randomness generation
+	golang.org/x/oauth2 v0.34.0 // OAuth (for Apple and Google SSO)
+	modernc.org/sqlite v1.49.1 // SQLite driver
 )
 
 require (
@@ -21,7 +22,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.34.0 // indirect

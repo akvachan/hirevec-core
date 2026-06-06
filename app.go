@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Arsenii Kvachan
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Unlicense
 
 // Package hirevec implements internal server features
 package hirevec
@@ -79,7 +79,7 @@ func RunApp(c AppConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	slog.SetLogLoggerLevel(c.LogLevel)
+	InitLogger(c.LogLevel)
 
 	useGoogleSSO := true
 	useAppleSSO := true

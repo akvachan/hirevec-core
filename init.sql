@@ -1,18 +1,20 @@
-create table if not exists users (
+create table if not exists users(
   id text primary key not null,
   provider text not null,
-  provider_user_id text not null,
+  provider_user_id text,
   email text,
   full_name text,
-  user_name text unique,
-  updated_at timestamp default current_timestamp,
-  unique(provider, provider_user_id),
-  check (provider in ('google', 'apple'))
+  user_name text unique not null,
+  password_hash text,
+  updated_at timestamp not null default current_timestamp,
+  check (provider in ('google', 'apple', 'email')),
+  unique(provider, provider_user_id)
 );
 
 create table if not exists refresh_tokens (
   jti text primary key not null,
   user_id text not null,
+  created_at timestamp not null default current_timestamp,
   expires_at timestamp not null,
   revoked integer not null default 0,
   foreign key (user_id) references users(id) on delete cascade,
@@ -34,6 +36,7 @@ create table if not exists candidates (
 create table if not exists recruiters (
   id text primary key not null,
   user_id text not null,
+  unique(user_id),
   foreign key (user_id) references users(id) on delete cascade
 );
 
@@ -56,9 +59,9 @@ create table if not exists recommendations (
   id text primary key not null,
   position_id text not null,
   candidate_id text not null,
-  unique(position_id, candidate_id),
   foreign key (position_id) references positions(id) on delete cascade,
-  foreign key (candidate_id) references candidates(id) on delete cascade
+  foreign key (candidate_id) references candidates(id) on delete cascade,
+  unique(position_id, candidate_id)
 );
 
 create index if not exists idx_recommendations_candidate_position

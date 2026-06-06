@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Arsenii Kvachan
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: Unlicense
 
 package hirevec
 
@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/mail"
 	"os"
 	"path"
 	"regexp"
@@ -219,6 +220,10 @@ func LoadLanguageData() error {
 	return nil
 }
 
+func LoadBM25Cache() error {
+	return nil
+}
+
 var (
 	HTMLTagRe   = regexp.MustCompile(`(?s)<[^>]*>`)
 	ScriptTagRe = regexp.MustCompile(`(?is)<script.*?>.*?</script>`)
@@ -272,7 +277,7 @@ func RunEmbeddingsJob(c AIConfig, s Store) error {
 		return s.MarkEmbeddingsStatus(ids, EmbeddingStatusPending)
 	}
 
-	tx, err := s.DB.Begin()
+	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
@@ -416,7 +421,7 @@ func RunServer(ctx context.Context, c ServerConfig, s Store, v Vault) error {
 		return err
 	}
 
-	if err := LoadBM25Data(); err != nil {
+	if err := LoadBM25Cache(); err != nil {
 		return err
 	}
 
@@ -459,7 +464,7 @@ func NewServer(
 		Addr:         c.ServerBaseURL,
 		ReadTimeout:  c.RequestReadTimeout,
 		WriteTimeout: c.RequestWriteTimeout,
-		Handler:      RootMux(s, v),
+		Handler:      ServeMux(s, v),
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
 	}, nil
@@ -528,18 +533,17 @@ func PanicHandler(next http.HandlerFunc) http.HandlerFunc {
 			if err := recover(); err != nil {
 				slog.Error(
 					"panic recovered",
-					"err", err,
+					"panic", err,
+					"method", r.Method,
+					"path", r.URL.Path,
 				)
-				Error(w, http.StatusInternalServerError, "internal server error")
+
+				Error(w, "internal server error", http.StatusInternalServerError)
 			}
 		}()
+
 		next.ServeHTTP(w, r)
 	}
-}
-
-func GetUserID(r *http.Request) (ULID, bool) {
-	userID, ok := r.Context().Value(ContextKeyUserID).(ULID)
-	return userID, ok
 }
 
 func GetClaims(r *http.Request) (*AccessTokenClaims, bool) {
@@ -565,34 +569,32 @@ func GetPagination(r *http.Request) Page {
 	return p
 }
 
-func Authentication(v Vault, allowedRoles []Role) Middleware {
+func Authentication(v Vault, roles map[Role]bool) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			var bearer string
-
 			authHeader := r.Header.Get("Authorization")
-			if authHeader != "" {
-				var found bool
-				bearer, found = strings.CutPrefix(authHeader, "Bearer ")
-				if !found || bearer == "" {
-					Unauthorized(w, AuthInvalidClient, "Bearer token is required")
-					return
-				}
+
+			bearer, found := strings.CutPrefix(authHeader, "Bearer ")
+			if !found || bearer == "" {
+				Unauthorized(w, AuthInvalidClient, "Bearer token is required")
+				return
 			}
 
 			claims, err := v.ParseAccessToken(bearer)
-			if err != nil || claims == nil {
+			if err != nil {
 				AuthError(w, AuthInvalidGrant, "invalid access token")
 				return
 			}
 
-			allowed := make(map[Role]bool, len(allowedRoles))
-			for _, s := range allowedRoles {
-				allowed[s] = true
-			}
-
-			for role := range claims.Roles {
-				if _, ok := allowed[role]; !ok {
+			if len(roles) > 0 {
+				authorized := false
+				for role := range claims.Roles {
+					if roles[role] {
+						authorized = true
+						break
+					}
+				}
+				if !authorized {
 					AuthError(w, AuthInvalidGrant, "unauthorized")
 					return
 				}
@@ -636,152 +638,189 @@ const (
 )
 
 type RouteConfig struct {
-	Mux           *http.ServeMux
-	Method        Method
-	Route         string
-	Handler       http.HandlerFunc
-	RequiredRoles []Role
+	Method  Method
+	Route   string
+	Handler http.HandlerFunc
+	Roles   []Role
 }
 
+// Routes
 const (
-	RouteHealth            = "/health"
-	RouteOAuthToken        = "/oauth/token"
-	RouteOAuthAuthorize    = "/oauth/authorize"
-	RouteOAuthCallback     = "/oauth/callback"
+	// DONE: GET
+	RouteHealth = "/health"
+
+	// DONE: POST
+	RouteAccessToken = "/auth/token"
+
+	// DONE: POST, GET
+	RouteAuthorize = "/auth/authorize"
+
+	// DONE: POST, GET
+	RouteOAuthCallback = "/auth/callback"
+
+	// DONE: POST
+	RouteUsers = "/v1/users"
+
+	// TODO: GET, PUT, DELETE for /v1/users/me
+	RouteUsersMe = "/v1/users/me"
+
+	// DONE: POST
+	RouteRecruiters = "/v1/recruiters"
+
+	// TODO: GET, PUT, DELETE for /v1/recruiters/me
+	RouteRecruitersMe = "/v1/recruiters/me"
+
+	// DONE: POST
+	RouteCandidates = "/v1/candidates"
+
+	// TODO: GET, PUT, DELETE for /v1/candidates/me
+	RouteCandidatesMe = "/v1/candidate/me"
+
+	// DONE: GET
 	RouteMeRecommendations = "/v1/me/recommendations"
-	RouteMeReactions       = "/v1/me/reactions"
-	RouteMeMatches         = "/v1/me/matches"
-	RouteMeReaction        = "/v1/me/recommendations/{id}/reaction"
+
+	// DONE: GET
+	RouteMeReactions = "/v1/me/reactions"
+
+	// DONE: GET
+	RouteMeMatches = "/v1/me/matches"
+
+	// DONE: POST
+	RouteMeReaction = "/v1/me/recommendations/{id}/reaction"
 )
 
-func Route(method Method, route string) string {
-	return fmt.Sprintf("%s %s", method, route)
-}
-
-func BaseMiddleware(handler http.HandlerFunc) http.Handler {
-	return Chain(
-		handler,
-		Logger,
-		PanicHandler,
-		MaxBytesLimiter,
-	)
-}
-
 func PublicRoute(cfg RouteConfig) {
-	handler := BaseMiddleware(cfg.Handler)
-
-	cfg.Mux.Handle(
-		Route(cfg.Method, cfg.Route),
-		handler,
-	)
-}
-
-func ProtectedRoute(cfg RouteConfig, v Vault) {
 	handler := Chain(
 		cfg.Handler,
 		Logger,
 		PanicHandler,
 		MaxBytesLimiter,
-		Authentication(v, cfg.RequiredRoles),
 	)
 
-	cfg.Mux.Handle(
-		Route(cfg.Method, cfg.Route),
+	DefaultServeMux.Handle(
+		fmt.Sprintf("%s %s", cfg.Method, cfg.Route),
 		handler,
 	)
 }
 
-func RootMux(s Store, v Vault) http.Handler {
-	mux := http.NewServeMux()
+func ProtectedRoute(cfg RouteConfig, v Vault) {
+	rolesMap := make(map[Role]bool)
+	for _, role := range cfg.Roles {
+		rolesMap[role] = true
+	}
 
+	handler := Chain(
+		cfg.Handler,
+		Logger,
+		PanicHandler,
+		MaxBytesLimiter,
+		Authentication(v, rolesMap),
+	)
+
+	DefaultServeMux.Handle(
+		fmt.Sprintf("%s %s", cfg.Method, cfg.Route),
+		handler,
+	)
+}
+
+var DefaultServeMux = http.NewServeMux()
+
+func ServeMux(s Store, v Vault) http.Handler {
 	PublicRoute(RouteConfig{
-		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteHealth,
 		Handler: Health,
 	})
 
-	if v.UseGoogleSSO || v.UseAppleSSO {
-		PublicRoute(RouteConfig{
-			Mux:     mux,
-			Method:  MethodPost,
-			Route:   RouteOAuthToken,
-			Handler: OAuthToken(s, v),
-		})
+	PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteUsers,
+		Handler: HandlerCreateUser(s, v),
+	})
 
-		PublicRoute(RouteConfig{
-			Mux:     mux,
-			Method:  MethodGet,
-			Route:   RouteOAuthAuthorize,
-			Handler: OAuthAuthorize(v),
-		})
+	PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteAccessToken,
+		Handler: HandlerCreateAccessToken(s, v),
+	})
 
-		PublicRoute(RouteConfig{
-			Mux:     mux,
-			Method:  MethodPost,
-			Route:   RouteOAuthAuthorize,
-			Handler: OAuthAuthorize(v),
-		})
+	PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteAuthorize,
+		Handler: HandlerAuthorize(s, v),
+	})
 
-		PublicRoute(RouteConfig{
-			Mux:     mux,
-			Method:  MethodGet,
-			Route:   RouteOAuthCallback,
-			Handler: OAuthCallback(s, v),
-		})
+	PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteAuthorize,
+		Handler: HandlerAuthorize(s, v),
+	})
 
-		PublicRoute(RouteConfig{
-			Mux:     mux,
-			Method:  MethodPost,
-			Route:   RouteOAuthCallback,
-			Handler: OAuthCallback(s, v),
-		})
-	} else {
-		slog.Warn(`SSO is not configured, /oauth/authorize
-			and /oauth/callback routes are disabled`)
-	}
+	PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteOAuthCallback,
+		Handler: HandlerOAuthCallback(s, v),
+	})
+
+	PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteOAuthCallback,
+		Handler: HandlerOAuthCallback(s, v),
+	})
 
 	ProtectedRoute(RouteConfig{
-		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteMeRecommendations,
-		Handler: GetMeRecommendations(s),
-		RequiredRoles: []Role{
-			RoleCandidate, RoleRecruiter,
+		Handler: HandlerGetMeRecommendations(s),
+		Roles: []Role{
+			RoleCandidate,
+			RoleRecruiter,
 		},
 	}, v)
 
 	ProtectedRoute(RouteConfig{
-		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteMeReactions,
-		Handler: GetMeReactions(s),
-		RequiredRoles: []Role{
-			RoleCandidate, RoleRecruiter,
+		Handler: HandlerGetMeReactions(s),
+		Roles: []Role{
+			RoleCandidate,
+			RoleRecruiter,
 		},
 	}, v)
 
 	ProtectedRoute(RouteConfig{
-		Mux:     mux,
 		Method:  MethodGet,
 		Route:   RouteMeMatches,
-		Handler: GetMeMatches(s),
-		RequiredRoles: []Role{
-			RoleCandidate, RoleRecruiter,
+		Handler: HandlerGetMeMatches(s),
+		Roles: []Role{
+			RoleCandidate,
+			RoleRecruiter,
 		},
 	}, v)
 
 	ProtectedRoute(RouteConfig{
-		Mux:     mux,
 		Method:  MethodPost,
 		Route:   RouteMeReaction,
-		Handler: CreateMeReaction(s),
-		RequiredRoles: []Role{
-			RoleCandidate, RoleRecruiter,
+		Handler: HandlerCreateMeReaction(s),
+		Roles: []Role{
+			RoleCandidate,
+			RoleRecruiter,
 		},
 	}, v)
 
-	return mux
+	ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteRecruiters,
+		Handler: HandlerCreateRecruiterProfile(s, v),
+	}, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteCandidates,
+		Handler: HandlerCreateCandidateProfile(s, v),
+	}, v)
+
+	return DefaultServeMux
 }
 
 // [RFC6749](https://www.rfc-editor.org/rfc/rfc6749.txt).
@@ -877,7 +916,7 @@ func Unauthorized(w http.ResponseWriter, code AuthErrorCode, desc string) {
 	WriteJSON(w, http.StatusUnauthorized, resp)
 }
 
-func OAuthToken(s Store, v Vault) http.HandlerFunc {
+func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 	type RequestBodyCreateToken struct {
 		GrantType    string `json:"grant_type"`
 		RefreshToken string `json:"refresh_token"`
@@ -905,7 +944,7 @@ func OAuthToken(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 
-		isRefreshTokenRevoked, err := s.IsActiveSession(claims.JTI)
+		revoked, err := s.IsRevokedRefreshToken(claims.JTI)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				AuthError(w, AuthInvalidGrant, "invalid refresh token")
@@ -919,7 +958,7 @@ func OAuthToken(s Store, v Vault) http.HandlerFunc {
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
-		if isRefreshTokenRevoked {
+		if revoked {
 			slog.Warn(
 				"revoked token reuse attempt",
 				"jti", claims.JTI,
@@ -963,16 +1002,61 @@ func OAuthToken(s Store, v Vault) http.HandlerFunc {
 	}
 }
 
-func OAuthAuthorize(v Vault) http.HandlerFunc {
+func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		providerRaw := r.URL.Query().Get("provider")
-		provider, err := ToProvider(providerRaw, DefaultProvider)
+		provider, err := StringToProvider(providerRaw, ProviderEmail)
 		if err != nil {
 			AuthError(
 				w,
 				AuthInvalidRequest,
-				"invalid provider; must be one of: google, apple",
+				"invalid provider; must be one of: google, apple, email",
 			)
+			return
+		}
+
+		if provider == ProviderEmail {
+			var req struct {
+				Email    string `json:"email"`
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				AuthError(w, AuthInvalidRequest, "invalid request body")
+				return
+			}
+			if req.Email == "" || req.Password == "" {
+				AuthError(w, AuthInvalidRequest, "email and password required")
+				return
+			}
+
+			user, roles, err := s.GetUserByEmail(req.Email, ProviderEmail)
+			if errors.Is(err, ErrUserNotFound) {
+				Unauthorized(w, AuthInvalidRequest, "invalid credentials")
+				return
+			}
+			if user != nil {
+				if !v.IsValidPassword(user.PasswordHash, req.Password) {
+					Unauthorized(w, AuthInvalidRequest, "invalid credentials")
+					return
+				}
+				if errors.Is(err, ErrUserNoRole) {
+					// TODO: indicate next actions according to HAL
+					CreateAccessToken(v,
+						w,
+						user.ID,
+						user.Provider,
+						map[Role]ULID{},
+					)
+					return
+				}
+			}
+			if err != nil {
+				slog.Error("query failed", "err", err)
+				AuthError(w, AuthInvalidRequest, "internal server error")
+				return
+			}
+
+			CreateTokenPair(s, v, w, user.ID, user.Provider, roles)
 			return
 		}
 
@@ -994,7 +1078,7 @@ func OAuthAuthorize(v Vault) http.HandlerFunc {
 			Name:     "oauth_csrf",
 			Value:    parsed.CSRF,
 			Path:     "/",
-			MaxAge:   int(DefaultStateTokenExpiration.Seconds()),
+			MaxAge:   int(v.StateTokenExpiration),
 			HttpOnly: true,
 			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
@@ -1005,7 +1089,7 @@ func OAuthAuthorize(v Vault) http.HandlerFunc {
 			Name:     "oauth_verifier",
 			Value:    verifier,
 			Path:     "/",
-			MaxAge:   int(DefaultVerifierExpiration.Seconds()),
+			MaxAge:   int(v.VerifierExpiration),
 			HttpOnly: true,
 			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
@@ -1022,11 +1106,11 @@ func OAuthAuthorize(v Vault) http.HandlerFunc {
 	}
 }
 
-func OAuthCallback(s Store, v Vault) http.HandlerFunc {
+func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(
 			r.Context(),
-			DefaultStateTokenExpiration,
+			v.StateTokenExpiration,
 		)
 		defer cancel()
 
@@ -1170,17 +1254,39 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 			return
 		}
 
-		err := s.CreateUser(user)
+		user.FullName, err = ValidateName(user.FullName)
+		if err != nil {
+			AuthError(
+				w,
+				AuthInvalidRequest,
+				"full name must be between 1 and 100 characters",
+			)
+			return
+		}
+
+		err = s.CreateUser(user)
 		if err != nil {
 			slog.Error("query failed", "err", err)
 			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
-		CreateOnboardingToken(v, w, userID, user.Provider)
+		// TODO: indicate next actions according to HAL
+		CreateAccessToken(v,
+			w,
+			userID,
+			user.Provider,
+			map[Role]ULID{},
+		)
 		return
 	}
 	if errors.Is(err, ErrUserNoRole) {
-		CreateOnboardingToken(v, w, userID, user.Provider)
+		// TODO: indicate next actions according to HAL
+		CreateAccessToken(v,
+			w,
+			userID,
+			user.Provider,
+			map[Role]ULID{},
+		)
 		return
 	}
 	if err != nil {
@@ -1192,15 +1298,17 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	CreateTokenPair(s, v, w, userID, user.Provider, roles)
 }
 
-func CreateOnboardingToken(
+func CreateAccessToken(
 	v Vault,
 	w http.ResponseWriter,
-	userID ULID, provider Provider,
+	userID ULID,
+	provider Provider,
+	roles map[Role]ULID,
 ) {
 	accessToken, err := v.CreateAccessToken(
 		userID,
 		provider,
-		map[Role]ULID{RoleOnboarding: userID},
+		roles,
 	)
 	if err != nil {
 		slog.Error("failed to create access token", "err", err)
@@ -1226,9 +1334,10 @@ func CreateTokenPair(
 		return
 	}
 
-	err = s.CreateRefreshToken(jti,
+	err = s.CreateRefreshToken(
+		jti,
 		userID,
-		time.Now().UTC().Add(DefaultRefreshTokenExpiration.Abs()),
+		time.Now().UTC().Add(DefaultRefreshTokenExpiration),
 	)
 	if err != nil {
 		slog.Error("query failed", "err", err)
@@ -1262,14 +1371,6 @@ func DeleteCookies(w http.ResponseWriter, names []string) {
 func ValidateName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 
-	reTags := regexp.MustCompile(`<[^>]*>`)
-	name = reTags.ReplaceAllString(name, "")
-
-	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
-	if !reValid.MatchString(name) {
-		return "", ErrNameForbiddenChars
-	}
-
 	if len(name) < 1 {
 		return "", ErrNameTooShort
 	}
@@ -1278,27 +1379,6 @@ func ValidateName(name string) (string, error) {
 	}
 
 	return html.EscapeString(name), nil
-}
-
-func ValidateAbout(about string) (string, error) {
-	about = strings.TrimSpace(about)
-
-	reTags := regexp.MustCompile(`<[^>]*>`)
-	about = reTags.ReplaceAllString(about, "")
-
-	reValid := regexp.MustCompile(`^[a-zA-Z\s'-]+$`)
-	if !reValid.MatchString(about) {
-		return "", ErrAboutForbiddenChars
-	}
-
-	if len(about) < 1 {
-		return "", ErrAboutTooShort
-	}
-	if len(about) > 500 {
-		return "", ErrAboutTooLong
-	}
-
-	return html.EscapeString(about), nil
 }
 
 type (
@@ -1440,7 +1520,14 @@ func Success(w http.ResponseWriter, status int, res Resource) {
 	WriteJSON(w, status, res)
 }
 
-func Error(w http.ResponseWriter, status int, message string) {
+func EmptySuccess(w http.ResponseWriter, status int) {
+	SetDefaultHeaders(w)
+	res := Resource{Props: make(map[string]any)}
+	res.Props["status"] = "success"
+	WriteJSON(w, status, res)
+}
+
+func Error(w http.ResponseWriter, message string, status int) {
 	type ErrorResponse struct {
 		Status  ResponseStatus `json:"status"`
 		Message string         `json:"message"`
@@ -1453,7 +1540,7 @@ func Error(w http.ResponseWriter, status int, message string) {
 	})
 }
 
-func Fail(w http.ResponseWriter, status int, data FailData) {
+func Fail(w http.ResponseWriter, data FailData, status int) {
 	type FailResponse struct {
 		Status ResponseStatus `json:"status"`
 		Data   FailData       `json:"data,omitempty"`
@@ -1509,15 +1596,15 @@ func GenerateUsername() (string, error) {
 }
 
 func Health(w http.ResponseWriter, r *http.Request) {
-	Success(w, http.StatusOK, Resource{Props: Props{}})
+	EmptySuccess(w, http.StatusOK)
 }
 
-func GetMeRecommendations(s Store) http.HandlerFunc {
+func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1540,7 +1627,7 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
 		if !isCandidate && !isRecruiter {
 			slog.Error("user has neither candidate nor recruiter role")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1553,7 +1640,7 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 			)
 			if err != nil {
 				slog.Error("failed to fetch position recommendations", "err", err)
-				Error(w, http.StatusInternalServerError, "internal server error")
+				Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 			posNextCursor = cmp.Or(string(cursor), "done")
@@ -1599,7 +1686,7 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 			)
 			if err != nil {
 				slog.Error("failed to fetch candidate recommendations", "err", err)
-				Error(w, http.StatusInternalServerError, "internal server error")
+				Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 			canNextCursor = cmp.Or(string(cursor), "done")
@@ -1665,7 +1752,7 @@ func GetMeRecommendations(s Store) http.HandlerFunc {
 	}
 }
 
-func CreateMeReaction(s Store) http.HandlerFunc {
+func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 	type RequestBody struct {
 		ReactionType ReactionType `json:"reaction_type"`
 	}
@@ -1674,14 +1761,14 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
 			slog.Error("failed to access candidate's ID within claims")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1689,8 +1776,8 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 		if recommendationID == "" {
 			Fail(
 				w,
-				http.StatusBadRequest,
 				FailData{"id": "recommendation id is required"},
+				http.StatusBadRequest,
 			)
 			return
 		}
@@ -1700,32 +1787,36 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 			if errors.Is(err, sql.ErrNoRows) {
 				Fail(
 					w,
-					http.StatusNotFound,
 					FailData{"id": "recommendation not found"},
+					http.StatusNotFound,
 				)
 				return
 			}
 			slog.Error("failed to fetch recommendation", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		if rec.CandidateID != candidateID {
-			Fail(w, http.StatusForbidden, FailData{"id": "forbidden for this id"})
+			Fail(
+				w,
+				FailData{"token": "reaction forbidden"},
+				http.StatusForbidden,
+			)
 			return
 		}
 
 		body, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
-			Fail(w, http.StatusBadRequest, FailData{"body": "invalid request body"})
+			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
 			return
 		}
 		if !body.ReactionType.IsValid() {
 			Fail(
 				w,
-				http.StatusBadRequest,
 				FailData{
 					"reaction_type": "must be one of: positive, negative, neutral",
 				},
+				http.StatusBadRequest,
 			)
 			return
 		}
@@ -1739,15 +1830,15 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 			if errors.Is(err, ErrReactionAlreadyExists) {
 				Fail(
 					w,
-					http.StatusConflict,
 					FailData{
-						"request": "reaction already exists; reactions are immutable",
+						"id": "reaction already exists; reactions are immutable",
 					},
+					http.StatusConflict,
 				)
 				return
 			}
 			slog.Error("failed to record reaction", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1771,19 +1862,19 @@ func CreateMeReaction(s Store) http.HandlerFunc {
 	}
 }
 
-func GetMeReactions(s Store) http.HandlerFunc {
+func HandlerGetMeReactions(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
 			slog.Error("failed to access candidate's ID within claims")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1795,7 +1886,7 @@ func GetMeReactions(s Store) http.HandlerFunc {
 		)
 		if err != nil {
 			slog.Error("failed to fetch candidate profile", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1845,19 +1936,19 @@ func GetMeReactions(s Store) http.HandlerFunc {
 	}
 }
 
-func GetMeMatches(s Store) http.HandlerFunc {
+func HandlerGetMeMatches(s Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
 			slog.Error("failed to access candidate's ID within claims")
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1866,7 +1957,7 @@ func GetMeMatches(s Store) http.HandlerFunc {
 		matches, nextCursor, err := s.GetMatchesByCandidateID(candidateID, page)
 		if err != nil {
 			slog.Error("failed to fetch matches", "err", err)
-			Error(w, http.StatusInternalServerError, "internal server error")
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -1905,5 +1996,230 @@ func GetMeMatches(s Store) http.HandlerFunc {
 			Embedded: Embedded{"matches": embedded},
 			Props:    Props{"page": page},
 		})
+	}
+}
+
+func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Email    string `json:"email"`
+			FullName string `json:"full_name"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
+			return
+		}
+		if req.Email == "" {
+			Fail(w, FailData{"email": "email is required"}, http.StatusBadRequest)
+			return
+		}
+
+		email, err := mail.ParseAddress(req.Email)
+		if err != nil {
+			Fail(w, FailData{"email": "invalid email"}, http.StatusBadRequest)
+			return
+		}
+
+		fullName, err := ValidateName(req.FullName)
+		if err != nil {
+			Fail(
+				w,
+				FailData{"full_name": "full name must be between 1 and 100 characters"},
+				http.StatusBadRequest,
+			)
+			return
+		}
+
+		exists, err := s.UserExistsByEmail(email.Address, ProviderEmail)
+		if exists {
+			Fail(w, FailData{"email": "user already exists"}, http.StatusConflict)
+			return
+		}
+		if !exists && err != nil {
+			slog.Error("user exists check query failed", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		userName, err := GenerateUsername()
+		if err != nil {
+			slog.Error("failed to generate a username", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		ulid, err := NewUserULID()
+		if err != nil {
+			slog.Error("failed to generate a user ULID", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		passwordHash, err := v.HashPassword(req.Password)
+		if err != nil {
+			slog.Error("failed to hash password", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		user := User{
+			ID:             ulid,
+			Provider:       ProviderEmail,
+			ProviderUserID: "",
+			Email:          email.Address,
+			FullName:       fullName,
+			UserName:       userName,
+			PasswordHash:   passwordHash,
+		}
+		err = s.CreateUser(user)
+		if err != nil {
+			slog.Error("create user query failed", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// TODO: indicate next actions according to HAL
+		CreateAccessToken(v,
+			w,
+			user.ID,
+			user.Provider,
+			map[Role]ULID{},
+		)
+	}
+}
+
+func HandlerCreateRecruiterProfile(s Store, v Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ulid, err := NewRecruiterULID()
+		if err != nil {
+			slog.Error("failed to generate a recruiter ULID", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		err = s.CreateRecruiter(Recruiter{ulid, claims.UserID})
+		if errors.Is(err, ErrRecruiterAlreadyExists) {
+			Fail(
+				w,
+				FailData{"user_id": "recruiter profile already exists"},
+				http.StatusConflict,
+			)
+			return
+		}
+		if err != nil {
+			slog.Error("create recruiter profile query failed", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		roles, err := s.GetUserRoles(claims.UserID, claims.Provider)
+		if err != nil {
+			slog.Error("get user roles query failed", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		_, ok = roles[RoleCandidate]
+		if ok {
+			CreateAccessToken(v, w, claims.UserID, claims.Provider, roles)
+			return
+		}
+
+		CreateTokenPair(s, v, w, claims.UserID, claims.Provider, roles)
+	}
+}
+
+func ValidateAbout(about string) (string, error) {
+	about = strings.TrimSpace(about)
+
+	reTags := regexp.MustCompile(`<[^>]*>`)
+	about = reTags.ReplaceAllString(about, "")
+
+	if len(about) < 1 {
+		return "", ErrAboutTooShort
+	}
+	if len(about) > 1024 {
+		return "", ErrAboutTooLong
+	}
+
+	return html.EscapeString(about), nil
+}
+
+func HandlerCreateCandidateProfile(s Store, v Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		req, err := DecodeRequestBody[struct {
+			About string `json:"about"`
+		}](r)
+		if err != nil {
+			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
+			return
+		}
+
+		about, err := ValidateAbout(req.About)
+		if err != nil {
+			Fail(
+				w,
+				FailData{"about": "about must be between 1 and 1024 characters"},
+				http.StatusBadRequest,
+			)
+			return
+		}
+
+		ulid, err := NewCandidateULID()
+		if err != nil {
+			slog.Error("failed to generate a candidate ULID", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		err = s.CreateCandidate(Candidate{
+			ID:                ulid,
+			UserID:            claims.UserID,
+			About:             about,
+			LastRecommendedAt: time.Unix(0, 0),
+		})
+		if errors.Is(err, ErrCandidateAlreadyExists) {
+			Fail(
+				w,
+				FailData{"user_id": "candidate profile already exists"},
+				http.StatusConflict,
+			)
+			return
+		}
+		if err != nil {
+			slog.Error("create candidate profile query failed", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		roles, err := s.GetUserRoles(claims.UserID, claims.Provider)
+		if err != nil {
+			slog.Error("get user roles query failed", "err", err)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		_, ok = roles[RoleRecruiter]
+		if ok {
+			CreateAccessToken(v, w, claims.UserID, claims.Provider, roles)
+			return
+		}
+
+		CreateTokenPair(s, v, w, claims.UserID, claims.Provider, roles)
 	}
 }

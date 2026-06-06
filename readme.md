@@ -2,66 +2,215 @@
 
 ## About Hirevec
 
-Hirevec is a job recommendation engine that enables candidates to find jobs and recruiters to find candidates.
+Hirevec is a job recommendation engine that finds jobs and candidate profiles.
+
+- Homepage: hirevec.com
+- API: api.hirevec.com
+- Documentation: docs.hirevec.com
+
+The recommendation engine currently only employs a content-based, 
+nearest-neighbours / bag-of-words approach.
+There are plans to extend it to utilize collaborative filtering.
 
 ## Quick Start
 
-The server implements **Okapi BM25** and uses **SQLite** by default. 
-
-To start server:
 ```sh
-go run cmd/run/main.go
+go run cmd/run.go
 ```
 
 ## API
 
-Create a test user:
+### Create a user 
+
+- Request:
 ```sh
-# create a user and save a token somewhere
-curl 
+curl -X POST http://localhost:8888/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@test.com",
+    "full_name": "Test Tester",
+    "password": "test"
+  }'
+```
 
-# create a candidate profile
-curl
+- Response:
+```json
+{
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJleHAiOiIyMDI2LTA2LTA2VDE1OjI2OjAyWiIsImlhdCI6IjIwMjYtMDYtMDZUMTQ6NTY6MDJaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNDo1NjowMloiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiIiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifSWnab1ikJkMTA8L_bqmNUt4eWVYOnDzVSd5tFwE7M3d0tv9Poqne_oFUmrjtKzjMcfb3rMIRj-DenlAmOC-hQc",
+  "token_type": "Bearer",
+  "expires_in": 1800,
+  "scope": "",
+  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32"
+}
+```
 
-# create a recruiter profile
+Store `access_token` somewhere safe.
+If e-mail confirmation is enabled, confirm the email first before proceeding.
+
+### Create a candidate profile
+
+If you are a candidate, create a candidate profile, notice that we are using
+`ACCESS_TOKEN` that we got from the registration.
+
+- Request:
+```sh
+curl -X POST http://localhost:8888/v1/candidates \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -d '{
+    "about": "Test Description"
+  }'
+```
+
+- Response:
+```
+{
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjM5OjQ2WiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MDk6NDZaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNTowOTo0NloiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifbu4KXceqMxG6wSq8y4UY3klBnVlZflv2Om7KcmZigbHNR_cBr7HT_aGcRvALvLwOeVe_-cOk1caA1mCXLZPtgI",
+  "token_type": "Bearer",
+  "expires_in": 1800,
+  "refresh_token": "v4.local.yaBaCfLzq1RY-Jm60Y_Gh67LOX_S9eC2PYmlhNESSuaZR9ve8E-J1P_50ot74B1QlZghCGTOod6TlJItjIfMQBv8OEsLJsdS5SsS4hMvY3tUlcxKlLh1CXFa8YkVn4iz_HDu_G_ajNw0BN7B4nXuEHrdYmyo-O5PoiFobTH769neqFC4iIJ8oQhiyCh5Jbm4AIGKOyZ3QenVHohg8qJM31z1WrftOky4fpYRHiJmzXeXYZ_OErOM3tBhvt2PlXJ8txm55pz12EnFrnMWNZEW-HXI8lmo8pxUcAb7Y5F_yOdZWyOnuXTiTxkG1qMNVGpipLeEUEI5e7b8x54xpFI7xCLZGDzRdWIVo3Q0LI7K4Q_dQdLLkW5aBNT6fHC0W-rFLJ6Rpy-oIZ1d",
+  "scope": "role:candidate ",
+  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32"
+}
+```
+
+Store a new `access_token` and `refresh_token` somewhere safe.
+
+### Create a recruiter profile
+
+If you are a recruiter, create a recruiter profile.
+
+- Request:
+```sh
+curl -X POST http://localhost:8888/v1/recruiters \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+- Response:
+```json
+{
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjQ4OjI5WiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MTg6MjlaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNToxODoyOVoiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmVjXzAxa3RlcXI5a2owZjZyZjI1Z2c4MGY2cmYyIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifaUWJFndw0SrNJ-O5yWJYhaFq32GLB1137iaPAmroNtQnyn4IUqd9JQJXIRLMKD-QGKeBIMDxMU8aMw6XkzyfgA",
+  "token_type": "Bearer",
+  "expires_in": 1800,
+  "scope": "role:candidate role:recruiter ",
+  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32",
+  "candidate_id": "can_01kteqq9erm4sa9w7z0em4sa9w",
+  "recruiter_id": "rec_01kteqr9kj0f6rf25gg80f6rf2"
+}
+```
+
+Since we created a candidate in a previous step, we only get a new access token,
+you can reuse your refresh token unless it expires or gets revoked.
+
+### Login 
+
+You can always "login" to get a new refresh token, the old one is preserved,
+but keep in mind that only up to 5 refresh tokens are allowed per account, 
+old refresh tokens get deleted automatically.
+
+- Request:
+```sh
+curl -X POST http://localhost:8888/auth/authorize \
+  -H "Content-Type: application/json" \     
+  -d '{
+    "email": "test@test.com",   
+    "password": "test"
+  }'
+```
+
+- Response:
+```json
+{
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjQxOjQ0WiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MTE6NDRaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNToxMTo0NFoiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmVjXzAxa3RlcXI5a2owZjZyZjI1Z2c4MGY2cmYyIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifeuc2nIZD8IjxZ_YP02PkPgeBactQaXjK9dZR1W3fM3NI2Y3GTLx2AzSzr60oTy-NYuM8uGRLkWI4PHoVs7UyQk",
+  "token_type": "Bearer",
+  "expires_in": 1800,
+  "refresh_token": "v4.local.3W5C9xV-nBOp8cShxN2xsGE0uzRFU-tFd2HDOzbLXWZA9IhMmxgdY1FF-pt05sEouMCcItRtMNHwhRtTCeOqPGMBbefX-Xv_N91pPyR-GC2DmyntFnMYbzL18T_9e_xOB_BBh8Ji3RLaMrvCmZNQo-h8dvLc_zuLo9d4Mr7SXu8-Yb68uaowKWAccLz9fWOp47QlHOtyEHgrCWwI-dIEUNhgYluSKjJRerXsrJ1EoCfbbdRqVCprBtCl5HhPXbZ0LKJjp_UUjsTBPl4OrpvLHJFhCeoTlM9YGphQ58TpEPXQMC0RApO_ULLNuIloFdr0T79MDWAZGF35nsE256aQSjz_-aB_8XEOQVFqDwiHlpZNt42-t4_PFp_Xe2pjaYhk910a_WrCZ1Bq",
+  "scope": "role:candidate role:recruiter ",
+  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32"
+}
+```
+
+### Refresh access token (expires in 30 minutes)
+
+If access token expires, you need to get a new one using your refresh token:
+
+- Request:
+```sh
+curl -X POST http://localhost:8888/auth/token \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"grant_type\": \"refresh_token\",
+    \"refresh_token\": \"$REFRESH_TOKEN\"
+  }"
+```
+
+- Response:
+```
+{
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjQyOjMyWiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MTI6MzJaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNToxMjozMloiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmVjXzAxa3RlcXI5a2owZjZyZjI1Z2c4MGY2cmYyIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifTc2qfvpx-QnnRqGKo1NMpyf298IcwxEZCOp-Put9PKWHAeTZDBXXUEnhV3yV2cmd3r4rjXC1_PZxyJd4HsEWgs",
+  "token_type": "Bearer",
+  "expires_in": 408702976,
+  "scope": "role:candidate role:recruiter ",
+  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32",
+  "candidate_id": "can_01kteqq9erm4sa9w7z0em4sa9w",
+  "recruiter_id": "rec_01kteqr9kj0f6rf25gg80f6rf2"
+}
+```
+
+### Create a position
+
+Since you have a recruiter profile you can create positions:
+```sh
 curl
 ```
 
-Create test positions:
-```sh
-# create a single position
-curl
+### Get recommendations
 
-# endpoint accepts batches as well
-curl
-```
-
-Get recommendations:
+Recommendations are served for the entire user account:
 ```sh
 curl
 ```
 
-React to recommendations:
+You can include reacted recommendations:
 ```sh
 curl
 ```
 
-See your matches:
+You can also include only recommendations for your candidate profile:
+```sh
+curl
+```
+
+### React to recommendations
+
+Since you now have some new recommendations, you can react to them positively:
+```sh
+curl
+```
+
+Or negatively:
+```sh
+curl
+```
+
+### See your matches
+
+After some time, the other side will also react to your positions
+or candidate profile and you get a match:
 ```sh
 curl
 ```
 
 > [!TIP] 
-> If you are developing, you can also run:
+> If you are developing or testing, you can also run:
 > ```sh
 > go run cmd/create_test_data/main.go
 > ```
->
-> This will prepare the entire test environment for you (bunch of test users, 
-> candidates and positions) and will save tokens for
-> each user in `test_tokens/` directory.
+> This prepares the entire development environment for you (bunch of test 
+> users, candidates and positions) and saves refresh tokens for each user in 
+> `test_tokens/` directory.
 
-### Q&A
+## Q&A
 
 1. Can I create recommendations manually?
 - No, this is not supported via API. You can of course create DB records,
@@ -72,14 +221,19 @@ curl
 
 3. Can I edit user reactions and/or remove matches?
 - No, this is not possible via API. Reactions and matches must be immutable in 
-    order for the recommendation engine to remain simple.
+    order for the recommendation engine to be stable.
 
-## Enabling Postgres with pgvector
+## Settings
 
-This project uses SQLite by default. 
+All available settings are demonstrated in [./.example.env](./.example.env).
+You can copy-paste them into your `.env` file or just use `export` command.
+
+### Enabling Postgres with pgvector
+
+Recommendation engine uses SQLite by default. 
 To enable Postgres, set `POSTGRES_DATABASE_URL`:
 ```sh
-export POSTGRES_DATABASE_URL=postgres://postgres@localhost:5432/postgres?sslmode=disable`.
+export POSTGRES_DATABASE_URL=postgres://postgres@localhost:5432/postgres?sslmode=disable
 ```
 
 To enable `pgvector`, just have it installed on your machine.
@@ -88,13 +242,13 @@ Here is [how to install](https://github.com/pgvector/pgvector).
 If Postgres is enabled, but `pgvector` cannot be configured, 
 the server will halt with an error.
 
-## Enabling Embeddings and Reranker
+### Enabling Embeddings and Reranker
 
-This project uses Okapi BM25 by default. 
+Recommendation engine uses Okapi BM25 by default. 
 To enable embeddings and reranking, enable Postgres with pgvector first, 
 then set `TEI_BASE_URL` and `TEI_API_KEY`:
 ```sh
-export TEI_BASE_URL=localhost:8080
+export TEI_BASE_URL=yourdomain.com
 export TEI_API_KEY=your-api-key
 ```
 
@@ -105,14 +259,14 @@ Okapi BM25 will be used in following scenarios:
 - The embeddings are not yet created (cold start).
 - SQLite database is used instead of Postgres.
 
-## Enabling E-mail confirmation
+### Enabling E-mail confirmation
 
 E-mail confirmation is not enforced by default. Enable with:
 ```sh
 export SMTP_URL=smtp://username:password@mail.yourdomain.com:465?tls=true.
 ```
 
-## Enabling SSO
+### Enabling SSO
 
 SSO registration/login is not enabled by default. Enabled with:
 ```sh
@@ -122,10 +276,41 @@ export APPLE_CLIENT_ID=your-apple-client-id
 export APPLE_CLIENT_SECRET=your-apple-client-secret
 ```
 
+Afterwards, users can login and register via:
+```sh
+curl -L localhost:8888/auth/authorize?provider=google
+```
+
+or for Apple:
+```sh
+curl -L localhost:8888/auth/authorize?provider=apple
+```
+
 ## Misc
 
 ### Hot-reload server
 
 ```sh
-air --build.cmd "go build -o bin/api cmd/server/main.go" --build.entrypoint "./bin/api"
+air \
+  --build.cmd "go build -o bin/api cmd/run.go" \
+  --build.bin "./bin/api" \
+  --build.include_ext "go,db,sql,env" \
+  --misc.clean_on_exit true \
+  --log.main_only true \
+  --log.silent true \
+  --screen.clear_on_rebuild true \
+  --color never \
+  --screen.keep_scroll false
+```
+
+### Remove database, cache, environment files and binaries
+
+```
+rm -rf bin/ tmp/ .db .env data/bm25_cache.json
+```
+
+### Sqlite3 console
+
+```sh
+sqlite3 .db
 ```

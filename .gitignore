@@ -58,3 +58,6 @@ bm25_cache.json
 
 # Binaries
 bin
+
+.fdignore
+.ignore
