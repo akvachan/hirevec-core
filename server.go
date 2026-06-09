@@ -31,18 +31,14 @@ import (
 )
 
 var (
-	ErrAboutForbiddenChars           = errors.New("about contains forbidden characters")
-	ErrAboutTooLong                  = errors.New("about too long")
-	ErrAboutTooShort                 = errors.New("about too short")
+	ErrTextForbiddenChars            = errors.New("text contains forbidden characters")
+	ErrTextTooLong                   = errors.New("text too long")
+	ErrTextTooShort                  = errors.New("text too short")
 	ErrEmailNotVerified              = errors.New("email not verified")
-	ErrExtraDataDecoded              = errors.New("extra data decoded")
-	ErrFailedShutdownServer          = errors.New("failed to shutdown server")
-	ErrFailedEncodeEmbeddingsRequest = errors.New("failed to encode embeddings request")
-	ErrNameForbiddenChars            = errors.New("name contains forbidden characters")
 	ErrEmbeddingsCountMismatch       = errors.New("mismatched IDs and embeddings count")
-	ErrNameTooLong                   = errors.New("name too long")
-	ErrNameTooShort                  = errors.New("name too short")
-	ErrFailedCreateEmbeddingsRequest = errors.New("embedding endpoint returned non-200 status")
+	ErrExtraDataDecoded              = errors.New("extra data decoded")
+	ErrFailedEncodeEmbeddingsRequest = errors.New("failed to encode embeddings request")
+	ErrFailedShutdownServer          = errors.New("failed to shutdown server")
 )
 
 type ServerConfig struct {
@@ -60,18 +56,13 @@ type ServerConfig struct {
 	UseReranker         bool
 }
 
-type EmbeddingsBatchOut struct {
-	IDs        []ULID
-	Embeddings [][]float32
+type EmbeddingEntity struct {
+	Embedding []float32 `json:"embedding"`
 }
 
 type EmbeddingsRequest struct {
 	Input []string `json:"input"`
 	Model string   `json:"model"`
-}
-
-type EmbeddingEntity struct {
-	Embedding []float32 `json:"embedding"`
 }
 
 type EmbeddingsResponse struct {
@@ -103,7 +94,10 @@ func CreateEmbeddings(c AIConfig, input []string) ([]EmbeddingEntity, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ErrFailedCreateEmbeddingsRequest
+		return nil, fmt.Errorf(
+			"embedding endpoint returned %d",
+			resp.StatusCode,
+		)
 	}
 
 	var parsed EmbeddingsResponse
@@ -411,7 +405,7 @@ func RunServer(ctx context.Context, c ServerConfig, s Store, v Vault) error {
 		return err
 	}
 
-	slog.Info("HTTP server starting", "addr", server.Addr)
+	slog.Debug("starting server", "addr", server.Addr)
 	errCh := make(chan error, 1)
 	go func() {
 		if err := server.Serve(listener); err != nil &&
@@ -419,7 +413,7 @@ func RunServer(ctx context.Context, c ServerConfig, s Store, v Vault) error {
 			errCh <- err
 		}
 	}()
-	slog.Info("HTTP server ready", "addr", server.Addr)
+	slog.Info("server ready", "addr", server.Addr)
 
 	if err := LoadLanguageData(); err != nil {
 		return err
@@ -534,7 +528,7 @@ func Chain(handl http.HandlerFunc, mdws ...Middleware) http.HandlerFunc {
 	return wrapped
 }
 
-func PanicHandler(next http.HandlerFunc) http.HandlerFunc {
+func PanicRecoverer(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -640,74 +634,32 @@ func MaxBytesLimiter(next http.HandlerFunc) http.HandlerFunc {
 type Method string
 
 const (
-	MethodGet  Method = http.MethodGet
-	MethodPost Method = http.MethodPost
+	MethodPost  Method = http.MethodPost
+	MethodGet   Method = http.MethodGet
+	MethodPatch Method = http.MethodPatch
 )
 
 type RouteConfig struct {
 	Method  Method
-	Route   string
 	Handler http.HandlerFunc
+	Routes  []Route
 	Roles   []Role
 }
-
-// Routes
-const (
-	// DONE: GET
-	RouteHealth = "/health"
-
-	// DONE: POST
-	RouteAccessToken = "/auth/token"
-
-	// DONE: POST, GET
-	RouteAuthorize = "/auth/authorize"
-
-	// DONE: POST, GET
-	RouteOAuthCallback = "/auth/callback"
-
-	// DONE: POST
-	RouteUsers = "/v1/users"
-
-	// TODO: GET, PUT, DELETE for /v1/users/me
-	RouteUsersMe = "/v1/users/me"
-
-	// DONE: POST
-	RouteRecruiters = "/v1/recruiters"
-
-	// TODO: GET, PUT, DELETE for /v1/recruiters/me
-	RouteRecruitersMe = "/v1/recruiters/me"
-
-	// DONE: POST
-	RouteCandidates = "/v1/candidates"
-
-	// TODO: GET, PUT, DELETE for /v1/candidates/me
-	RouteCandidatesMe = "/v1/candidate/me"
-
-	// DONE: GET
-	RouteMeRecommendations = "/v1/me/recommendations"
-
-	// DONE: GET
-	RouteMeReactions = "/v1/me/reactions"
-
-	// DONE: GET
-	RouteMeMatches = "/v1/me/matches"
-
-	// DONE: POST
-	RouteMeReaction = "/v1/me/recommendations/{id}/reaction"
-)
 
 func PublicRoute(c RouteConfig) {
 	handler := Chain(
 		c.Handler,
 		Logger,
-		PanicHandler,
+		PanicRecoverer,
 		MaxBytesLimiter,
 	)
 
-	DefaultServeMux.Handle(
-		fmt.Sprintf("%s %s", c.Method, c.Route),
-		handler,
-	)
+	for _, route := range c.Routes {
+		DefaultServeMux.Handle(
+			fmt.Sprintf("%s %s", c.Method, route),
+			handler,
+		)
+	}
 }
 
 func ProtectedRoute(c RouteConfig, v Vault) {
@@ -719,128 +671,236 @@ func ProtectedRoute(c RouteConfig, v Vault) {
 	handler := Chain(
 		c.Handler,
 		Logger,
-		PanicHandler,
+		PanicRecoverer,
 		MaxBytesLimiter,
 		Authentication(v, rolesMap),
 	)
 
-	DefaultServeMux.Handle(
-		fmt.Sprintf("%s %s", c.Method, c.Route),
-		handler,
-	)
+	for _, route := range c.Routes {
+		DefaultServeMux.Handle(
+			fmt.Sprintf("%s %s", c.Method, route),
+			handler,
+		)
+	}
 }
+
+type Route string
+
+// Routes
+const (
+	// Unversioned (stable) routes
+	RouteHealth        Route = "/health"
+	RouteAccessToken   Route = "/auth/token"
+	RouteAuthorize     Route = "/auth/authorize"
+	RouteOAuthCallback Route = "/auth/callback"
+
+	// Versioned routes
+	RouteV1Users             Route = "/v1/users"
+	RouteV1UsersMe           Route = "/v1/users/me"
+	RouteV1Candidates        Route = "/v1/candidates"
+	RouteV1Recruiters        Route = "/v1/recruiters"
+	RouteV1MeRecommendations Route = "/v1/me/recommendations"
+	RouteV1MeReactions       Route = "/v1/me/reactions"
+	RouteV1MeMatches         Route = "/v1/me/matches"
+	RouteV1MeReaction        Route = "/v1/me/recommendations/{id}/reaction"
+
+	// Latest version (default) routes
+	RouteUsers             Route = "/users"
+	RouteUsersMe           Route = "/users/me"
+	RouteCandidates        Route = "/candidates"
+	RouteRecruiters        Route = "/recruiters"
+	RouteMeRecommendations Route = "/me/recommendations"
+	RouteMeReactions       Route = "/me/reactions"
+	RouteMeMatches         Route = "/me/matches"
+	RouteMeReaction        Route = "/me/recommendations/{id}/reaction"
+)
 
 var DefaultServeMux = http.NewServeMux()
 
 func ServeMux(s Store, v Vault) http.Handler {
+	slog.Debug("registering routes")
+
 	PublicRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteHealth,
+		Routes:  []Route{RouteHealth},
 		Handler: Health,
 	})
 
 	PublicRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteUsers,
-		Handler: HandlerCreateUser(s, v),
+		Routes:  []Route{RouteAuthorize},
+		Handler: HandlerAuthorize(s, v),
+	})
+
+	PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Routes:  []Route{RouteAuthorize},
+		Handler: HandlerAuthorize(s, v),
 	})
 
 	PublicRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteAccessToken,
+		Routes:  []Route{RouteAccessToken},
 		Handler: HandlerCreateAccessToken(s, v),
 	})
 
 	PublicRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteAuthorize,
-		Handler: HandlerAuthorize(s, v),
-	})
-
-	PublicRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteAuthorize,
-		Handler: HandlerAuthorize(s, v),
+		Routes:  []Route{RouteOAuthCallback},
+		Handler: HandlerOAuthCallback(s, v),
 	})
 
 	PublicRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteOAuthCallback,
+		Routes:  []Route{RouteOAuthCallback},
 		Handler: HandlerOAuthCallback(s, v),
 	})
 
 	PublicRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteOAuthCallback,
-		Handler: HandlerOAuthCallback(s, v),
+		Routes:  []Route{RouteV1Users, RouteUsers},
+		Handler: HandlerCreateUser(s, v),
 	})
 
 	ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteMeRecommendations,
-		Handler: HandlerGetMeRecommendations(s),
-		Roles: []Role{
-			RoleCandidate,
-			RoleRecruiter,
-		},
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteMeReactions,
-		Handler: HandlerGetMeReactions(s),
-		Roles: []Role{
-			RoleCandidate,
-			RoleRecruiter,
-		},
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteMeMatches,
-		Handler: HandlerGetMeMatches(s),
-		Roles: []Role{
-			RoleCandidate,
-			RoleRecruiter,
-		},
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodPost,
-		Route:   RouteMeReaction,
-		Handler: HandlerCreateMeReaction(s),
-		Roles: []Role{
-			RoleCandidate,
-			RoleRecruiter,
-		},
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodPost,
-		Route:   RouteRecruiters,
-		Handler: HandlerCreateRecruiterProfile(s, v),
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodPost,
-		Route:   RouteCandidates,
-		Handler: HandlerCreateCandidateProfile(s, v),
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteUsersMe,
+		Routes:  []Route{RouteV1UsersMe, RouteUsersMe},
 		Handler: HandlerGetUsersMe(s, v),
-		Roles: []Role{
-			RoleRecruiter,
-			RoleCandidate,
-		},
+	}, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodPatch,
+		Routes:  []Route{RouteV1UsersMe, RouteUsersMe},
+		Handler: HandlerPatchUsersMe(s, v),
+	}, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodDelete,
+	// 	Route:   RouteUsersMe,
+	// 	Handler: HandlerDeleteUsersMe(s, v),
+	// }, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Routes:  []Route{RouteV1Candidates, RouteCandidates},
+		Handler: HandlerCreateCandidate(s, v),
+	}, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodGet,
+	// 	Route:   RouteCandidatesMe,
+	// 	Handler: HandlerGetCandidatesMe(s, v),
+	// 	Roles:   []Role{RoleCandidate},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodPatch,
+	// 	Route:   RouteCandidatesMe,
+	// 	Handler: HandlerDeleteCandidatesMe(s, v),
+	// 	Roles:   []Role{RoleCandidate},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodDelete,
+	// 	Route:   RouteCandidatesMe,
+	// 	Handler: HandlerDeleteCandidatesMe(s, v),
+	// 	Roles:   []Role{RoleCandidate},
+	// }, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Routes:  []Route{RouteV1Recruiters, RouteRecruiters},
+		Handler: HandlerCreateRecruiter(s, v),
+	}, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodGet,
+	// 	Route:   RouteRecruitersMe,
+	// 	Handler: HandlerGetRecruitersMe(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodPatch,
+	// 	Route:   RouteRecruitersMe,
+	// 	Handler: HandlerPatchRecruitersMe(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodDelete,
+	// 	Route:   RouteRecruitersMe,
+	// 	Handler: HandlerDeleteRecruitersMe(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodPost,
+	// 	Route:   RoutePositions,
+	// 	Handler: HandlerCreatePosition(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodGet,
+	// 	Route:   RoutePosition,
+	// 	Handler: HandlerGetPosition(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodPatch,
+	// 	Route:   RoutePosition,
+	// 	Handler: HandlerPatchPosition(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodDelete,
+	// 	Route:   RoutePosition,
+	// 	Handler: HandlerDeletePosition(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	// ProtectedRoute(RouteConfig{
+	// 	Method:  MethodGet,
+	// 	Route:   RouteMePositions,
+	// 	Handler: HandlerGetMePositions(s, v),
+	// 	Roles:   []Role{RoleRecruiter},
+	// }, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Routes:  []Route{RouteV1MeRecommendations, RouteMeRecommendations},
+		Handler: HandlerGetMeRecommendations(s),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	}, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Routes:  []Route{RouteV1MeReactions, RouteMeReactions},
+		Handler: HandlerGetMeReactions(s),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	}, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Routes:  []Route{RouteV1MeMatches, RouteMeMatches},
+		Handler: HandlerGetMeMatches(s),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	}, v)
+
+	ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Routes:  []Route{RouteV1MeReaction, RouteMeReaction},
+		Handler: HandlerCreateMeReaction(s),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
 	}, v)
 
 	return DefaultServeMux
 }
 
-// [RFC6749](https://www.rfc-editor.org/rfc/rfc6749.txt).
+// See [RFC6749](https://www.rfc-editor.org/info/rfc6749).
 type AuthErrorCode string
 
 const (
@@ -907,42 +967,42 @@ func SetUnauthorizedHeaders(w http.ResponseWriter) {
 func AuthAccessToken(w http.ResponseWriter, accessToken AccessToken) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-	WriteJSON(w, http.StatusOK, accessToken)
+	WriteJSON(w, accessToken, http.StatusOK)
 }
 
 func AuthTokenPair(w http.ResponseWriter, tokenPair TokenPair) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-	WriteJSON(w, http.StatusOK, tokenPair)
+	WriteJSON(w, tokenPair, http.StatusOK)
 }
 
 func AuthError(w http.ResponseWriter, code AuthErrorCode, desc string) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
-	WriteJSON(w, http.StatusBadRequest, AuthErrorResponse{
+	WriteJSON(w, AuthErrorResponse{
 		Error:            code,
 		ErrorDescription: desc,
-	})
+	}, http.StatusBadRequest)
 }
 
 func Unauthorized(w http.ResponseWriter, code AuthErrorCode, desc string) {
 	SetDefaultHeaders(w)
 	SetAuthHeaders(w)
 	SetUnauthorizedHeaders(w)
-	WriteJSON(w, http.StatusUnauthorized, AuthErrorResponse{
+	WriteJSON(w, AuthErrorResponse{
 		Error:            code,
 		ErrorDescription: desc,
-	})
+	}, http.StatusUnauthorized)
 }
 
 func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
-	type RequestBodyCreateToken struct {
+	type RequestBody struct {
 		GrantType    string `json:"grant_type"`
 		RefreshToken string `json:"refresh_token"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[RequestBodyCreateToken](r)
+		req, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
 			AuthError(w, AuthInvalidRequest, "invalid request body")
 			return
@@ -1076,8 +1136,7 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 				}
 				if errors.Is(err, ErrUserNoRole) {
 					// TODO: indicate next actions according to HAL
-					CreateAccessToken(v,
-						w,
+					CreateAccessToken(v, w,
 						user.ID,
 						user.Provider,
 						map[Role]ULID{},
@@ -1094,7 +1153,11 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 
-			CreateTokenPair(s, v, w, user.ID, user.Provider, roles)
+			CreateTokenPair(s, v, w,
+				user.ID,
+				user.Provider,
+				roles,
+			)
 			return
 		}
 
@@ -1149,7 +1212,10 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 
-		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+		http.Redirect(w, r,
+			url,
+			http.StatusTemporaryRedirect,
+		)
 	}
 }
 
@@ -1201,8 +1267,7 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 		var user *User
 		switch state.Provider {
 		case ProviderGoogle:
-			rawIDToken, err := v.ExchangeGoogleCodeForIDToken(
-				ctx,
+			rawIDToken, err := v.ExchangeGoogleCodeForIDToken(ctx,
 				code,
 				verifierCookie,
 			)
@@ -1242,8 +1307,7 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 			}
 
 		case ProviderApple:
-			rawIDToken, err := v.ExchangeAppleCodeForIDToken(
-				ctx,
+			rawIDToken, err := v.ExchangeAppleCodeForIDToken(ctx,
 				code,
 				verifierCookie,
 			)
@@ -1260,8 +1324,7 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 
-			user, err = v.VerifyAndParseAppleIDToken(
-				ctx,
+			user, err = v.VerifyAndParseAppleIDToken(ctx,
 				rawIDToken,
 				r.FormValue("user"),
 			)
@@ -1283,8 +1346,7 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 			}
 
 		default:
-			AuthError(
-				w,
+			AuthError(w,
 				AuthInvalidRequest,
 				"invalid provider; must be one of: google, apple",
 			)
@@ -1294,6 +1356,11 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 		FinishAuthFlow(s, v, w, *user)
 	}
 }
+
+const (
+	FailDataFullNameSize           = "full_name must be between 2 and 128 characters"
+	FailDataFullNameForbiddenChars = "full_name must be a valid 'passport-style' given name. It must start with a letter and can only contain letters, spaces, apostrophes, or hyphens"
+)
 
 func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	userID, roles, err := s.GetUserByProvider(user.Provider, user.ProviderUserID)
@@ -1320,12 +1387,19 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 		}
 
 		user.FullName, err = ValidateName(user.FullName)
+		if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+			AuthError(w, AuthInvalidRequest, FailDataFullNameSize)
+			return
+		}
+		if errors.Is(err, ErrTextForbiddenChars) {
+			AuthError(w, AuthInvalidRequest, FailDataFullNameForbiddenChars)
+		}
 		if err != nil {
-			AuthError(
-				w,
-				AuthInvalidRequest,
-				"full name must be between 1 and 100 characters",
+			slog.Error(
+				"failed to validate full_name",
+				"err", err,
 			)
+			AuthError(w, AuthInvalidRequest, "internal server error")
 			return
 		}
 
@@ -1339,8 +1413,7 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 			return
 		}
 		// TODO: indicate next actions according to HAL
-		CreateAccessToken(v,
-			w,
+		CreateAccessToken(v, w,
 			userID,
 			user.Provider,
 			map[Role]ULID{},
@@ -1349,8 +1422,7 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 	}
 	if errors.Is(err, ErrUserNoRole) {
 		// TODO: indicate next actions according to HAL
-		CreateAccessToken(v,
-			w,
+		CreateAccessToken(v, w,
 			userID,
 			user.Provider,
 			map[Role]ULID{},
@@ -1366,7 +1438,11 @@ func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
 		return
 	}
 
-	CreateTokenPair(s, v, w, userID, user.Provider, roles)
+	CreateTokenPair(s, v, w,
+		userID,
+		user.Provider,
+		roles,
+	)
 }
 
 func CreateAccessToken(
@@ -1376,11 +1452,7 @@ func CreateAccessToken(
 	provider Provider,
 	roles map[Role]ULID,
 ) {
-	accessToken, err := v.CreateAccessToken(
-		userID,
-		provider,
-		roles,
-	)
+	accessToken, err := v.CreateAccessToken(userID, provider, roles)
 	if err != nil {
 		slog.Error(
 			"failed to create access token",
@@ -1389,7 +1461,6 @@ func CreateAccessToken(
 		AuthError(w, AuthInvalidRequest, "internal server error")
 		return
 	}
-
 	AuthAccessToken(w, *accessToken)
 }
 
@@ -1451,19 +1522,6 @@ func DeleteCookies(w http.ResponseWriter, names [2]string) {
 	}
 }
 
-func ValidateName(name string) (string, error) {
-	name = strings.TrimSpace(name)
-
-	if len(name) < 1 {
-		return "", ErrNameTooShort
-	}
-	if len(name) > 128 {
-		return "", ErrNameTooLong
-	}
-
-	return html.EscapeString(name), nil
-}
-
 type (
 	// [JSend](https://github.com/omniti-labs/jsend)
 	FailData       map[string]string
@@ -1489,48 +1547,6 @@ type (
 		Links    Links    `json:"_links,omitempty"`
 		Embedded Embedded `json:"_embedded,omitempty"`
 		Props    Props    `json:"-"`
-	}
-)
-
-type (
-	ErrorResponse struct {
-		Status  ResponseStatus `json:"status"`
-		Message string         `json:"message"`
-		Code    ErrorCode      `json:"code,omitempty"`
-	}
-
-	FailResponse struct {
-		Status ResponseStatus `json:"status"`
-		Data   FailData       `json:"data,omitempty"`
-		Links  Links          `json:"_links,omitempty"`
-	}
-)
-
-var (
-	adjectives = [...]string{
-		"fast",
-		"lazy",
-		"clever",
-		"curious",
-		"brave",
-		"mighty",
-		"silent",
-		"noisy",
-		"happy",
-		"grumpy",
-	}
-
-	nouns = [...]string{
-		"lion",
-		"tiger",
-		"panda",
-		"fox",
-		"eagle",
-		"shark",
-		"wolf",
-		"dragon",
-		"otter",
-		"koala",
 	}
 )
 
@@ -1586,7 +1602,7 @@ func (res Resource) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-func WriteJSON(w http.ResponseWriter, status int, data any) {
+func WriteJSON[T any](w http.ResponseWriter, data T, status int) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		slog.Error(
@@ -1600,41 +1616,55 @@ func SetDefaultHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
 }
 
-func Success(w http.ResponseWriter, status int, res Resource) {
+func HALSuccess(w http.ResponseWriter, res Resource, status int) {
 	SetDefaultHeaders(w)
-	res.Props["status"] = "success"
-	WriteJSON(w, status, res)
+	res.Props["status"] = ResponseStatusSuccess
+	WriteJSON(w, res, status)
+}
+
+type SuccessResponse[T any] struct {
+	Status ResponseStatus `json:"status"`
+	Data   T              `json:"data,omitempty"`
+}
+
+func Success[T any](w http.ResponseWriter, data T, status int) {
+	SetDefaultHeaders(w)
+	WriteJSON(w, SuccessResponse[T]{
+		Status: ResponseStatusSuccess,
+		Data:   data,
+	}, status)
 }
 
 func EmptySuccess(w http.ResponseWriter, status int) {
 	SetDefaultHeaders(w)
-	res := Resource{Props: make(map[string]any)}
-	res.Props["status"] = "success"
-	WriteJSON(w, status, res)
+	WriteJSON(w, map[string]string{"status": ResponseStatusSuccess}, status)
+}
+
+type ErrorResponse struct {
+	Status  ResponseStatus `json:"status"`
+	Message string         `json:"message"`
+	Code    ErrorCode      `json:"code,omitempty"`
 }
 
 func Error(w http.ResponseWriter, message string, status int) {
-	type ErrorResponse struct {
-		Status  ResponseStatus `json:"status"`
-		Message string         `json:"message"`
-		Code    ErrorCode      `json:"code,omitempty"`
-	}
 	SetDefaultHeaders(w)
-	WriteJSON(w, status, ErrorResponse{
+	WriteJSON(w, ErrorResponse{
 		Status:  ResponseStatusError,
 		Message: message,
-	})
+	}, status)
+}
+
+type FailResponse struct {
+	Status ResponseStatus `json:"status"`
+	Data   FailData       `json:"data,omitempty"`
 }
 
 func Fail(w http.ResponseWriter, data FailData, status int) {
-	type FailResponse struct {
-		Status ResponseStatus `json:"status"`
-		Data   FailData       `json:"data,omitempty"`
-		Links  Links          `json:"_links,omitempty"`
-	}
-
 	SetDefaultHeaders(w)
-	WriteJSON(w, status, FailResponse{Status: ResponseStatusFail, Data: data})
+	WriteJSON(w, FailResponse{
+		Status: ResponseStatusFail,
+		Data:   data,
+	}, status)
 }
 
 func DecodeRequestBody[T any](r *http.Request) (*T, error) {
@@ -1657,6 +1687,36 @@ func DecodeRequestBody[T any](r *http.Request) (*T, error) {
 	return &data, nil
 }
 
+var (
+	// adjectives is an array for creating random usernames, used in conjunction with nouns
+	adjectives = [...]string{
+		"fast",
+		"lazy",
+		"clever",
+		"curious",
+		"brave",
+		"mighty",
+		"silent",
+		"noisy",
+		"happy",
+		"grumpy",
+	}
+
+	// nouns is an array for creating random usernames, used in conjunction with adjectives
+	nouns = [...]string{
+		"lion",
+		"tiger",
+		"panda",
+		"fox",
+		"eagle",
+		"shark",
+		"wolf",
+		"dragon",
+		"otter",
+		"koala",
+	}
+)
+
 func GenerateUsername() (string, error) {
 	randInt := func(n int) int {
 		if n <= 0 {
@@ -1669,16 +1729,16 @@ func GenerateUsername() (string, error) {
 	adj := adjectives[randInt(len(adjectives))]
 	noun := nouns[randInt(len(nouns))]
 
-	suffix := make([]byte, 2)
+	suffix := make([]byte, 4)
 	_, err := rand.Read(suffix)
 	if err != nil {
 		return "", err
 	}
 
-	username := fmt.Sprintf("%s_%s%s", adj, noun, hex.EncodeToString(suffix))
-	username = strings.ToLower(username)
+	userName := fmt.Sprintf("%s_%s%s", adj, noun, hex.EncodeToString(suffix))
+	userName = strings.ToLower(userName)
 
-	return username, nil
+	return userName, nil
 }
 
 func Health(w http.ResponseWriter, r *http.Request) {
@@ -1741,13 +1801,13 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 						RelTypeSelf: Link{
 							Href: fmt.Sprintf(
 								"%s/%s",
-								RouteMeRecommendations,
+								RouteV1MeRecommendations,
 								rec.RecommendationID),
 						},
 						RelType("reaction"): Link{
 							Href: fmt.Sprintf(
 								"%s/%s/reaction",
-								RouteMeRecommendations,
+								RouteV1MeRecommendations,
 								rec.RecommendationID),
 						},
 					}, Props: Props{
@@ -1790,14 +1850,14 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 						RelTypeSelf: Link{
 							Href: fmt.Sprintf(
 								"%s/%s",
-								RouteMeRecommendations,
+								RouteV1MeRecommendations,
 								rec.RecommendationID,
 							),
 						},
 						RelType("reaction"): Link{
 							Href: fmt.Sprintf(
 								"%s/%s/reaction",
-								RouteMeRecommendations,
+								RouteV1MeRecommendations,
 								rec.RecommendationID,
 							),
 						},
@@ -1817,18 +1877,18 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 
 		page.HasNext = posNextCursor != "done" || canNextCursor != "done"
 
-		selfHref := RouteMeRecommendations
+		selfHref := RouteV1MeRecommendations
 		if excludeReacted {
 			selfHref += "?exclude_reacted=true"
 		}
 		links := Links{
-			RelTypeSelf:          Link{Href: selfHref},
-			RelType("reactions"): Link{Href: RouteMeReactions},
+			RelTypeSelf:          Link{Href: string(selfHref)},
+			RelType("reactions"): Link{Href: string(RouteV1MeReactions)},
 		}
 		if page.HasNext {
 			nextHref := fmt.Sprintf(
 				"%s?pos_cursor=%s&can_cursor=%s&limit=%d",
-				RouteMeRecommendations, posNextCursor, canNextCursor, page.Limit,
+				RouteV1MeRecommendations, posNextCursor, canNextCursor, page.Limit,
 			)
 			if excludeReacted {
 				nextHref += "&exclude_reacted=true"
@@ -1836,11 +1896,11 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 			links[RelTypeNext] = Link{Href: nextHref}
 		}
 
-		Success(w, http.StatusOK, Resource{
+		HALSuccess(w, Resource{
 			Links:    links,
 			Embedded: embedded,
 			Props:    Props{"page": page},
-		})
+		}, http.StatusOK)
 	}
 }
 
@@ -1866,22 +1926,14 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 
 		recommendationID := ULID(r.PathValue("id"))
 		if recommendationID == "" {
-			Fail(
-				w,
-				FailData{"id": "recommendation id is required"},
-				http.StatusBadRequest,
-			)
+			Fail(w, FailData{"id": "recommendation id is required"}, http.StatusBadRequest)
 			return
 		}
 
 		rec, err := s.GetRecommendation(recommendationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				Fail(
-					w,
-					FailData{"id": "recommendation not found"},
-					http.StatusNotFound,
-				)
+				Fail(w, FailData{"id": "recommendation not found"}, http.StatusNotFound)
 				return
 			}
 			slog.Error(
@@ -1892,11 +1944,7 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 			return
 		}
 		if rec.CandidateID != candidateID {
-			Fail(
-				w,
-				FailData{"token": "reaction forbidden"},
-				http.StatusForbidden,
-			)
+			Fail(w, FailData{"reaction": "reaction forbidden"}, http.StatusForbidden)
 			return
 		}
 
@@ -1906,13 +1954,7 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 			return
 		}
 		if !body.ReactionType.IsValid() {
-			Fail(
-				w,
-				FailData{
-					"reaction_type": "must be one of: positive, negative, neutral",
-				},
-				http.StatusBadRequest,
-			)
+			Fail(w, FailData{"reaction_type": "must be one of: positive, negative, neutral"}, http.StatusBadRequest)
 			return
 		}
 
@@ -1923,13 +1965,7 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 			ReactionType:     body.ReactionType,
 		}); err != nil {
 			if errors.Is(err, ErrReactionAlreadyExists) {
-				Fail(
-					w,
-					FailData{
-						"id": "reaction already exists; reactions are immutable",
-					},
-					http.StatusConflict,
-				)
+				Fail(w, FailData{"id": "reaction already exists; reactions are immutable"}, http.StatusConflict)
 				return
 			}
 			slog.Error(
@@ -1940,23 +1976,20 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 			return
 		}
 
-		Success(w, http.StatusCreated, Resource{
+		HALSuccess(w, Resource{
 			Links: Links{
 				RelTypeSelf: Link{
 					Href: fmt.Sprintf(
 						"%s/%s/reaction",
-						RouteMeRecommendations,
+						RouteV1MeRecommendations,
 						recommendationID,
 					),
 				},
-				RelTypeUp:            Link{Href: RouteMeRecommendations},
-				RelType("reactions"): Link{Href: RouteMeReactions},
-				RelType("matches"):   Link{Href: RouteMeMatches},
+				RelTypeUp:            Link{Href: string(RouteV1MeRecommendations)},
+				RelType("reactions"): Link{Href: string(RouteV1MeReactions)},
+				RelType("matches"):   Link{Href: string(RouteV1MeMatches)},
 			},
-			Props: Props{
-				"status": "success",
-			},
-		})
+		}, http.StatusCreated)
 	}
 }
 
@@ -1984,7 +2017,7 @@ func HandlerGetMeReactions(s Store) http.HandlerFunc {
 		)
 		if err != nil {
 			slog.Error(
-				"failed to fetch candidate profile",
+				"failed to fetch candidate",
 				"err", err,
 			)
 			Error(w, "internal server error", http.StatusInternalServerError)
@@ -1995,13 +2028,13 @@ func HandlerGetMeReactions(s Store) http.HandlerFunc {
 		page.HasNext = nextCursor != ""
 
 		links := Links{
-			RelTypeSelf: Link{Href: RouteMeReactions},
+			RelTypeSelf: Link{Href: string(RouteV1MeReactions)},
 		}
 		if nextCursor != "" {
 			links[RelTypeNext] = Link{
 				Href: fmt.Sprintf(
 					"%s?cursor=%s",
-					RouteMeReactions,
+					RouteV1MeReactions,
 					nextCursor,
 				),
 			}
@@ -2014,7 +2047,7 @@ func HandlerGetMeReactions(s Store) http.HandlerFunc {
 					RelTypeSelf: Link{
 						Href: fmt.Sprintf(
 							"%s/%s/reaction",
-							RouteMeRecommendations,
+							RouteV1MeRecommendations,
 							rx.RecommendationID,
 						),
 					},
@@ -2029,11 +2062,11 @@ func HandlerGetMeReactions(s Store) http.HandlerFunc {
 			}
 		}
 
-		Success(w, http.StatusOK, Resource{
+		HALSuccess(w, Resource{
 			Links:    links,
 			Embedded: Embedded{"reactions": embedded},
 			Props:    Props{"page": page},
-		})
+		}, http.StatusOK)
 	}
 }
 
@@ -2069,13 +2102,13 @@ func HandlerGetMeMatches(s Store) http.HandlerFunc {
 		page.HasNext = nextCursor != ""
 
 		links := Links{
-			RelTypeSelf: Link{Href: RouteMeMatches},
+			RelTypeSelf: Link{Href: string(RouteV1MeMatches)},
 		}
 		if nextCursor != "" {
 			links[RelTypeNext] = Link{
 				Href: fmt.Sprintf(
 					"%s?cursor=%s&limit=%d",
-					RouteMeMatches,
+					RouteV1MeMatches,
 					nextCursor,
 					page.Limit,
 				),
@@ -2090,17 +2123,34 @@ func HandlerGetMeMatches(s Store) http.HandlerFunc {
 					"title":       m.Title,
 					"description": m.Description,
 					"company":     m.Company,
-					"matched_at":  m.MatchedAt,
+					"created_at":  m.CreatedAt,
 				},
 			}
 		}
 
-		Success(w, http.StatusOK, Resource{
+		HALSuccess(w, Resource{
 			Links:    links,
 			Embedded: Embedded{"matches": embedded},
 			Props:    Props{"page": page},
-		})
+		}, http.StatusOK)
 	}
+}
+
+var nameRegex = regexp.MustCompile(`^[\pL][\pL\s'’-]{2,128}\z`)
+
+func ValidateName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	name = strings.Join(strings.Fields(name), " ")
+	if len(name) < 2 {
+		return "", ErrTextTooShort
+	}
+	if len(name) > 128 {
+		return "", ErrTextTooLong
+	}
+	if !nameRegex.MatchString(name) {
+		return "", ErrTextForbiddenChars
+	}
+	return name, nil
 }
 
 func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
@@ -2126,12 +2176,20 @@ func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
 		}
 
 		fullName, err := ValidateName(req.FullName)
+		if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+			Fail(w, FailData{"full_name": FailDataFullNameSize}, http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, ErrTextForbiddenChars) {
+			Fail(w, FailData{"full_name": FailDataFullNameForbiddenChars}, http.StatusBadRequest)
+			return
+		}
 		if err != nil {
-			Fail(
-				w,
-				FailData{"full_name": "full name must be between 1 and 100 characters"},
-				http.StatusBadRequest,
+			slog.Error(
+				"failed to validate name",
+				"err", err,
 			)
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -2199,8 +2257,7 @@ func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
 		}
 
 		// TODO: indicate next actions according to HAL
-		CreateAccessToken(v,
-			w,
+		CreateAccessToken(v, w,
 			user.ID,
 			user.Provider,
 			map[Role]ULID{},
@@ -2208,7 +2265,7 @@ func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
 	}
 }
 
-func HandlerCreateRecruiterProfile(s Store, v Vault) http.HandlerFunc {
+func HandlerCreateRecruiter(s Store, v Vault) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ulid, err := NewRecruiterULID()
 		if err != nil {
@@ -2229,16 +2286,12 @@ func HandlerCreateRecruiterProfile(s Store, v Vault) http.HandlerFunc {
 
 		err = s.CreateRecruiter(Recruiter{ulid, claims.UserID})
 		if errors.Is(err, ErrRecruiterAlreadyExists) {
-			Fail(
-				w,
-				FailData{"user_id": "recruiter profile already exists"},
-				http.StatusConflict,
-			)
+			Fail(w, FailData{"user_id": "recruiter already exists"}, http.StatusConflict)
 			return
 		}
 		if err != nil {
 			slog.Error(
-				"failed to create recruiter profile",
+				"failed to create recruiter",
 				"err", err,
 			)
 			Error(w, "internal server error", http.StatusInternalServerError)
@@ -2257,47 +2310,55 @@ func HandlerCreateRecruiterProfile(s Store, v Vault) http.HandlerFunc {
 
 		_, ok = roles[RoleCandidate]
 		if ok {
-			CreateAccessToken(v, w, claims.UserID, claims.Provider, roles)
+			CreateAccessToken(v, w,
+				claims.UserID,
+				claims.Provider,
+				roles,
+			)
 			return
 		}
 
-		CreateTokenPair(s, v, w, claims.UserID, claims.Provider, roles)
+		CreateTokenPair(s, v, w,
+			claims.UserID,
+			claims.Provider,
+			roles,
+		)
 	}
 }
 
 func ValidateAbout(about string) (string, error) {
 	about = strings.TrimSpace(about)
-
 	reTags := regexp.MustCompile(`<[^>]*>`)
 	about = reTags.ReplaceAllString(about, "")
-
-	if len(about) < 1 {
-		return "", ErrAboutTooShort
-	}
 	if len(about) > 1024 {
-		return "", ErrAboutTooLong
+		return "", ErrTextTooLong
 	}
-
 	return html.EscapeString(about), nil
 }
 
-func HandlerCreateCandidateProfile(s Store, v Vault) http.HandlerFunc {
+func HandlerCreateCandidate(s Store, v Vault) http.HandlerFunc {
+	type RequestBody struct {
+		About string `json:"about"`
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[struct {
-			About string `json:"about"`
-		}](r)
+		req, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
 			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
 			return
 		}
 
 		about, err := ValidateAbout(req.About)
+		if errors.Is(err, ErrTextTooLong) {
+			Fail(w, FailData{"about": "about must be up to 1024 characters"}, http.StatusBadRequest)
+			return
+		}
 		if err != nil {
-			Fail(
-				w,
-				FailData{"about": "about must be between 1 and 1024 characters"},
-				http.StatusBadRequest,
+			slog.Error(
+				"failed to create candidate",
+				"err", err,
 			)
+			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -2319,22 +2380,17 @@ func HandlerCreateCandidateProfile(s Store, v Vault) http.HandlerFunc {
 		}
 
 		err = s.CreateCandidate(Candidate{
-			ID:                ulid,
-			UserID:            claims.UserID,
-			About:             about,
-			LastRecommendedAt: time.Unix(0, 0),
+			ID:     ulid,
+			UserID: claims.UserID,
+			About:  about,
 		})
 		if errors.Is(err, ErrCandidateAlreadyExists) {
-			Fail(
-				w,
-				FailData{"user_id": "candidate profile already exists"},
-				http.StatusConflict,
-			)
+			Fail(w, FailData{"user_id": "candidate already exists"}, http.StatusConflict)
 			return
 		}
 		if err != nil {
 			slog.Error(
-				"failed to create candidate profile",
+				"failed to create candidate",
 				"err", err,
 			)
 			Error(w, "internal server error", http.StatusInternalServerError)
@@ -2351,13 +2407,20 @@ func HandlerCreateCandidateProfile(s Store, v Vault) http.HandlerFunc {
 			return
 		}
 
-		_, ok = roles[RoleRecruiter]
-		if ok {
-			CreateAccessToken(v, w, claims.UserID, claims.Provider, roles)
+		if _, ok = roles[RoleRecruiter]; ok {
+			CreateAccessToken(v, w,
+				claims.UserID,
+				claims.Provider,
+				roles,
+			)
 			return
 		}
 
-		CreateTokenPair(s, v, w, claims.UserID, claims.Provider, roles)
+		CreateTokenPair(s, v, w,
+			claims.UserID,
+			claims.Provider,
+			roles,
+		)
 	}
 }
 
@@ -2369,5 +2432,158 @@ func HandlerGetUsersMe(s Store, v Vault) http.HandlerFunc {
 			Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
+
+		user, err := s.GetUser(claims.UserID)
+		if errors.Is(err, ErrUserNotFound) {
+			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			slog.Error(
+				"failed to get user",
+				"err", err,
+			)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// TODO: Implement HAL for this success
+		Success(w, map[string]User{
+			"user": *user,
+		}, http.StatusOK)
+	}
+}
+
+var userNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+
+func ValidateUserName(userName string) (string, error) {
+	userName = strings.TrimSpace(userName)
+	if len(userName) < 4 {
+		return "", ErrTextTooShort
+	}
+	if len(userName) > 32 {
+		return "", ErrTextTooLong
+	}
+	if !userNameRegex.MatchString(userName) {
+		return "", ErrTextForbiddenChars
+	}
+	return userName, nil
+}
+
+const (
+	FailDataUserNameSize           = "user_name must be between 4 and 32 characters"
+	FailDataUserNameForbiddenChars = "user_name can only contain underscores, latin characters and numbers"
+)
+
+func HandlerPatchUsersMe(s Store, v Vault) http.HandlerFunc {
+	type RequestBody struct {
+		UserName *string `json:"user_name,omitempty"`
+		FullName *string `json:"full_name,omitempty"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		body, err := DecodeRequestBody[RequestBody](r)
+		if err != nil {
+			slog.Debug("err", err)
+			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
+			return
+		}
+
+		user, err := s.GetUser(claims.UserID)
+		if errors.Is(err, ErrUserNotFound) {
+			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			slog.Error(
+				"failed to get user",
+				"err", err,
+			)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		changed := false
+		if body.FullName != nil {
+			validated, err := ValidateName(*body.FullName)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				Fail(w, FailData{"full_name": FailDataFullNameSize}, http.StatusBadRequest)
+				return
+			}
+			if errors.Is(err, ErrTextForbiddenChars) {
+				Fail(w, FailData{"full_name": FailDataFullNameForbiddenChars}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error(
+					"failed to validate full_name",
+					"err", err,
+				)
+				Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if user.FullName != validated {
+				user.FullName = validated
+				changed = true
+			}
+		}
+
+		if body.UserName != nil {
+			validated, err := ValidateUserName(*body.UserName)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				Fail(w, FailData{"user_name": FailDataUserNameSize}, http.StatusBadRequest)
+				return
+			}
+			if errors.Is(err, ErrTextForbiddenChars) {
+				Fail(w, FailData{"user_name": FailDataUserNameForbiddenChars}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error(
+					"failed to validate user_name",
+					"err", err,
+				)
+				Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if user.UserName != validated {
+				user.UserName = validated
+				changed = true
+			}
+		}
+
+		if !changed {
+			// TODO: Implement HAL for this success
+			Success(w, map[string]User{
+				"user": *user,
+			}, http.StatusOK)
+			return
+		}
+
+		updatedUser, err := s.UpdateUser(*user)
+		if errors.Is(err, ErrUserNotFound) {
+			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			slog.Error(
+				"failed to update user",
+				"err", err,
+			)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// TODO: Impelment HAL for this success
+		Success(w, map[string]User{
+			"user": *updatedUser,
+		}, http.StatusOK)
 	}
 }

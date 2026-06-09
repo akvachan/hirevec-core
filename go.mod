@@ -4,10 +4,10 @@ go 1.25.5
 
 require (
 	aidanwoods.dev/go-paseto v1.6.0 // PASETO, for access and refresh tokens
-	github.com/coreos/go-oidc/v3 v3.17.0 // OIDC (for Apple and Google SSO)
+	github.com/coreos/go-oidc/v3 v3.17.0 // OIDC, for Apple and Google SSO
 	github.com/jackc/pgx/v5 v5.9.2 // Postgres driver
 	golang.org/x/crypto v0.48.0 // Crypto, for reliable randomness generation
-	golang.org/x/oauth2 v0.34.0 // OAuth (for Apple and Google SSO)
+	golang.org/x/oauth2 v0.34.0 // OAuth, for Apple and Google SSO
 	modernc.org/sqlite v1.49.1 // SQLite driver
 )
 

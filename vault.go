@@ -24,20 +24,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const (
-	DefaultRefreshTokenExpiration = 30 * 24 * time.Hour
-	DefaultAccessTokenExpiration  = 30 * time.Minute
-	DefaultStateTokenExpiration   = 10 * time.Minute
-	DefaultVerifierExpiration     = 10 * time.Minute
-	DefaultProvider               = ProviderEmail
-)
-
-const (
-	TokenAudience      = "api.hirevec.com"
-	TokenIssuer        = "api.hirevec.com"
-	StateTokenAudience = "oauth-state"
-)
-
 var (
 	ErrFailedParseClaims = errors.New("failed to parse claims")
 	ErrIDTokenRequired   = errors.New("id_token required")
@@ -54,6 +40,8 @@ const (
 	ProviderGoogle Provider = "google"
 	ProviderEmail  Provider = "email"
 )
+
+const DefaultProvider = ProviderEmail
 
 func StringToProvider(str string, def Provider) (Provider, error) {
 	switch str {
@@ -81,12 +69,23 @@ const (
 	RoleRecruiter Role = "recruiter"
 )
 
-type Scope string
+const (
+	DefaultRefreshTokenExpiration = 30 * 24 * time.Hour
+	DefaultAccessTokenExpiration  = 30 * time.Minute
+	DefaultStateTokenExpiration   = 10 * time.Minute
+	DefaultVerifierExpiration     = 10 * time.Minute
+)
 
 const (
-	ScopeRoleCandidate Scope = "role:candidate"
-	ScopeRoleRecruiter Scope = "role:recruiter"
+	TokenAudience      = "api.hirevec.com"
+	TokenIssuer        = "api.hirevec.com"
+	StateTokenAudience = "oauth-state"
 )
+
+type OIDCConfig struct {
+	OAuth2Config *oauth2.Config
+	Verifier     *oidc.IDTokenVerifier
+}
 
 type VaultConfig struct {
 	ServerBaseURL          string
@@ -117,11 +116,6 @@ type Vault struct {
 	AccessTokenExpiration  time.Duration
 	StateTokenExpiration   time.Duration
 	VerifierExpiration     time.Duration
-}
-
-type OIDCConfig struct {
-	OAuth2Config *oauth2.Config
-	Verifier     *oidc.IDTokenVerifier
 }
 
 func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
@@ -178,9 +172,9 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 				Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 				Endpoint:     googleProvider.Endpoint(),
 			},
-			Verifier: googleProvider.Verifier(
-				&oidc.Config{ClientID: c.GoogleClientID},
-			),
+			Verifier: googleProvider.Verifier(&oidc.Config{
+				ClientID: c.GoogleClientID,
+			}),
 		}
 	}
 
@@ -199,7 +193,9 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 				Scopes:       []string{oidc.ScopeOpenID, "name", "email"},
 				Endpoint:     appleProvider.Endpoint(),
 			},
-			Verifier: appleProvider.Verifier(&oidc.Config{ClientID: c.AppleClientID}),
+			Verifier: appleProvider.Verifier(&oidc.Config{
+				ClientID: c.AppleClientID,
+			}),
 		}
 	}
 
@@ -233,11 +229,6 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 	return &vault, nil
 }
 
-type StateTokenClaims struct {
-	Provider Provider `json:"provider"`
-	CSRF     string   `json:"csrf"`
-}
-
 func (v Vault) CreateStateToken(provider Provider) (string, error) {
 	now := time.Now().UTC()
 
@@ -261,6 +252,11 @@ func (v Vault) CreateStateToken(provider Provider) (string, error) {
 	token.SetIssuer(TokenIssuer)
 
 	return token.V4Encrypt(v.V4SymmetricKey, nil), nil
+}
+
+type StateTokenClaims struct {
+	Provider Provider `json:"provider"`
+	CSRF     string   `json:"csrf"`
 }
 
 func (v Vault) ParseStateToken(raw string) (*StateTokenClaims, error) {
@@ -295,7 +291,6 @@ func (v Vault) CreateAuthCodeURL(
 	provider Provider,
 ) (string, error) {
 	var config *oauth2.Config
-
 	switch provider {
 	case ProviderGoogle:
 		config = v.GoogleOIDCConfig.OAuth2Config
@@ -304,9 +299,7 @@ func (v Vault) CreateAuthCodeURL(
 	default:
 		return "", ErrInvalidProvider
 	}
-
-	url := config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
-	return url, nil
+	return config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), nil
 }
 
 func (v Vault) ExchangeGoogleCodeForIDToken(
@@ -314,8 +307,7 @@ func (v Vault) ExchangeGoogleCodeForIDToken(
 	code string,
 	verifierCookie *http.Cookie,
 ) (string, error) {
-	tok, err := v.GoogleOIDCConfig.OAuth2Config.Exchange(
-		ctx,
+	tok, err := v.GoogleOIDCConfig.OAuth2Config.Exchange(ctx,
 		code,
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
@@ -336,8 +328,7 @@ func (v Vault) ExchangeAppleCodeForIDToken(
 	code string,
 	verifierCookie *http.Cookie,
 ) (string, error) {
-	tok, err := v.AppleOIDCConfig.OAuth2Config.Exchange(
-		ctx,
+	tok, err := v.AppleOIDCConfig.OAuth2Config.Exchange(ctx,
 		code,
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
@@ -353,6 +344,16 @@ func (v Vault) ExchangeAppleCodeForIDToken(
 	return rawIDToken, nil
 }
 
+type GoogleClaims struct {
+	Sub           string `json:"sub"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
+	GivenName     string `json:"given_name"`
+	FamilyName    string `json:"family_name"`
+	Picture       string `json:"picture"`
+}
+
 func (v Vault) VerifyAndParseGoogleIDToken(
 	ctx context.Context,
 	rawIDToken string,
@@ -362,15 +363,7 @@ func (v Vault) VerifyAndParseGoogleIDToken(
 		return nil, ErrInvalidIDToken
 	}
 
-	var claims struct {
-		Sub           string `json:"sub"`
-		Email         string `json:"email"`
-		EmailVerified bool   `json:"email_verified"`
-		Name          string `json:"name"`
-		GivenName     string `json:"given_name"`
-		FamilyName    string `json:"family_name"`
-		Picture       string `json:"picture"`
-	}
+	var claims GoogleClaims
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, ErrFailedParseClaims
 	}
@@ -391,6 +384,13 @@ func (v Vault) VerifyAndParseGoogleIDToken(
 	}, nil
 }
 
+type AppleClaims struct {
+	Sub            string `json:"sub"`
+	Email          string `json:"email"`
+	EmailVerified  string `json:"email_verified"`
+	IsPrivateEmail string `json:"is_private_email"`
+}
+
 func (v Vault) VerifyAndParseAppleIDToken(
 	ctx context.Context,
 	rawIDToken string,
@@ -401,12 +401,7 @@ func (v Vault) VerifyAndParseAppleIDToken(
 		return nil, ErrInvalidIDToken
 	}
 
-	var claims struct {
-		Sub            string `json:"sub"`
-		Email          string `json:"email"`
-		EmailVerified  string `json:"email_verified"`
-		IsPrivateEmail string `json:"is_private_email"`
-	}
+	var claims AppleClaims
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, ErrFailedParseClaims
 	}
@@ -434,44 +429,11 @@ func (v Vault) VerifyAndParseAppleIDToken(
 	}, nil
 }
 
-type (
-	RefreshTokenClaims struct {
-		UserID   ULID
-		Provider Provider
-		JTI      ULID
-	}
-
-	AccessTokenClaims struct {
-		UserID   ULID
-		Provider Provider
-		Roles    map[Role]ULID
-	}
-
-	AccessToken struct {
-		AccessToken string `json:"access_token"`
-		TokenType   string `json:"token_type"`
-		ExpiresIn   uint32 `json:"expires_in"`
-		Scope       string `json:"scope"`
-		UserID      ULID   `json:"user_id"`
-		CandidateID ULID   `json:"candidate_id,omitempty"`
-		RecruiterID ULID   `json:"recruiter_id,omitempty"`
-	}
-
-	RefreshToken struct {
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    uint32 `json:"expires_in"`
-		UserID       ULID   `json:"user_id"`
-	}
-
-	TokenPair struct {
-		AccessToken  string `json:"access_token"`
-		TokenType    string `json:"token_type"`
-		ExpiresIn    uint32 `json:"expires_in"`
-		RefreshToken string `json:"refresh_token"`
-		Scope        string `json:"scope"`
-		UserID       ULID   `json:"user_id"`
-	}
-)
+type AccessTokenClaims struct {
+	UserID   ULID
+	Provider Provider
+	Roles    map[Role]ULID
+}
 
 func (v Vault) ParseAccessToken(
 	tokenString string,
@@ -502,7 +464,6 @@ func (v Vault) ParseAccessToken(
 	roles := make(map[Role]ULID, 3)
 	recruiterID, _ := parsedToken.GetString("recruiter_id")
 	candidateID, _ := parsedToken.GetString("candidate_id")
-
 	if recruiterID != "" {
 		roles[RoleRecruiter] = ULID(recruiterID)
 	}
@@ -515,6 +476,12 @@ func (v Vault) ParseAccessToken(
 		Provider: validProvider,
 		Roles:    roles,
 	}, nil
+}
+
+type RefreshTokenClaims struct {
+	UserID   ULID
+	Provider Provider
+	JTI      ULID
 }
 
 func (v Vault) ParseRefreshToken(
@@ -553,6 +520,23 @@ func (v Vault) ParseRefreshToken(
 		Provider: validProvider,
 		JTI:      ULID(jti),
 	}, nil
+}
+
+type Scope string
+
+const (
+	ScopeRoleCandidate Scope = "role:candidate"
+	ScopeRoleRecruiter Scope = "role:recruiter"
+)
+
+type AccessToken struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   uint32 `json:"expires_in"`
+	Scope       string `json:"scope"`
+	UserID      ULID   `json:"user_id"`
+	CandidateID ULID   `json:"candidate_id,omitempty"`
+	RecruiterID ULID   `json:"recruiter_id,omitempty"`
 }
 
 func (v Vault) CreateAccessToken(
@@ -609,6 +593,12 @@ func (v Vault) CreateAccessToken(
 	}, nil
 }
 
+type RefreshToken struct {
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    uint32 `json:"expires_in"`
+	UserID       ULID   `json:"user_id"`
+}
+
 func (v Vault) CreateRefreshToken(
 	userID ULID,
 	provider Provider,
@@ -634,6 +624,15 @@ func (v Vault) CreateRefreshToken(
 		ExpiresIn:    uint32(v.RefreshTokenExpiration.Seconds()),
 		UserID:       userID,
 	}, nil
+}
+
+type TokenPair struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    uint32 `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+	Scope        string `json:"scope"`
+	UserID       ULID   `json:"user_id"`
 }
 
 func (v Vault) CreateTokenPair(
@@ -664,10 +663,7 @@ func (v Vault) CreateTokenPair(
 
 const envFile = ".env"
 
-func UpsertEnvKey(filename, key, value string) error {
-	var lines []string
-	found := false
-
+func UpsertEnvKey(filename string, key string, value string) error {
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -676,6 +672,8 @@ func UpsertEnvKey(filename, key, value string) error {
 		return os.WriteFile(filename, []byte(key+"="+value+"\n"), 0o644)
 	}
 
+	found := false
+	var lines []string
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 
@@ -686,7 +684,6 @@ func UpsertEnvKey(filename, key, value string) error {
 			lines = append(lines, line)
 		}
 	}
-
 	if !found {
 		lines = append(lines, key+"="+value)
 	}
@@ -699,11 +696,8 @@ func UpsertEnvKey(filename, key, value string) error {
 	return os.WriteFile(filename, []byte(output), 0o644)
 }
 
-func LoadOrCreateSymmetricKey(
-	val string,
-) (paseto.V4SymmetricKey, error) {
+func LoadOrCreateSymmetricKey(val string) (paseto.V4SymmetricKey, error) {
 	if val != "" {
-		slog.Debug("loading symmetric key")
 		decoded, err := hex.DecodeString(val)
 		if err != nil {
 			return paseto.V4SymmetricKey{}, err
@@ -712,12 +706,10 @@ func LoadOrCreateSymmetricKey(
 	}
 
 	key := paseto.NewV4SymmetricKey()
-	hexVal := key.ExportHex()
-
 	if err := UpsertEnvKey(
 		envFile,
 		"HIREVEC_SYMMETRIC_KEY",
-		hexVal,
+		key.ExportHex(),
 	); err != nil {
 		return key, err
 	}
@@ -737,11 +729,9 @@ func LoadOrCreateAsymmetricKey(
 	}
 
 	key := paseto.NewV4AsymmetricSecretKey()
-	hexVal := key.ExportHex()
-
 	if err := UpsertEnvKey(
 		envFile, "HIREVEC_ASYMMETRIC_KEY",
-		hexVal,
+		key.ExportHex(),
 	); err != nil {
 		return key, err
 	}
@@ -785,11 +775,8 @@ func Loadenv(path string) error {
 		}
 
 		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-
-		err = os.Setenv(key, value)
-		if err != nil {
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		if err = os.Setenv(key, value); err != nil {
 			return err
 		}
 	}

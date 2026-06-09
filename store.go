@@ -31,37 +31,12 @@ var (
 	ErrCandidateNotFound           = errors.New("candidate not found")
 	ErrRecommendationExists        = errors.New("recommendation already exists")
 	ErrReactionAlreadyExists       = errors.New("reaction already exists")
+	ErrEmbeddingsCountConflict     = errors.New("mismatch between count of embedding IDs and embeddings")
 )
-
-type ReactionType string
-
-const (
-	ReactionTypePositive ReactionType = "positive"
-	ReactionTypeNegative ReactionType = "negative"
-	ReactionTypeNeutral  ReactionType = "neutral"
-)
-
-func (r ReactionType) IsValid() bool {
-	return r == ReactionTypePositive ||
-		r == ReactionTypeNegative ||
-		r == ReactionTypeNeutral
-}
-
-func (r ReactorType) IsValid() bool {
-	return r == ReactorTypeCandidate ||
-		r == ReactorTypeRecruiter
-}
-
-type ReactorType string
-
-const (
-	ReactorTypeCandidate ReactorType = "candidate"
-	ReactorTypeRecruiter ReactorType = "recruiter"
-)
-
-type ULID string
 
 const Enc = "0123456789abcdefghjkmnpqrstvwxyz"
+
+type ULID string
 
 func NewULID(prefix string) (ULID, error) {
 	var id [16]byte
@@ -90,7 +65,7 @@ func NewCandidateULID() (ULID, error) {
 }
 
 func NewRecruiterULID() (ULID, error) {
-	return NewULID("rec_")
+	return NewULID("rcr_")
 }
 
 func NewUserULID() (ULID, error) {
@@ -158,9 +133,7 @@ func ConnectSQLite() (*sql.DB, error) {
 	return db, nil
 }
 
-type Store struct {
-	db *sql.DB
-}
+type Store struct{ db *sql.DB }
 
 var (
 	DefaultInitSQLPath       = path.Join("init.sql")
@@ -217,11 +190,8 @@ func NewStore(c StoreConfig) (s *Store, err error) {
 	return &Store{db}, nil
 }
 
-const EmbeddingSize uint16 = 1024
-
 func (s Store) GetRecommendation(id ULID) (*Recommendation, error) {
 	var r Recommendation
-
 	err := s.db.QueryRow(`
 		select candidate_id, position_id
 		from recommendations
@@ -230,7 +200,6 @@ func (s Store) GetRecommendation(id ULID) (*Recommendation, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return &r, nil
 }
 
@@ -306,15 +275,12 @@ func (s Store) GetUserByProvider(
 	var userID ULID
 	var candidateID, recruiterID sql.NullString
 	err := s.db.QueryRow(`
-		select
-				u.id,
-				c.id as candidate_id,
+		select u.id, c.id as candidate_id,
 				r.id as recruiter_id
 		from users u
 		left join candidates c on c.user_id = u.id
 		left join recruiters r on r.user_id = u.id
-		where u.provider = $1
-				and u.provider_user_id = $2
+		where u.provider = $1 and u.provider_user_id = $2
    `, provider, providerUserID).Scan(&userID, &candidateID, &recruiterID)
 	if err == sql.ErrNoRows {
 		return "", nil, ErrUserNotFound
@@ -366,17 +332,19 @@ func (s Store) GetUserRoles(
 	if len(roles) == 0 {
 		return nil, ErrUserNoRole
 	}
+
 	return roles, nil
 }
 
 type User struct {
-	ID             ULID     `json:"id"`
-	Provider       Provider `json:"provider"`
-	ProviderUserID string   `json:"provider_user_id,omitempty"`
-	Email          string   `json:"email,omitempty"`
-	FullName       string   `json:"full_name,omitempty"`
-	UserName       string   `json:"user_name"`
-	PasswordHash   string   `json:"password_hash,omitempty"`
+	ID             ULID      `json:"id,omitempty"`
+	Provider       Provider  `json:"provider,omitempty"`
+	ProviderUserID string    `json:"provider_user_id,omitempty"`
+	Email          string    `json:"email,omitempty"`
+	FullName       string    `json:"full_name,omitempty"`
+	UserName       string    `json:"user_name,omitempty"`
+	PasswordHash   string    `json:"password_hash,omitempty"`
+	UpdatedAt      time.Time `json:"update_at,omitempty"`
 }
 
 func (s Store) CreateUser(u User) error {
@@ -406,6 +374,32 @@ func (s Store) CreateUser(u User) error {
 	return err
 }
 
+type ReactionType string
+
+const (
+	ReactionTypePositive ReactionType = "positive"
+	ReactionTypeNegative ReactionType = "negative"
+	ReactionTypeNeutral  ReactionType = "neutral"
+)
+
+func (r ReactionType) IsValid() bool {
+	return r == ReactionTypePositive ||
+		r == ReactionTypeNegative ||
+		r == ReactionTypeNeutral
+}
+
+type ReactorType string
+
+const (
+	ReactorTypeCandidate ReactorType = "candidate"
+	ReactorTypeRecruiter ReactorType = "recruiter"
+)
+
+func (r ReactorType) IsValid() bool {
+	return r == ReactorTypeCandidate ||
+		r == ReactorTypeRecruiter
+}
+
 type Reaction struct {
 	RecommendationID ULID         `json:"recommendation_id"`
 	ReactorType      ReactorType  `json:"reactor_type"`
@@ -420,11 +414,12 @@ func (s Store) CreateReaction(r Reaction) error {
 			recommendation_id, 
 			reactor_type,
 			reactor_id,
-			reaction_type
+			reaction_type,
+			reacted_at,
 		)
-		values ($1, $2, $3, $4)
+		values ($1, $2, $3, $4, current_timestamp)
 		on conflict (recommendation_id, reactor_type, reactor_id) do nothing
-	`, r.RecommendationID, r.ReactorType, r.ReactorID, r.ReactionType)
+	`, r.RecommendationID, r.ReactorType, r.ReactorID, r.ReactionType, r.ReactedAt)
 	if err != nil {
 		return err
 	}
@@ -466,39 +461,37 @@ func (s Store) CreateRefreshToken(
 	}()
 
 	var count int
-	err = tx.QueryRow(
-		`select count(*) from refresh_tokens where user_id = $1`,
-		userID,
-	).Scan(&count)
-	if err != nil {
+	if err = tx.QueryRow(`
+		select count(*)
+		from refresh_tokens
+		where user_id = $1
+		  and revoked = false
+		  and expires_at > current_timestamp
+	`, userID).Scan(&count); err != nil {
 		return err
 	}
 	if count >= DefaultMaxRefreshTokensCount {
-		_, err = tx.Exec(`
-			delete from refresh_tokens
+		if _, err = tx.Exec(`
+			update refresh_tokens
+			set revoked = true
 			where jti in (
 				select jti
 				from refresh_tokens
 				where user_id = $1
+				  and revoked = false
+				  and expires_at > current_timestamp
 				order by created_at asc
-				limit $2
+				limit 1
 			)
-		`, userID, count-DefaultMaxRefreshTokensCount-1)
-		if err != nil {
+		`, userID); err != nil {
 			return err
 		}
 	}
 
-	_, err = tx.Exec(
-		`
+	if _, err = tx.Exec(`
 		insert into refresh_tokens (jti, user_id, expires_at)
 		values ($1, $2, $3)
-		`,
-		jti,
-		userID,
-		expiresAt,
-	)
-	if err != nil {
+	`, jti, userID, expiresAt); err != nil {
 		return err
 	}
 
@@ -554,20 +547,20 @@ func (s Store) CreateRecommendations(recommendations []Recommendation) error {
 	defer stmt.Close()
 
 	for _, recommendation := range recommendations {
-		_, err = stmt.Exec(
+		if _, err = stmt.Exec(
 			recommendation.ID,
 			recommendation.PositionID,
 			recommendation.CandidateID,
-		)
-		if err != nil {
+		); err != nil {
 			return err
 		}
-
-		_, err = s.db.Exec(`
+		if _, err = s.db.Exec(`
 			update candidates
 			set last_recommended_at = current_timestamp
 			where candidate_id = $1 
-		`, recommendation.CandidateID)
+		`, recommendation.CandidateID); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
@@ -594,7 +587,8 @@ func (s Store) GetPositionRecommendations(
 	excludeReacted bool,
 ) (
 	positionRecommendations []PositionRecommendation,
-	nextCursor ULID, err error,
+	nextCursor ULID,
+	err error,
 ) {
 	rows, err := s.db.Query(`
 		select r.id, p.id, p.title, p.company, p.description
@@ -615,7 +609,6 @@ func (s Store) GetPositionRecommendations(
 	defer rows.Close()
 
 	results := make([]PositionRecommendation, 0, page.Limit)
-
 	for rows.Next() {
 		var pr PositionRecommendation
 		if err := rows.Scan(
@@ -644,7 +637,6 @@ func (s Store) GetPositionRecommendations(
 type CandidateRecommendation struct {
 	RecommendationID ULID   `json:"recommendation_id"`
 	CandidateID      ULID   `json:"candidate_id"`
-	UserName         string `json:"username"`
 	FullName         string `json:"full_name,omitempty"`
 	About            string `json:"about"`
 }
@@ -675,7 +667,6 @@ func (s Store) GetCandidateRecommendations(
 	defer rows.Close()
 
 	results := make([]CandidateRecommendation, 0, page.Limit)
-
 	for rows.Next() {
 		var cr CandidateRecommendation
 		if err := rows.Scan(
@@ -720,7 +711,6 @@ func (s Store) GetReactionsByCandidateID(
 	defer rows.Close()
 
 	results := make([]Reaction, 0, page.Limit)
-
 	for rows.Next() {
 		var rx Reaction
 		if err := rows.Scan(
@@ -748,7 +738,7 @@ type Match struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
 	Company     string    `json:"company"`
-	MatchedAt   time.Time `json:"matched_at"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 func (s Store) GetMatchesByCandidateID(
@@ -756,12 +746,7 @@ func (s Store) GetMatchesByCandidateID(
 	page Page,
 ) (matches []Match, nextCursor ULID, err error) {
 	rows, err := s.db.Query(`
-		select 
-			m.position_id, 
-			p.title,
-			p.description,
-			coalesce(p.company, ''), 
-			m.created_at
+		select m.position_id, p.title, p.description, coalesce(p.company, ''), m.created_at
 		from matches m
 		join positions p on p.id = m.position_id
 		where m.candidate_id = $1
@@ -775,7 +760,6 @@ func (s Store) GetMatchesByCandidateID(
 	defer rows.Close()
 
 	results := make([]Match, 0, page.Limit)
-
 	for rows.Next() {
 		var m Match
 		if err := rows.Scan(
@@ -783,7 +767,7 @@ func (s Store) GetMatchesByCandidateID(
 			&m.Title,
 			&m.Description,
 			&m.Company,
-			&m.MatchedAt,
+			&m.CreatedAt,
 		); err != nil {
 			return nil, "", err
 		}
@@ -800,13 +784,6 @@ func (s Store) GetMatchesByCandidateID(
 
 	return results, nextCursor, nil
 }
-
-type EntityType string
-
-const (
-	EntityTypePosition  = "position"
-	EntityTypeCandidate = "candidate"
-)
 
 type EmbeddingStatus string
 
@@ -940,11 +917,9 @@ func (s Store) GetPositionsForCandidateWithEmbedding(
 	results := make([]ULID, 0, nearestNeighbors)
 	for rows.Next() {
 		var positionID ULID
-
 		if err := rows.Scan(&positionID); err != nil {
 			return nil, err
 		}
-
 		results = append(results, positionID)
 	}
 
@@ -957,15 +932,14 @@ func (s Store) GetPositionsForCandidateWithEmbedding(
 
 func (s Store) UpsertEmbeddings(
 	tx *sql.Tx,
-	ids []ULID,
+	embeddingIDs []ULID,
 	embeddings []EmbeddingEntity,
 ) error {
-	if len(ids) == 0 {
+	if len(embeddingIDs) == 0 {
 		return nil
 	}
-	if len(ids) != len(embeddings) {
-		// TODO: Create a dedicate error for this
-		return fmt.Errorf("ids and embeddings length mismatch")
+	if len(embeddingIDs) != len(embeddings) {
+		return ErrEmbeddingsCountConflict
 	}
 
 	stmt, err := tx.Prepare(`
@@ -977,14 +951,12 @@ func (s Store) UpsertEmbeddings(
 	}
 	defer stmt.Close()
 
-	for i := range ids {
-		_, err := stmt.Exec(
-			ids[i],
+	for i := range embeddingIDs {
+		if _, err := stmt.Exec(
+			embeddingIDs[i],
 			embeddings[i].Embedding,
-		)
-		if err != nil {
-			// TODO: Create a dedicated error for this
-			return fmt.Errorf("failed at index %d: %w", i, err)
+		); err != nil {
+			return err
 		}
 	}
 
@@ -995,15 +967,13 @@ func (s Store) GetCandidates(
 	limit uint16,
 	recommendationSpan time.Duration,
 ) ([]ULID, []string, error) {
-	seconds := int64(recommendationSpan.Seconds())
-
 	rows, err := s.db.Query(`
 		select id, aggregated_info
 		from embeddings_metadata
 		where last_recommended_at <= datetime('now', '-' || $1 || ' seconds')
 		order by last_recommended_at asc
 		limit $2
-	`, seconds, limit)
+	`, int64(recommendationSpan.Seconds()), limit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1063,14 +1033,7 @@ type Position struct {
 
 func (s Store) CreatePosition(position Position) error {
 	result, err := s.db.Exec(`
-		insert into positions (
-			id,
-			recruiter_id,
-			title,
-			description,
-			company,
-		  is_active
-		)
+		insert into positions (id, recruiter_id, title, description, company, is_active)
 		values ($1, $2, $3, $4, $5, $6)
 		on conflict (tite, description, company) do nothing
 	`,
@@ -1103,19 +1066,13 @@ type Candidate struct {
 
 func (s Store) CreateCandidate(candidate Candidate) error {
 	result, err := s.db.Exec(`
-		insert into candidates (
-			id,
-			user_id,
-			about,
-			last_recommended_at
-		)
-		values ($1, $2, $3, $4)
+		insert into candidates (id, user_id, about, last_recommended_at)
+		values ($1, $2, $3, current_timestamp)
 		on conflict (user_id) do nothing
 	`,
 		candidate.ID,
 		candidate.UserID,
 		candidate.About,
-		candidate.LastRecommendedAt,
 	)
 	if err != nil {
 		return err
@@ -1166,4 +1123,56 @@ func (s Store) UserExistsByEmail(
 		return false, err
 	}
 	return exists, nil
+}
+
+func (s Store) GetUser(id ULID) (*User, error) {
+	user := User{}
+	err := s.db.QueryRow(`
+		select id, provider, email, full_name, user_name, updated_at
+		from users
+		where id = $1
+	`, id).Scan(
+		&user.ID,
+		&user.Provider,
+		&user.Email,
+		&user.FullName,
+		&user.UserName,
+		&user.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &user, nil
+}
+
+func (s Store) UpdateUser(u User) (*User, error) {
+	updatedUser := User{}
+	err := s.db.QueryRow(`
+		update users
+		set
+			full_name = $1,
+			user_name = $2,
+			updated_at = current_timestamp
+		where id = $3
+		returning id, provider, email, full_name, user_name, updated_at
+	`, u.FullName, u.UserName, u.ID).Scan(
+		&updatedUser.ID,
+		&updatedUser.Provider,
+		&updatedUser.Email,
+		&updatedUser.FullName,
+		&updatedUser.UserName,
+		&updatedUser.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &updatedUser, nil
 }
