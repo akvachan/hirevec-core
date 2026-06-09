@@ -232,10 +232,10 @@ curl http://localhost:8888/users/me \
 
 ```sh
 curl -X PATCH http://localhost:8888/users/me \
-  -H "Content-Type: application/json" \          
+  -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -d '{
-    "full_name": "Different Name",             
+    "full_name": "Different Name",
     "user_name": "cool_tester"
   }'
 ```
@@ -322,91 +322,17 @@ curl
 > users, candidates and positions) and saves refresh tokens for each user in
 > `.env`.
 
-## Q&A
-
-1. Can I create recommendations manually?
-
-- No, this is not supported via API. You can of course create DB records,
-  but overall it's the responsibility of the recommendation engine.
-
-2. Can I enforce E-mail confirmation / SSO?
-
-- Yes, see instructions below.
-
-3. Can I edit user reactions and/or remove matches?
-
-- No, this is not possible via API. Reactions and matches must be immutable in
-  order for the recommendation engine to be stable.
-
-## Settings
+## Features
 
 All available settings are demonstrated in [./.example.env](./.example.env).
 You can copy-paste them into your `.env` file or just use `export` command.
 
-### Enabling Postgres with pgvector
+### Checklist
 
-Recommendation engine uses SQLite by default.
-To enable Postgres, set `POSTGRES_DATABASE_URL`:
-
-```sh
-export POSTGRES_DATABASE_URL=postgres://postgres@localhost:5432/postgres?sslmode=disable
-```
-
-To enable `pgvector`, just have it installed on your machine.
-Here is [how to install](https://github.com/pgvector/pgvector).
-
-If Postgres is enabled, but `pgvector` cannot be configured,
-the server will halt with an error.
-
-### Enabling Embeddings and Reranker
-
-Recommendation engine uses Okapi BM25 by default.
-To enable embeddings and reranking, enable Postgres with pgvector first,
-then set `TEI_BASE_URL` and `TEI_API_KEY`:
-
-```sh
-export TEI_BASE_URL=yourdomain.com
-export TEI_API_KEY=your-api-key
-```
-
-Your TEI instance **must** be protected by an API key.
-Here is [how to setup TEI](https://github.com/huggingface/text-embeddings-inference).
-
-Okapi BM25 will be used in following scenarios:
-
-- The embeddings are not yet created (cold start).
-- SQLite database is used instead of Postgres.
-
-### Enabling E-mail confirmation
-
-E-mail confirmation is not enforced by default. Enable with:
-
-```sh
-export SMTP_URL=smtp://username:password@mail.yourdomain.com:465?tls=true.
-```
-
-### Enabling SSO
-
-SSO registration/login is not enabled by default. Enable with:
-
-```sh
-export GOOGLE_CLIENT_ID=your-google-client-id
-export GOOGLE_CLIENT_SECRET=your-google-client-secret
-export APPLE_CLIENT_ID=your-apple-client-id
-export APPLE_CLIENT_SECRET=your-apple-client-secret
-```
-
-Afterwards, users can login and register via:
-
-```sh
-curl -L localhost:8888/auth/authorize?provider=google
-```
-
-or for Apple:
-
-```sh
-curl -L localhost:8888/auth/authorize?provider=apple
-```
+- [ ] Users can enable Postgres
+- [ ] Users can enable TEI (embeddings and reranker worker)
+- [ ] Users can enable SMTP relay for security-critical operations
+- [ ] Users can enable SSO with Google and Apple
 
 ## Misc
 

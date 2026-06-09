@@ -1,25 +1,14 @@
 # Security
 
-## Constraints
+## Checklist
 
-- Applications's primary client is a native application.
-- Each client is responsible for one user.
-- User identifiers are [ULIDs](https://github.com/ulid/spec).
-- Google and Apple SSO is supported.
-- Refresh token JTIs are stored in the DB for easy revocation.
-- The JTI is issued by the server as ULID.
-- Access token expiration = 30 minutes.
-- Refresh token expiration = 30 days.
-- Developers and testers must go through the same security layers as ordinary users:
-  - No exceptions
-  - No bypasses
-  - No impersonation endpoints
-  - No development builds
-
-## Flow
-
-The server implements OAuth2.0 Authorization Code Flow via OIDC.
-Developers should familiarize themselves with [RFC6749](https://www.rfc-editor.org/rfc/rfc6749).
+- [x] User identifiers are [ULIDs](https://github.com/ulid/spec).
+- [x] Refresh token JTIs are stored in the DB for easy revocation.
+- [x] The JTI is issued by the server as ULID.
+- [x] Access token expiration = 30 minutes.
+- [x] Refresh token expiration = 30 days.
+- [x] Developers and testers must go through the same security layers as ordinary users
+- [ ] Google and Apple SSO is supported.
 
 ## Tokens Schema
 
@@ -52,3 +41,9 @@ Overview of required credentials when performing security-critical operations:
 | Forgot password              | No           | `POST /auth/forgot-password` | Yes    | No       | Yes                 | No           | No            |
 | Obtain refresh token (Login) | Yes          | `POST /auth/authorize`       | Yes    | Yes      | No                  | No           | No            |
 | Obtain access token          | Yes          | `POST /auth/token`           | No     | No       | No                  | No           | Yes           |
+| Delete user                  | Yes          | `DELETE /users/me`           | No     | Yes      | No                  | Yes          | No            |
+
+## SSO (under development)
+
+The server will implement OAuth2.0 Authorization Code Flow via OIDC.
+Developers should familiarize themselves with [RFC6749](https://www.rfc-editor.org/rfc/rfc6749).
