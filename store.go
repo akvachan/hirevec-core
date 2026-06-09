@@ -203,11 +203,12 @@ func (s Store) GetRecommendation(id ULID) (*Recommendation, error) {
 	return &r, nil
 }
 
-func (s Store) GetUserByEmail(
+func (s Store) GetUserAndRolesByEmail(
 	email string,
 	provider Provider,
 ) (*User, map[Role]ULID, error) {
 	var userID ULID
+	var updatedAt time.Time
 	var optionalProviderUserID sql.NullString
 	var providerUserID, fullName, userName, passwordHash string
 	var candidateID, recruiterID sql.NullString
@@ -218,6 +219,7 @@ func (s Store) GetUserByEmail(
 			u.full_name,
 			u.user_name,
 			u.password_hash,
+			u.updated_at,
 			c.id as candidate_id,
 			r.id as recruiter_id
 		from users u
@@ -230,6 +232,7 @@ func (s Store) GetUserByEmail(
 		&fullName,
 		&userName,
 		&passwordHash,
+		&updatedAt,
 		&candidateID,
 		&recruiterID,
 	)
@@ -245,13 +248,14 @@ func (s Store) GetUserByEmail(
 	}
 
 	user := User{
-		ID:             userID,
-		Provider:       provider,
-		ProviderUserID: providerUserID,
-		Email:          email,
-		FullName:       fullName,
-		UserName:       userName,
-		PasswordHash:   passwordHash,
+		userID,
+		provider,
+		providerUserID,
+		email,
+		fullName,
+		userName,
+		passwordHash,
+		updatedAt,
 	}
 
 	roles := make(map[Role]ULID, 2)
@@ -268,7 +272,7 @@ func (s Store) GetUserByEmail(
 	return &user, roles, nil
 }
 
-func (s Store) GetUserByProvider(
+func (s Store) GetUserAndRolesByProvider(
 	provider Provider,
 	providerUserID string,
 ) (ULID, map[Role]ULID, error) {
@@ -344,7 +348,7 @@ type User struct {
 	FullName       string    `json:"full_name,omitempty"`
 	UserName       string    `json:"user_name,omitempty"`
 	PasswordHash   string    `json:"password_hash,omitempty"`
-	UpdatedAt      time.Time `json:"update_at,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
 }
 
 func (s Store) CreateUser(u User) error {
@@ -1125,19 +1129,104 @@ func (s Store) UserExistsByEmail(
 	return exists, nil
 }
 
-func (s Store) GetUser(id ULID) (*User, error) {
-	user := User{}
+func (s Store) GetUserAndRoles(id ULID) (*User, map[Role]ULID, error) {
+	var userID ULID
+	var updatedAt time.Time
+	var optionalProviderUserID sql.NullString
+	var providerUserID, fullName, userName, passwordHash, email string
+	var provider Provider
+	var candidateID, recruiterID sql.NullString
 	err := s.db.QueryRow(`
-		select id, provider, email, full_name, user_name, updated_at
-		from users
-		where id = $1
+		select
+			u.id,
+			u.provider,
+			u.provider_user_id,
+			u.email,
+			u.full_name,
+			u.user_name,
+			u.password_hash,
+			u.updated_at,
+			c.id as candidate_id,
+			r.id as recruiter_id
+		from users u
+		left join candidates c on c.user_id = u.id
+		left join recruiters r on r.user_id = u.id
+		where u.id = $1
 	`, id).Scan(
-		&user.ID,
-		&user.Provider,
-		&user.Email,
-		&user.FullName,
-		&user.UserName,
-		&user.UpdatedAt,
+		&userID,
+		&provider,
+		&optionalProviderUserID,
+		&email,
+		&fullName,
+		&userName,
+		&passwordHash,
+		&updatedAt,
+		&candidateID,
+		&recruiterID,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil, ErrUserNotFound
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if optionalProviderUserID.Valid {
+		providerUserID = optionalProviderUserID.String
+	}
+
+	user := User{
+		userID,
+		provider,
+		providerUserID,
+		email,
+		fullName,
+		userName,
+		passwordHash,
+		updatedAt,
+	}
+
+	roles := make(map[Role]ULID, 2)
+	if candidateID.Valid {
+		roles[RoleCandidate] = ULID(candidateID.String)
+	}
+	if recruiterID.Valid {
+		roles[RoleRecruiter] = ULID(recruiterID.String)
+	}
+	if len(roles) == 0 {
+		return &user, nil, ErrUserNoRole
+	}
+
+	return &user, roles, nil
+}
+
+func (s Store) GetUser(id ULID) (*User, error) {
+	var userID ULID
+	var updatedAt time.Time
+	var optionalProviderUserID sql.NullString
+	var providerUserID, fullName, userName, passwordHash, email string
+	var provider Provider
+	err := s.db.QueryRow(`
+		select
+			u.id,
+			u.provider,
+			u.provider_user_id,
+			u.email,
+			u.full_name,
+			u.user_name,
+			u.password_hash,
+			u.updated_at
+		from users u
+		where u.id = $1
+	`, id).Scan(
+		&userID,
+		&provider,
+		&optionalProviderUserID,
+		&email,
+		&fullName,
+		&userName,
+		&passwordHash,
+		&updatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -1146,11 +1235,30 @@ func (s Store) GetUser(id ULID) (*User, error) {
 		return nil, err
 	}
 
+	if optionalProviderUserID.Valid {
+		providerUserID = optionalProviderUserID.String
+	}
+
+	user := User{
+		userID,
+		provider,
+		providerUserID,
+		email,
+		fullName,
+		userName,
+		passwordHash,
+		updatedAt,
+	}
+
 	return &user, nil
 }
 
 func (s Store) UpdateUser(u User) (*User, error) {
-	updatedUser := User{}
+	var userID ULID
+	var updatedAt time.Time
+	var optionalProviderUserID sql.NullString
+	var providerUserID, fullName, userName, passwordHash, email string
+	var provider Provider
 	err := s.db.QueryRow(`
 		update users
 		set
@@ -1158,14 +1266,24 @@ func (s Store) UpdateUser(u User) (*User, error) {
 			user_name = $2,
 			updated_at = current_timestamp
 		where id = $3
-		returning id, provider, email, full_name, user_name, updated_at
+		returning 
+			id, 
+			provider,
+			provider_user_id,
+			email,
+			full_name,
+			user_name,
+			password_hash,
+			updated_at
 	`, u.FullName, u.UserName, u.ID).Scan(
-		&updatedUser.ID,
-		&updatedUser.Provider,
-		&updatedUser.Email,
-		&updatedUser.FullName,
-		&updatedUser.UserName,
-		&updatedUser.UpdatedAt,
+		&userID,
+		&provider,
+		&optionalProviderUserID,
+		&email,
+		&fullName,
+		&userName,
+		&passwordHash,
+		&updatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, ErrUserNotFound
@@ -1174,5 +1292,41 @@ func (s Store) UpdateUser(u User) (*User, error) {
 		return nil, err
 	}
 
+	if optionalProviderUserID.Valid {
+		providerUserID = optionalProviderUserID.String
+	}
+
+	updatedUser := User{
+		userID,
+		provider,
+		providerUserID,
+		email,
+		fullName,
+		userName,
+		passwordHash,
+		updatedAt,
+	}
+
 	return &updatedUser, nil
+}
+
+func (s Store) DeleteUser(userID ULID) error {
+	res, err := s.db.Exec(`
+		delete from users
+		where id = $1
+	`, userID)
+	if err != nil {
+		return err
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rows == 0 {
+		return ErrUserNotFound
+	}
+
+	return nil
 }

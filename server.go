@@ -634,9 +634,10 @@ func MaxBytesLimiter(next http.HandlerFunc) http.HandlerFunc {
 type Method string
 
 const (
-	MethodPost  Method = http.MethodPost
-	MethodGet   Method = http.MethodGet
-	MethodPatch Method = http.MethodPatch
+	MethodPost   Method = http.MethodPost
+	MethodGet    Method = http.MethodGet
+	MethodPatch  Method = http.MethodPatch
+	MethodDelete Method = http.MethodDelete
 )
 
 type RouteConfig struct {
@@ -774,11 +775,11 @@ func ServeMux(s Store, v Vault) http.Handler {
 		Handler: HandlerPatchUsersMe(s, v),
 	}, v)
 
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodDelete,
-	// 	Route:   RouteUsersMe,
-	// 	Handler: HandlerDeleteUsersMe(s, v),
-	// }, v)
+	ProtectedRoute(RouteConfig{
+		Method:  MethodDelete,
+		Routes:  []Route{RouteV1UsersMe, RouteUsersMe},
+		Handler: HandlerDeleteUsersMe(s, v),
+	}, v)
 
 	ProtectedRoute(RouteConfig{
 		Method:  MethodPost,
@@ -1020,8 +1021,6 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 		if err != nil {
 			slog.Error(
 				"failed to parse refresh token",
-				"jti", claims.JTI,
-				"user_id", claims.UserID,
 				"ip", r.RemoteAddr,
 				"err", err,
 			)
@@ -1124,7 +1123,7 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 				return
 			}
 
-			user, roles, err := s.GetUserByEmail(req.Email, ProviderEmail)
+			user, roles, err := s.GetUserAndRolesByEmail(req.Email, ProviderEmail)
 			if errors.Is(err, ErrUserNotFound) {
 				Unauthorized(w, AuthInvalidRequest, "invalid credentials")
 				return
@@ -1363,7 +1362,7 @@ const (
 )
 
 func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
-	userID, roles, err := s.GetUserByProvider(user.Provider, user.ProviderUserID)
+	userID, roles, err := s.GetUserAndRolesByProvider(user.Provider, user.ProviderUserID)
 
 	if errors.Is(err, ErrUserNotFound) {
 		userID, ulidErr := NewUserULID()
@@ -2449,7 +2448,14 @@ func HandlerGetUsersMe(s Store, v Vault) http.HandlerFunc {
 
 		// TODO: Implement HAL for this success
 		Success(w, map[string]User{
-			"user": *user,
+			"user": {
+				ID:        user.ID,
+				Provider:  user.Provider,
+				Email:     user.Email,
+				FullName:  user.FullName,
+				UserName:  user.UserName,
+				UpdatedAt: user.UpdatedAt,
+			},
 		}, http.StatusOK)
 	}
 }
@@ -2562,7 +2568,14 @@ func HandlerPatchUsersMe(s Store, v Vault) http.HandlerFunc {
 		if !changed {
 			// TODO: Implement HAL for this success
 			Success(w, map[string]User{
-				"user": *user,
+				"user": {
+					ID:        user.ID,
+					Provider:  user.Provider,
+					Email:     user.Email,
+					FullName:  user.FullName,
+					UserName:  user.UserName,
+					UpdatedAt: user.UpdatedAt,
+				},
 			}, http.StatusOK)
 			return
 		}
@@ -2583,7 +2596,78 @@ func HandlerPatchUsersMe(s Store, v Vault) http.HandlerFunc {
 
 		// TODO: Impelment HAL for this success
 		Success(w, map[string]User{
-			"user": *updatedUser,
+			"user": {
+				ID:        updatedUser.ID,
+				Provider:  updatedUser.Provider,
+				Email:     updatedUser.Email,
+				FullName:  updatedUser.FullName,
+				UserName:  updatedUser.UserName,
+				UpdatedAt: updatedUser.UpdatedAt,
+			},
 		}, http.StatusOK)
+	}
+}
+
+func HandlerDeleteUsersMe(s Store, v Vault) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		user, err := s.GetUser(claims.UserID)
+		if errors.Is(err, ErrUserNotFound) {
+			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			slog.Error(
+				"failed to get user",
+				"err", err,
+			)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if user.Provider == ProviderEmail {
+			var req struct {
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
+				return
+			}
+			if req.Password == "" {
+				Fail(w, FailData{"password": "password is required"}, http.StatusBadRequest)
+				return
+			}
+			if !v.IsValidPassword(user.PasswordHash, req.Password) {
+				Fail(w, FailData{"password": "incorrect password"}, http.StatusUnauthorized)
+				return
+			}
+		} else {
+			// TODO: Add user deletion support for SSO
+			Fail(w, FailData{
+				"provider": "account deletion is not supported for this provider",
+			}, http.StatusForbidden)
+			return
+		}
+
+		if err = s.DeleteUser(user.ID); errors.Is(err, ErrUserNotFound) {
+			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			slog.Error(
+				"failed to delete user",
+				"err", err,
+			)
+			Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		EmptySuccess(w, http.StatusOK)
 	}
 }

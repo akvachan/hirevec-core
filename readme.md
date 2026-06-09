@@ -69,11 +69,11 @@ curl -X POST http://localhost:8888/users \
 
 ```json
 {
-  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJleHAiOiIyMDI2LTA2LTA2VDE1OjI2OjAyWiIsImlhdCI6IjIwMjYtMDYtMDZUMTQ6NTY6MDJaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNDo1NjowMloiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiIiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifSWnab1ikJkMTA8L_bqmNUt4eWVYOnDzVSd5tFwE7M3d0tv9Poqne_oFUmrjtKzjMcfb3rMIRj-DenlAmOC-hQc",
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJleHAiOiIyMDI2LTA2LTA5VDIxOjEyOjA5WiIsImlhdCI6IjIwMjYtMDYtMDlUMjA6NDI6MDlaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wOVQyMDo0MjowOVoiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiIiLCJzdWIiOiJ1c3JfMDFrdHExeTFhYzhkZ3BrZmV6YmM4ZGdwa2YifdwpBTF7b_UVToVtMpdK4LFElFunfzSfbV6nPHwjtmCUnrZ_WlTlhxddT20K73Or1PIPmAxpkGVCMQr3mM-76A4",
   "token_type": "Bearer",
   "expires_in": 1800,
   "scope": "",
-  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32"
+  "user_id": "usr_01ktq1y1ac8dgpkfezbc8dgpkf"
 }
 ```
 
@@ -98,14 +98,14 @@ curl -X POST http://localhost:8888/candidates \
 
 - Response:
 
-```
+```json
 {
-  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjM5OjQ2WiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MDk6NDZaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNTowOTo0NloiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifbu4KXceqMxG6wSq8y4UY3klBnVlZflv2Om7KcmZigbHNR_cBr7HT_aGcRvALvLwOeVe_-cOk1caA1mCXLZPtgI",
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdHExenNnMnBycXE5aG45eHZwcnFxOWgiLCJleHAiOiIyMDI2LTA2LTA5VDIxOjEzOjA2WiIsImlhdCI6IjIwMjYtMDYtMDlUMjA6NDM6MDZaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wOVQyMDo0MzowNloiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSAiLCJzdWIiOiJ1c3JfMDFrdHExeTFhYzhkZ3BrZmV6YmM4ZGdwa2YifQ8fxsoGASeBW6FVJVwKk43Zpgu8pLc9ayfGwrr3UHjHVUF-Csiv_VEOohQafJmXPHVpbtd3HemaczCNdgdLlQk",
   "token_type": "Bearer",
   "expires_in": 1800,
-  "refresh_token": "v4.local.yaBaCfLzq1RY-Jm60Y_Gh67LOX_S9eC2PYmlhNESSuaZR9ve8E-J1P_50ot74B1QlZghCGTOod6TlJItjIfMQBv8OEsLJsdS5SsS4hMvY3tUlcxKlLh1CXFa8YkVn4iz_HDu_G_ajNw0BN7B4nXuEHrdYmyo-O5PoiFobTH769neqFC4iIJ8oQhiyCh5Jbm4AIGKOyZ3QenVHohg8qJM31z1WrftOky4fpYRHiJmzXeXYZ_OErOM3tBhvt2PlXJ8txm55pz12EnFrnMWNZEW-HXI8lmo8pxUcAb7Y5F_yOdZWyOnuXTiTxkG1qMNVGpipLeEUEI5e7b8x54xpFI7xCLZGDzRdWIVo3Q0LI7K4Q_dQdLLkW5aBNT6fHC0W-rFLJ6Rpy-oIZ1d",
+  "refresh_token": "v4.local.cUzKtoot3YKjK_kD86gQNUPWKKY9c4WqQAJZqYliXElv1gQtKv3LrX8oBJ0EDY-U17Z1yUXEqwoF4HkbSXZF7FZ63j2hO6ta0TpO8nnNGWCYsyVEuSaAPRMrAes7jiTBh81LaV-dyQDNx0xEnZ3_oQ8EO94ZGmQYlQ5gtQjCxjmDLXAm5HAvU9oErAoxonKaaYz-bE11cgBrADMHLx2BWuO41Ir45sq-Lsey9lOiyc0Jn36gHAvn8mac6uK-3y0cWdHhwrxudSTf4urUJ1-aZw96N81qZbv2odKFiZoQ7BPVQUtGiTCxk4zVlqt5EcNr25QGEtwF_TuvL1vFV2F8-bBIbs-R79GWa5FXawNENNVWPm-dgKai2Ou7iiuyv7XPR6hQkGsfLcIJ",
   "scope": "role:candidate ",
-  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32"
+  "user_id": "usr_01ktq1y1ac8dgpkfezbc8dgpkf"
 }
 ```
 
@@ -127,13 +127,11 @@ curl -X POST http://localhost:8888/recruiters \
 
 ```json
 {
-  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjQ4OjI5WiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MTg6MjlaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNToxODoyOVoiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmVjXzAxa3RlcXI5a2owZjZyZjI1Z2c4MGY2cmYyIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifaUWJFndw0SrNJ-O5yWJYhaFq32GLB1137iaPAmroNtQnyn4IUqd9JQJXIRLMKD-QGKeBIMDxMU8aMw6XkzyfgA",
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdHExenNnMnBycXE5aG45eHZwcnFxOWgiLCJleHAiOiIyMDI2LTA2LTA5VDIxOjE0OjA4WiIsImlhdCI6IjIwMjYtMDYtMDlUMjA6NDQ6MDhaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wOVQyMDo0NDowOFoiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmNyXzAxa3RxMjFwMmMwY3h6MzFkZGdmMGN4ejMxIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdHExeTFhYzhkZ3BrZmV6YmM4ZGdwa2YifVnpgqlPWNzHk1Szq-91n8rCyTKCWmZkuyyE-xIchjYasGqri3O4AOmEADl8z4U0ERFZlTzVZrdeepyvM4p4sgA",
   "token_type": "Bearer",
   "expires_in": 1800,
   "scope": "role:candidate role:recruiter ",
-  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32",
-  "candidate_id": "can_01kteqq9erm4sa9w7z0em4sa9w",
-  "recruiter_id": "rcr_01kteqr9kj0f6rf25gg80f6rf2"
+  "user_id": "usr_01ktq1y1ac8dgpkfezbc8dgpkf"
 }
 ```
 
@@ -161,12 +159,12 @@ curl -X POST http://localhost:8888/auth/authorize \
 
 ```json
 {
-  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjQxOjQ0WiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MTE6NDRaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNToxMTo0NFoiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmVjXzAxa3RlcXI5a2owZjZyZjI1Z2c4MGY2cmYyIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifeuc2nIZD8IjxZ_YP02PkPgeBactQaXjK9dZR1W3fM3NI2Y3GTLx2AzSzr60oTy-NYuM8uGRLkWI4PHoVs7UyQk",
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdHExenNnMnBycXE5aG45eHZwcnFxOWgiLCJleHAiOiIyMDI2LTA2LTA5VDIxOjE0OjM3WiIsImlhdCI6IjIwMjYtMDYtMDlUMjA6NDQ6MzdaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wOVQyMDo0NDozN1oiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmNyXzAxa3RxMjFwMmMwY3h6MzFkZGdmMGN4ejMxIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdHExeTFhYzhkZ3BrZmV6YmM4ZGdwa2YifVeo_z9FSnu9PGJ9SkYMsjB7421pnyFHp6VG1WSfOyBrWyrm7AtglKQvR3NC72G_zE33HMHBDKC0OTPVZ-gFGQ0",
   "token_type": "Bearer",
   "expires_in": 1800,
-  "refresh_token": "v4.local.3W5C9xV-nBOp8cShxN2xsGE0uzRFU-tFd2HDOzbLXWZA9IhMmxgdY1FF-pt05sEouMCcItRtMNHwhRtTCeOqPGMBbefX-Xv_N91pPyR-GC2DmyntFnMYbzL18T_9e_xOB_BBh8Ji3RLaMrvCmZNQo-h8dvLc_zuLo9d4Mr7SXu8-Yb68uaowKWAccLz9fWOp47QlHOtyEHgrCWwI-dIEUNhgYluSKjJRerXsrJ1EoCfbbdRqVCprBtCl5HhPXbZ0LKJjp_UUjsTBPl4OrpvLHJFhCeoTlM9YGphQ58TpEPXQMC0RApO_ULLNuIloFdr0T79MDWAZGF35nsE256aQSjz_-aB_8XEOQVFqDwiHlpZNt42-t4_PFp_Xe2pjaYhk910a_WrCZ1Bq",
+  "refresh_token": "v4.local.JI2GmUdQisrKsYfR-UTmm3nsYujfg2WMTtqDhlIPv4uBl67d8X23WbOcN1jFvI6U-UUq69Pe-gH3ow7XaQCJUY6dGHtRu74KaN5L5MHkdeRBdyWJXah1ufSvW22MnN2T4jfw-wpp1Bg8gO7feq-24XYAkapD-17IERTBVO33Fq_QQUsUTuTQvrvpZlKeVmb92vjjl7KgSEoqhHWZwTDgdfYUHBsMYSTuMvhsx7cb8DE_BMwIOSBi0w1bgnURLEtMJVKdB5dzkRc5tPWhU9kC3k_j7nhUNm3qMuPJ-JMqmlhVK9yuo7B5QSiTUm3UjhtG-sBMWkUgMsPEo_OXmM2W1lgfhE0VNvJ_t8amllt2jrNwHZ4rbu46pdTQtEgGOZX0VWJSp64GXFAW",
   "scope": "role:candidate role:recruiter ",
-  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32"
+  "user_id": "usr_01ktq1y1ac8dgpkfezbc8dgpkf"
 }
 ```
 
@@ -187,15 +185,13 @@ curl -X POST http://localhost:8888/auth/token \
 
 - Response:
 
-```
+```json
 {
-  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdGVxcTllcm00c2E5dzd6MGVtNHNhOXciLCJleHAiOiIyMDI2LTA2LTA2VDE1OjQyOjMyWiIsImlhdCI6IjIwMjYtMDYtMDZUMTU6MTI6MzJaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wNlQxNToxMjozMloiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmVjXzAxa3RlcXI5a2owZjZyZjI1Z2c4MGY2cmYyIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdGVweTRmM2ZiOHMzMjMxM2dmYjhzMzIifTc2qfvpx-QnnRqGKo1NMpyf298IcwxEZCOp-Put9PKWHAeTZDBXXUEnhV3yV2cmd3r4rjXC1_PZxyJd4HsEWgs",
+  "access_token": "v4.public.eyJhdWQiOiJhcGkuaGlyZXZlYy5jb20iLCJjYW5kaWRhdGVfaWQiOiJjYW5fMDFrdHExenNnMnBycXE5aG45eHZwcnFxOWgiLCJleHAiOiIyMDI2LTA2LTA5VDIxOjQxOjQ4WiIsImlhdCI6IjIwMjYtMDYtMDlUMjE6MTE6NDhaIiwiaXNzIjoiYXBpLmhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0wNi0wOVQyMToxMTo0OFoiLCJwcm92aWRlciI6ImVtYWlsIiwicmVjcnVpdGVyX2lkIjoicmNyXzAxa3RxMjFwMmMwY3h6MzFkZGdmMGN4ejMxIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSByb2xlOnJlY3J1aXRlciAiLCJzdWIiOiJ1c3JfMDFrdHExeTFhYzhkZ3BrZmV6YmM4ZGdwa2YifZWsm6Z27qEKVRKX36fwwfXOB0H-9S-XtCBRkg-4gIcUPcIaSivXQs8jnKWT63dYqleTEWoqbPC7Wn5u7T8tPgo",
   "token_type": "Bearer",
-  "expires_in": 408702976,
+  "expires_in": 1800,
   "scope": "role:candidate role:recruiter ",
-  "user_id": "usr_01ktepy4f3fb8s32313gfb8s32",
-  "candidate_id": "can_01kteqq9erm4sa9w7z0em4sa9w",
-  "recruiter_id": "rcr_01kteqr9kj0f6rf25gg80f6rf2"
+  "user_id": "usr_01ktq1y1ac8dgpkfezbc8dgpkf"
 }
 ```
 
@@ -215,12 +211,12 @@ curl http://localhost:8888/users/me \
   "status": "success",
   "data": {
     "user": {
-      "id": "usr_01ktepy4f3fb8s32313gfb8s32",
+      "id": "usr_01ktq1y1ac8dgpkfezbc8dgpkf",
       "provider": "email",
       "email": "test@test.com",
       "full_name": "Test Tester",
-      "user_name": "silent_koala5c13",
-      "update_at": "2026-06-09T19:38:58Z"
+      "user_name": "brave_foxb6ea3a43",
+      "updated_at": "2026-06-09T20:42:09Z"
     }
   }
 }
@@ -247,14 +243,35 @@ curl -X PATCH http://localhost:8888/users/me \
   "status": "success",
   "data": {
     "user": {
-      "id": "usr_01ktepy4f3fb8s32313gfb8s32",
+      "id": "usr_01ktq1y1ac8dgpkfezbc8dgpkf",
       "provider": "email",
       "email": "test@test.com",
       "full_name": "Different Name",
       "user_name": "cool_tester",
-      "update_at": "2026-06-09T19:38:58Z"
+      "updated_at": "2026-06-09T21:14:42Z"
     }
   }
+}
+```
+
+### Delete my user data
+
+- Request:
+
+```sh
+curl -X DELETE http://localhost:8888/users/me \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -d '{
+    "password": "test"
+  }'
+```
+
+- Response:
+
+```json
+{
+  "status": "success"
 }
 ```
 
@@ -324,7 +341,7 @@ curl
 
 ## Features
 
-All available settings are demonstrated in [./.example.env](./.example.env).
+All currently available settings are demonstrated in [./.example.env](./.example.env).
 You can copy-paste them into your `.env` file or just use `export` command.
 
 ### Checklist
@@ -342,7 +359,7 @@ You can copy-paste them into your `.env` file or just use `export` command.
 air \
   --build.cmd "go build -o bin/api cmd/run.go" \
   --build.bin "./bin/api" \
-  --build.include_ext "go,db,sql,env" \
+  --build.include_ext "go,sql,env" \
   --misc.clean_on_exit true \
   --log.main_only true \
   --log.silent true \

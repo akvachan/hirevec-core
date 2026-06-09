@@ -493,6 +493,10 @@ func (v Vault) ParseRefreshToken(
 		nil,
 	)
 	if err != nil {
+		slog.Error(
+			"failed to parse refresh token",
+			"err", err,
+		)
 		return nil, err
 	}
 
@@ -535,8 +539,6 @@ type AccessToken struct {
 	ExpiresIn   uint32 `json:"expires_in"`
 	Scope       string `json:"scope"`
 	UserID      ULID   `json:"user_id"`
-	CandidateID ULID   `json:"candidate_id,omitempty"`
-	RecruiterID ULID   `json:"recruiter_id,omitempty"`
 }
 
 func (v Vault) CreateAccessToken(
@@ -588,8 +590,6 @@ func (v Vault) CreateAccessToken(
 		ExpiresIn:   uint32(v.AccessTokenExpiration.Seconds()),
 		Scope:       scope,
 		UserID:      userID,
-		CandidateID: candidateID,
-		RecruiterID: recruiterID,
 	}, nil
 }
 

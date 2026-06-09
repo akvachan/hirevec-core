@@ -30,19 +30,6 @@ Server uses coarse-grained role-based authorization (RBAC):
 Basic claims extraction and scope checking is handled by middleware.
 Handlers **still** need to make decisions whether to authorize user actions or not.
 
-## Rotating credentials
-
-Overview of required credentials when performing security-critical operations:
-
-| Operation                    | Implemented? | Route                        | E-mail | Password | E-mail Confirmation | Access Token | Refresh Token |
-| ---------------------------- | ------------ | ---------------------------- | ------ | -------- | ------------------- | ------------ | ------------- |
-| Change e-mail                | No           | `POST /auth/change-email`    | Yes    | Yes      | Yes                 | No           | No            |
-| Change password              | No           | `POST /auth/change-password` | No     | Yes      | No                  | Yes          | No            |
-| Forgot password              | No           | `POST /auth/forgot-password` | Yes    | No       | Yes                 | No           | No            |
-| Obtain refresh token (Login) | Yes          | `POST /auth/authorize`       | Yes    | Yes      | No                  | No           | No            |
-| Obtain access token          | Yes          | `POST /auth/token`           | No     | No       | No                  | No           | Yes           |
-| Delete user                  | Yes          | `DELETE /users/me`           | No     | Yes      | No                  | Yes          | No            |
-
 ## SSO (under development)
 
 The server will implement OAuth2.0 Authorization Code Flow via OIDC.
