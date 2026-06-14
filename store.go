@@ -112,14 +112,21 @@ func ConnectPostgres(c StoreConfig) (*sql.DB, error) {
 	return db, nil
 }
 
-var DefaultSQLitePath = ".db"
+var DefaultSQLiteConn = "file:.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 
 func ConnectSQLite() (*sql.DB, error) {
 	slog.Debug("connecting to SQLite")
-	db, err := sql.Open("sqlite", DefaultSQLitePath)
+	db, err := sql.Open("sqlite", DefaultSQLiteConn)
 	if err != nil {
 		return nil, err
 	}
+
+	var enabled int
+	err = db.QueryRow("PRAGMA foreign_keys").Scan(&enabled)
+	if err != nil {
+		return nil, err
+	}
+	slog.Debug("foreign keys", "enabled", enabled)
 
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(25)

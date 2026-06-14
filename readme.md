@@ -277,7 +277,7 @@ curl -X DELETE http://localhost:8888/users/me \
 
 ### Create a position
 
-If you have a recruiter bound to your user, you can create positions.
+If you have recruiter role, you can create positions.
 
 - Request
 
