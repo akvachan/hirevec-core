@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: Unlicense
 
+// Package hirevec implements core server and client.
 package hirevec
 
 import (
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"aidanwoods.dev/go-paseto"
@@ -118,7 +120,7 @@ type Vault struct {
 	VerifierExpiration     time.Duration
 }
 
-func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
+func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 	slog.Debug("initializing vault")
 
 	accessTokenParser := paseto.NewParser()
@@ -145,7 +147,7 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 			"failed to init symmetric key",
 			"err", err,
 		)
-		return nil, err
+		return Vault{}, err
 	}
 
 	ak, err := LoadOrCreateAsymmetricKey(c.AsymmetricKey)
@@ -154,7 +156,7 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 			"failed to init asymmetric key",
 			"err", err,
 		)
-		return nil, err
+		return Vault{}, err
 	}
 
 	var googleOIDCConfig *OIDCConfig
@@ -162,13 +164,13 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 		slog.Debug("connecting to SSO provider", "provider", "google")
 		googleProvider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
 		if err != nil {
-			return nil, err
+			return Vault{}, err
 		}
 		googleOIDCConfig = &OIDCConfig{
 			OAuth2Config: &oauth2.Config{
 				ClientID:     c.GoogleClientID,
 				ClientSecret: c.GoogleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, RouteOAuthCallback),
+				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, RouteOAuth2Callback),
 				Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 				Endpoint:     googleProvider.Endpoint(),
 			},
@@ -183,13 +185,13 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 		slog.Debug("connecting to SSO provider", "provider", "apple")
 		appleProvider, err := oidc.NewProvider(ctx, "https://appleid.apple.com")
 		if err != nil {
-			return nil, err
+			return Vault{}, err
 		}
 		appleOIDCConfig = &OIDCConfig{
 			OAuth2Config: &oauth2.Config{
 				ClientID:     c.AppleClientID,
 				ClientSecret: c.AppleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, RouteOAuthCallback),
+				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, RouteOAuth2Callback),
 				Scopes:       []string{oidc.ScopeOpenID, "name", "email"},
 				Endpoint:     appleProvider.Endpoint(),
 			},
@@ -226,7 +228,7 @@ func NewVault(ctx context.Context, c VaultConfig) (*Vault, error) {
 		VerifierExpiration:     DefaultVerifierExpiration,
 	}
 
-	return &vault, nil
+	return vault, nil
 }
 
 func (v Vault) CreateStateToken(provider Provider) (string, error) {
@@ -259,37 +261,33 @@ type StateTokenClaims struct {
 	CSRF     string   `json:"csrf"`
 }
 
-func (v Vault) ParseStateToken(raw string) (*StateTokenClaims, error) {
+func (v Vault) ParseStateToken(raw string) (StateTokenClaims, error) {
 	token, err := v.StateTokenParser.ParseV4Local(v.V4SymmetricKey, raw, nil)
 	if err != nil {
-		return nil, err
+		return StateTokenClaims{}, err
 	}
 
 	provider, err := token.GetString("provider")
 	if err != nil {
-		return nil, err
+		return StateTokenClaims{}, err
 	}
 	validProvider, err := StringToProvider(provider, DefaultProvider)
 	if err != nil {
-		return nil, ErrInvalidProvider
+		return StateTokenClaims{}, ErrInvalidProvider
 	}
 
 	csrf, err := token.GetString("csrf")
 	if err != nil {
-		return nil, err
+		return StateTokenClaims{}, err
 	}
 
-	return &StateTokenClaims{
+	return StateTokenClaims{
 		Provider: validProvider,
 		CSRF:     csrf,
 	}, nil
 }
 
-func (v Vault) CreateAuthCodeURL(
-	state string,
-	verifier string,
-	provider Provider,
-) (string, error) {
+func (v Vault) CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error) {
 	var config *oauth2.Config
 	switch provider {
 	case ProviderGoogle:
@@ -302,12 +300,9 @@ func (v Vault) CreateAuthCodeURL(
 	return config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), nil
 }
 
-func (v Vault) ExchangeGoogleCodeForIDToken(
-	ctx context.Context,
-	code string,
-	verifierCookie *http.Cookie,
-) (string, error) {
-	tok, err := v.GoogleOIDCConfig.OAuth2Config.Exchange(ctx,
+func (v Vault) ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
+	tok, err := v.GoogleOIDCConfig.OAuth2Config.Exchange(
+		ctx,
 		code,
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
@@ -323,12 +318,9 @@ func (v Vault) ExchangeGoogleCodeForIDToken(
 	return rawIDToken, nil
 }
 
-func (v Vault) ExchangeAppleCodeForIDToken(
-	ctx context.Context,
-	code string,
-	verifierCookie *http.Cookie,
-) (string, error) {
-	tok, err := v.AppleOIDCConfig.OAuth2Config.Exchange(ctx,
+func (v Vault) ExchangeAppleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
+	tok, err := v.AppleOIDCConfig.OAuth2Config.Exchange(
+		ctx,
 		code,
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
@@ -354,29 +346,24 @@ type GoogleClaims struct {
 	Picture       string `json:"picture"`
 }
 
-func (v Vault) VerifyAndParseGoogleIDToken(
-	ctx context.Context,
-	rawIDToken string,
-) (*User, error) {
+func (v Vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (User, error) {
 	idToken, err := v.GoogleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return nil, ErrInvalidIDToken
+		return User{}, ErrInvalidIDToken
 	}
 
 	var claims GoogleClaims
 	if err := idToken.Claims(&claims); err != nil {
-		return nil, ErrFailedParseClaims
+		return User{}, ErrFailedParseClaims
 	}
 	if !claims.EmailVerified {
-		return nil, ErrEmailNotVerified
+		return User{}, ErrEmailNotVerified
 	}
 
-	name, err := ValidateName(claims.Name)
-	if err != nil {
-		return nil, err
-	}
+	// TODO: Handler error here and handle error after the caller
+	name, _ := NormalizeAndValidateUserFullName(claims.Name)
 
-	return &User{
+	return User{
 		Provider:       ProviderGoogle,
 		ProviderUserID: claims.Sub,
 		Email:          claims.Email,
@@ -385,28 +372,37 @@ func (v Vault) VerifyAndParseGoogleIDToken(
 }
 
 type AppleClaims struct {
-	Sub            string `json:"sub"`
-	Email          string `json:"email"`
-	EmailVerified  string `json:"email_verified"`
-	IsPrivateEmail string `json:"is_private_email"`
+	Sub            string          `json:"sub"`
+	Email          string          `json:"email"`
+	EmailVerified  json.RawMessage `json:"email_verified"`
+	IsPrivateEmail string          `json:"is_private_email"`
 }
 
-func (v Vault) VerifyAndParseAppleIDToken(
-	ctx context.Context,
-	rawIDToken string,
-	userJSON string,
-) (*User, error) {
+func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (User, error) {
 	idToken, err := v.AppleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return nil, ErrInvalidIDToken
+		return User{}, ErrInvalidIDToken
 	}
 
 	var claims AppleClaims
 	if err := idToken.Claims(&claims); err != nil {
-		return nil, ErrFailedParseClaims
+		return User{}, ErrFailedParseClaims
 	}
 
-	var firstName, lastName, fullName string
+	var verified bool
+	if len(claims.EmailVerified) > 0 {
+		if err := json.Unmarshal(claims.EmailVerified, &verified); err != nil {
+			var verifiedStr string
+			if json.Unmarshal(claims.EmailVerified, &verifiedStr) == nil {
+				verified = (strings.ToLower(verifiedStr) == "true")
+			}
+		}
+	}
+	if !verified {
+		return User{}, ErrEmailNotVerified
+	}
+
+	var fullName string
 	if userJSON != "" {
 		var appleUser struct {
 			Name struct {
@@ -415,13 +411,13 @@ func (v Vault) VerifyAndParseAppleIDToken(
 			} `json:"name"`
 		}
 		if err := json.Unmarshal([]byte(userJSON), &appleUser); err == nil {
-			firstName = appleUser.Name.FirstName
-			lastName = appleUser.Name.LastName
-			fullName = fmt.Sprintf("%s %s", firstName, lastName)
+			rawName := fmt.Sprintf("%s %s", appleUser.Name.FirstName, appleUser.Name.LastName)
+			// TODO: Handle error here and handle error after the caller
+			fullName, _ = NormalizeAndValidateUserFullName(rawName)
 		}
 	}
 
-	return &User{
+	return User{
 		Provider:       ProviderApple,
 		ProviderUserID: claims.Sub,
 		Email:          claims.Email,
@@ -435,30 +431,28 @@ type AccessTokenClaims struct {
 	Roles    map[Role]ULID
 }
 
-func (v Vault) ParseAccessToken(
-	tokenString string,
-) (*AccessTokenClaims, error) {
+func (v Vault) ParseAccessToken(tokenString string) (AccessTokenClaims, error) {
 	parsedToken, err := v.AccessTokenParser.ParseV4Public(
 		v.V4AsymmetricPublicKey,
 		tokenString,
 		nil,
 	)
 	if err != nil {
-		return nil, err
+		return AccessTokenClaims{}, err
 	}
 
 	userID, err := parsedToken.GetSubject()
 	if err != nil {
-		return nil, err
+		return AccessTokenClaims{}, err
 	}
 
-	provider, err := parsedToken.GetString("provider")
+	stringProvider, err := parsedToken.GetString("provider")
 	if err != nil {
-		return nil, err
+		return AccessTokenClaims{}, err
 	}
-	validProvider, err := StringToProvider(provider, DefaultProvider)
+	provider, err := StringToProvider(stringProvider, DefaultProvider)
 	if err != nil {
-		return nil, ErrInvalidProvider
+		return AccessTokenClaims{}, ErrInvalidProvider
 	}
 
 	roles := make(map[Role]ULID, 3)
@@ -471,9 +465,9 @@ func (v Vault) ParseAccessToken(
 		roles[RoleCandidate] = ULID(candidateID)
 	}
 
-	return &AccessTokenClaims{
+	return AccessTokenClaims{
 		UserID:   ULID(userID),
-		Provider: validProvider,
+		Provider: provider,
 		Roles:    roles,
 	}, nil
 }
@@ -484,9 +478,7 @@ type RefreshTokenClaims struct {
 	JTI      ULID
 }
 
-func (v Vault) ParseRefreshToken(
-	tokenString string,
-) (*RefreshTokenClaims, error) {
+func (v Vault) ParseRefreshToken(tokenString string) (RefreshTokenClaims, error) {
 	parsedToken, err := v.RefreshTokenParser.ParseV4Local(
 		v.V4SymmetricKey,
 		tokenString,
@@ -497,31 +489,31 @@ func (v Vault) ParseRefreshToken(
 			"failed to parse refresh token",
 			"err", err,
 		)
-		return nil, err
+		return RefreshTokenClaims{}, err
 	}
 
 	userID, err := parsedToken.GetSubject()
 	if err != nil || userID == "" {
-		return nil, err
+		return RefreshTokenClaims{}, err
 	}
 
-	provider, err := parsedToken.GetString("provider")
+	stringProvider, err := parsedToken.GetString("provider")
 	if err != nil {
-		return nil, err
+		return RefreshTokenClaims{}, err
 	}
-	validProvider, err := StringToProvider(provider, DefaultProvider)
+	provider, err := StringToProvider(stringProvider, DefaultProvider)
 	if err != nil {
-		return nil, ErrInvalidProvider
+		return RefreshTokenClaims{}, ErrInvalidProvider
 	}
 
 	jti, err := parsedToken.GetJti()
 	if err != nil || jti == "" {
-		return nil, err
+		return RefreshTokenClaims{}, err
 	}
 
-	return &RefreshTokenClaims{
+	return RefreshTokenClaims{
 		UserID:   ULID(userID),
-		Provider: validProvider,
+		Provider: provider,
 		JTI:      ULID(jti),
 	}, nil
 }
@@ -541,11 +533,7 @@ type AccessToken struct {
 	UserID      ULID   `json:"user_id"`
 }
 
-func (v Vault) CreateAccessToken(
-	userID ULID,
-	provider Provider,
-	roles map[Role]ULID,
-) (*AccessToken, error) {
+func (v Vault) CreateAccessToken(userID ULID, provider Provider, roles map[Role]ULID) (AccessToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
@@ -557,38 +545,33 @@ func (v Vault) CreateAccessToken(
 	token.SetIssuedAt(now)
 
 	if err := token.Set("provider", provider); err != nil {
-		return nil, err
+		return AccessToken{}, err
 	}
 
-	var scope string
-	var scopeBuilder strings.Builder
+	var scopes []string
 
-	candidateID, ok := roles[RoleCandidate]
-	if ok {
-		if err := token.Set("candidate_id", candidateID); err != nil {
-			return nil, err
+	if _, ok := roles[RoleCandidate]; ok {
+		if err := token.Set("candidate_id", roles[RoleCandidate]); err != nil {
+			return AccessToken{}, err
 		}
-		scopeBuilder.Write([]byte(ScopeRoleCandidate))
-		scopeBuilder.WriteString(" ")
+		scopes = append(scopes, string(ScopeRoleCandidate))
 	}
 
-	recruiterID, ok := roles[RoleRecruiter]
-	if ok {
-		if err := token.Set("recruiter_id", recruiterID); err != nil {
-			return nil, err
+	if _, ok := roles[RoleRecruiter]; ok {
+		if err := token.Set("recruiter_id", roles[RoleRecruiter]); err != nil {
+			return AccessToken{}, err
 		}
-		scopeBuilder.Write([]byte(ScopeRoleRecruiter))
-		scopeBuilder.WriteString(" ")
+		scopes = append(scopes, string(ScopeRoleRecruiter))
 	}
 
-	scope = scopeBuilder.String()
-	token.SetString("scope", scope)
+	scopeStr := strings.Join(scopes, " ")
+	token.SetString("scope", scopeStr)
 
-	return &AccessToken{
+	return AccessToken{
 		AccessToken: token.V4Sign(v.V4AsymmetricSecretKey, nil),
 		TokenType:   "Bearer",
 		ExpiresIn:   uint32(v.AccessTokenExpiration.Seconds()),
-		Scope:       scope,
+		Scope:       scopeStr,
 		UserID:      userID,
 	}, nil
 }
@@ -599,11 +582,7 @@ type RefreshToken struct {
 	UserID       ULID   `json:"user_id"`
 }
 
-func (v Vault) CreateRefreshToken(
-	userID ULID,
-	provider Provider,
-	jti ULID,
-) (*RefreshToken, error) {
+func (v Vault) CreateRefreshToken(userID ULID, provider Provider, jti ULID) (RefreshToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
@@ -616,10 +595,10 @@ func (v Vault) CreateRefreshToken(
 	token.SetJti(string(jti))
 
 	if err := token.Set("provider", provider); err != nil {
-		return nil, err
+		return RefreshToken{}, err
 	}
 
-	return &RefreshToken{
+	return RefreshToken{
 		RefreshToken: token.V4Encrypt(v.V4SymmetricKey, nil),
 		ExpiresIn:    uint32(v.RefreshTokenExpiration.Seconds()),
 		UserID:       userID,
@@ -635,23 +614,18 @@ type TokenPair struct {
 	UserID       ULID   `json:"user_id"`
 }
 
-func (v Vault) CreateTokenPair(
-	userID ULID,
-	provider Provider,
-	jti ULID,
-	roles map[Role]ULID,
-) (*TokenPair, error) {
+func (v Vault) CreateTokenPair(userID ULID, provider Provider, jti ULID, roles map[Role]ULID) (TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, roles)
 	if err != nil {
-		return nil, err
+		return TokenPair{}, err
 	}
 
 	refreshToken, err := v.CreateRefreshToken(userID, provider, jti)
 	if err != nil {
-		return nil, err
+		return TokenPair{}, err
 	}
 
-	return &TokenPair{
+	return TokenPair{
 		AccessToken:  accessToken.AccessToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    uint32(v.AccessTokenExpiration.Seconds()),
@@ -663,13 +637,18 @@ func (v Vault) CreateTokenPair(
 
 const envFile = ".env"
 
+var envFileLock sync.Mutex
+
 func UpsertEnvKey(filename string, key string, value string) error {
+	envFileLock.Lock()
+	defer envFileLock.Unlock()
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return err
 		}
-		return os.WriteFile(filename, []byte(key+"="+value+"\n"), 0o644)
+		return os.WriteFile(filename, []byte(key+"="+value+"\n"), 0o600)
 	}
 
 	found := false
@@ -693,7 +672,7 @@ func UpsertEnvKey(filename string, key string, value string) error {
 		output += "\n"
 	}
 
-	return os.WriteFile(filename, []byte(output), 0o644)
+	return os.WriteFile(filename, []byte(output), 0o600)
 }
 
 func LoadOrCreateSymmetricKey(val string) (paseto.V4SymmetricKey, error) {
@@ -717,9 +696,7 @@ func LoadOrCreateSymmetricKey(val string) (paseto.V4SymmetricKey, error) {
 	return key, nil
 }
 
-func LoadOrCreateAsymmetricKey(
-	val string,
-) (paseto.V4AsymmetricSecretKey, error) {
+func LoadOrCreateAsymmetricKey(val string) (paseto.V4AsymmetricSecretKey, error) {
 	if val != "" {
 		decoded, err := hex.DecodeString(val)
 		if err != nil {

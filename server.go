@@ -1,15 +1,16 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: Unlicense
 
+// Package hirevec implements core server and client.
 package hirevec
 
 import (
-	"bufio"
 	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,45 +20,52 @@ import (
 	"net"
 	"net/http"
 	"net/mail"
-	"os"
-	"path"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"golang.org/x/oauth2"
 )
 
 var (
-	ErrTextForbiddenChars            = errors.New("text contains forbidden characters")
-	ErrTextTooLong                   = errors.New("text too long")
-	ErrTextTooShort                  = errors.New("text too short")
-	ErrEmailNotVerified              = errors.New("email not verified")
-	ErrEmbeddingsCountMismatch       = errors.New("mismatched IDs and embeddings count")
-	ErrExtraDataDecoded              = errors.New("extra data decoded")
-	ErrFailedEncodeEmbeddingsRequest = errors.New("failed to encode embeddings request")
-	ErrFailedShutdownServer          = errors.New("failed to shutdown server")
+	ErrTextForbiddenChars   = errors.New("text contains forbidden characters")
+	ErrTextTooLong          = errors.New("text too long")
+	ErrTextTooShort         = errors.New("text too short")
+	ErrEmailNotVerified     = errors.New("email not verified")
+	ErrExtraDataDecoded     = errors.New("extra data decoded")
+	ErrFailedShutdownServer = errors.New("failed to shutdown server")
+	ErrPasswordHasNoLower   = errors.New("password has no lower letter")
+	ErrPasswordHasNoUpper   = errors.New("password has no upper letter")
+	ErrPasswordHasNoDigit   = errors.New("password has no digit")
+	ErrPasswordHasNoSpecial = errors.New("password has no special character")
+	ErrPositionTitleHasURL  = errors.New("position title must not contain URLs")
 )
 
-type ServerConfig struct {
-	ServerBaseURL       string
-	RequestReadTimeout  time.Duration
-	RequestWriteTimeout time.Duration
-	GracePeriod         time.Duration
-	UseGoogleSSO        bool
-	UseAppleSSO         bool
-	TEIBaseURL          string
-	TEIAPIKey           string
-	EmbeddingsModel     string
-	RerankerModel       string
-	UseEmbeddings       bool
-	UseReranker         bool
+type APIConfig struct {
+	ServerBaseURL               string
+	RequestReadTimeout          time.Duration
+	RequestWriteTimeout         time.Duration
+	GracePeriod                 time.Duration
+	UseGoogleSSO                bool
+	UseAppleSSO                 bool
+	TEIBaseURL                  string
+	TEIAPIKey                   string
+	EmbeddingsModel             string
+	RerankerModel               string
+	UseEmbeddings               bool
+	UseReranker                 bool
+	EmbeddingsJobFrequency      time.Duration
+	RecommendationsJobFrequency time.Duration
 }
 
 type EmbeddingEntity struct {
 	Embedding []float32 `json:"embedding"`
+}
+
+type EmbeddingsResponse struct {
+	Data []EmbeddingEntity `json:"data"`
 }
 
 type EmbeddingsRequest struct {
@@ -65,43 +73,46 @@ type EmbeddingsRequest struct {
 	Model string   `json:"model"`
 }
 
-type EmbeddingsResponse struct {
-	Data []EmbeddingEntity `json:"data"`
-}
-
-func CreateEmbeddings(c AIConfig, input []string) ([]EmbeddingEntity, error) {
-	reqBody, err := json.Marshal(EmbeddingsRequest{
+func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, error) {
+	requestBody, err := json.Marshal(EmbeddingsRequest{
 		Input: input,
-		Model: c.EmbeddingsModel,
+		Model: aiConfig.EmbeddingsModel,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	reader := bytes.NewReader(reqBody)
-	req, err := http.NewRequest(http.MethodPost, c.TEIBaseURL, reader)
+	reader := bytes.NewReader(requestBody)
+	request, err := http.NewRequest(http.MethodPost, aiConfig.TEIBaseURL, reader)
 	if err != nil {
 		return nil, err
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.TEIAPIKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+aiConfig.TEIAPIKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			slog.Error(
+				"failed to close response body",
+				"err", err,
+			)
+		}
+	}()
 
-	if resp.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf(
 			"embedding endpoint returned %d",
-			resp.StatusCode,
+			response.StatusCode,
 		)
 	}
 
 	var parsed EmbeddingsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
 		return nil, err
 	}
 
@@ -116,150 +127,20 @@ func CreateEmbeddings(c AIConfig, input []string) ([]EmbeddingEntity, error) {
 	return parsed.Data, nil
 }
 
-var (
-	DefaultStopCharsPath = path.Join("data", "stopchars.txt")
-	DefaultStopWordsPath = path.Join("data", "stopwords.txt")
-	DefaultLemmasPath    = path.Join("data", "lemmas.csv")
-)
+//go:embed assets/*
+var EmbeddedAssets embed.FS
 
 var (
-	DefaultStopChars map[rune]bool     = make(map[rune]bool)
-	DefaultStopWords map[string]bool   = make(map[string]bool)
-	DefaultLemmas    map[string]string = make(map[string]string)
+	RegexHTMLTag = regexp.MustCompile(`(?s)<[^>]*>`)
+	RegexJSTag   = regexp.MustCompile(`(?is)<script.*?>.*?</script>`)
+	RegexSQL     = regexp.MustCompile(`(?i)\b(select|insert|update|delete|drop|truncate|alter)\b`)
 )
-
-func LoadStopChars() error {
-	slog.Debug("loading stop characters")
-
-	f, err := os.Open(DefaultStopCharsPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	if scanner.Scan() {
-		line := scanner.Text()
-		for _, r := range line {
-			if r != '\n' && r != '\r' {
-				DefaultStopChars[r] = true
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func LoadStopWords() error {
-	slog.Debug("loading stop words")
-
-	f, err := os.Open(DefaultStopWordsPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		word := strings.TrimSpace(scanner.Text())
-		DefaultStopWords[word] = true
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func LoadLemmas() error {
-	slog.Debug("loading lemmas")
-
-	f, err := os.Open(DefaultLemmasPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		parts := strings.SplitN(line, ",", 2)
-		word := strings.TrimSpace(parts[0])
-		lemma := strings.TrimSpace(parts[1])
-		DefaultLemmas[word] = lemma
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func LoadLanguageData() error {
-	if err := LoadStopChars(); err != nil {
-		return err
-	}
-	if err := LoadStopWords(); err != nil {
-		return err
-	}
-	if err := LoadLemmas(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func LoadBM25Cache() error {
-	return nil
-}
-
-var (
-	HTMLTagRe   = regexp.MustCompile(`(?s)<[^>]*>`)
-	ScriptTagRe = regexp.MustCompile(`(?is)<script.*?>.*?</script>`)
-	SQLRe       = regexp.MustCompile(`(?i)\b(select|insert|update|delete|drop|truncate|alter)\b`)
-)
-
-func PreprocessText(text string) []string {
-	text = strings.ToLower(text)
-	text = ScriptTagRe.ReplaceAllString(text, " ")
-	text = HTMLTagRe.ReplaceAllString(text, " ")
-	text = SQLRe.ReplaceAllString(text, " ")
-	text += " "
-
-	var result []string
-	token := make([]rune, 0, 32)
-
-	for _, r := range text {
-		if DefaultStopChars[r] || unicode.IsSpace(r) {
-			if len(token) > 0 {
-				word := string(token)
-				if !DefaultStopWords[word] {
-					if lemma, ok := DefaultLemmas[word]; ok {
-						word = lemma
-					}
-					result = append(result, word)
-				}
-				token = token[:0] // reset token
-			}
-			continue
-		}
-
-		token = append(token, r)
-	}
-
-	return result
-}
 
 const DefaultEmbeddingsBatchSize = 64
 
-func RunEmbeddingsJob(c AIConfig, s Store) error {
+func (a *API) RunEmbeddingsJob(c AIConfig) error {
 	// TODO: test this store method, rethink it once more
-	ids, texts, err := s.FetchPendingEmbeddingsMetadata(DefaultEmbeddingsBatchSize)
+	ids, texts, err := a.Store.FetchPendingEmbeddingsMetadata(DefaultEmbeddingsBatchSize)
 	if err != nil || len(ids) == 0 {
 		return err
 	}
@@ -268,23 +149,47 @@ func RunEmbeddingsJob(c AIConfig, s Store) error {
 	batchOut, err := CreateEmbeddings(c, texts)
 	if err != nil {
 		// TODO: test this store method, rethink it once more
-		return s.MarkEmbeddingsStatus(ids, EmbeddingStatusPending)
+		return a.Store.MarkEmbeddingsStatus(ids, EmbeddingStatusPending)
 	}
 
-	tx, err := s.db.Begin()
+	tx, err := a.Store.DB.Begin()
 	if err != nil {
 		return err
 	}
 
 	// TODO: test this store method, rethink it once more
-	if err := s.UpsertEmbeddings(tx, ids, batchOut); err != nil {
-		tx.Rollback()
+	if err := a.Store.UpsertEmbeddingsTx(tx, ids, batchOut); err != nil {
+		if err := tx.Rollback(); err != nil {
+			slog.Error(
+				"failed to rollback transaction",
+				"method", "UpsertEmbeddingsTx",
+				"err", err,
+			)
+			return err
+		}
+		slog.Error(
+			"failed to upsert embeddings",
+			"method", "UpsertEmbeddingsTx",
+			"err", err,
+		)
 		return err
 	}
 
 	// TODO: test this store method, rethink it once more
-	if err := s.MarkEmbeddingsStatusTx(tx, ids, EmbeddingStatusDone); err != nil {
-		tx.Rollback()
+	if err := a.Store.MarkEmbeddingsStatusTx(tx, ids, EmbeddingStatusDone); err != nil {
+		if err := tx.Rollback(); err != nil {
+			slog.Error(
+				"failed to rollback transaction",
+				"method", "MarkEmbeddingsStatusTx",
+				"err", err,
+			)
+			return err
+		}
+		slog.Error(
+			"failed to mark ebeddings status",
+			"method", "MarkEmbeddingsStatusTx",
+			"err", err,
+		)
 		return err
 	}
 
@@ -300,62 +205,63 @@ type AIConfig struct {
 	RerankerModel   string
 }
 
-func Rerank(
-	c AIConfig,
-	candidate string,
-	positions []ULID,
-) ([]ULID, error) {
+func Rerank(c AIConfig, candidateID ULID, positions []ULID) ([]ULID, error) {
 	return nil, nil
 }
 
 const (
 	DefaultCandidatesBatchSize       = 32
 	DefaultRecommendationsDailyLimit = 32
+	DefaultTopPositions              = 128
 )
 
-const DefaultNearestNeighbors = 128
-
-func RunRecommendationsJob(c AIConfig, s Store) error {
-	// TODO: fix the reference table
-	candidateIDs, candidateTexts, err := s.GetCandidates(
+func (a *API) RunRecommendationsJob(c AIConfig) error {
+	candidateIDs, err := a.Store.GetCandidates(
 		DefaultCandidatesBatchSize,
 		DefaultRecommendationsJobFrequency,
 	)
 	if err != nil {
 		return err
 	}
+	if len(candidateIDs) == 0 {
+		slog.Warn("candidates list is empty")
+	}
 
 	for i := range len(candidateIDs) {
 		var positionIDs []ULID
 
 		if c.UseEmbeddings {
-			// TODO: review this store function
-			positionIDs, err = s.GetPositionsForCandidateWithEmbedding(
-				candidateIDs[i],
-				DefaultNearestNeighbors,
-			)
+			positionIDs, err = a.Store.GetPositionsForCandidateViaEmbeddings(candidateIDs[i], DefaultTopPositions)
 			if err != nil {
 				slog.Error(
-					"failed to find similar positions using embeddings",
+					"failed to find similar positions via embeddings",
 					"candidateID", candidateIDs[i],
 					"err", err,
 				)
 				continue
 			}
 		} else {
-			// use BM25
+			positionIDs, err = a.Store.GetPositionsForCandidateViaFTS(candidateIDs[i], DefaultTopPositions)
+			if err != nil {
+				slog.Error(
+					"failed to find similar positions via FTS",
+					"candidateID", candidateIDs[i],
+					"err", err,
+				)
+				continue
+			}
 		}
 
 		if len(positionIDs) == 0 {
-			slog.Debug(
-				"failed to find suitable positions",
+			slog.Warn(
+				"positions list is empty",
 				"candidateID", candidateIDs[i],
 			)
 			continue
 		}
 
 		if c.UseReranker {
-			positionIDs, err = Rerank(c, candidateTexts[i], positionIDs)
+			positionIDs, err = Rerank(c, candidateIDs[i], positionIDs)
 			if err != nil {
 				slog.Error(
 					"failed to rerank",
@@ -380,7 +286,7 @@ func RunRecommendationsJob(c AIConfig, s Store) error {
 			}
 		}
 
-		if err := s.CreateRecommendations(recommendations); err != nil {
+		if err := a.Store.CreateRecommendations(recommendations); err != nil {
 			return err
 		}
 	}
@@ -388,92 +294,45 @@ func RunRecommendationsJob(c AIConfig, s Store) error {
 	return nil
 }
 
-const (
-	DefaultEmbeddingsJobFrequency      = 1 * time.Hour
-	DefaultRecommendationsJobFrequency = 24 * time.Hour
-)
-
-func RunServer(ctx context.Context, c ServerConfig, s Store, v Vault) error {
-	server, err := NewServer(ctx, c, s, v)
-	if err != nil {
-		return err
-	}
-
-	slog.Debug("creating listener", "addr", server.Addr)
-	listener, err := net.Listen("tcp", server.Addr)
-	if err != nil {
-		return err
-	}
-
-	slog.Debug("starting server", "addr", server.Addr)
-	errCh := make(chan error, 1)
-	go func() {
-		if err := server.Serve(listener); err != nil &&
-			!errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-	slog.Info("server ready", "addr", server.Addr)
-
-	if err := LoadLanguageData(); err != nil {
-		return err
-	}
-
-	if err := LoadBM25Cache(); err != nil {
-		return err
-	}
-
-	aiConfig := AIConfig{
-		UseEmbeddings:   c.UseEmbeddings,
-		UseReranker:     c.UseReranker,
-		TEIBaseURL:      c.TEIBaseURL,
-		TEIAPIKey:       c.TEIAPIKey,
-		EmbeddingsModel: c.EmbeddingsModel,
-		RerankerModel:   c.RerankerModel,
-	}
-
-	if c.UseEmbeddings {
-		go func() {
-			for range time.Tick(DefaultEmbeddingsJobFrequency) {
-				slog.Info("running embeddings job")
-				RunEmbeddingsJob(aiConfig, s)
-			}
-		}()
-	}
-
-	go func() {
-		for range time.Tick(DefaultRecommendationsJobFrequency) {
-			slog.Info("running recommendations job")
-			RunRecommendationsJob(aiConfig, s)
-		}
-	}()
-
-	return WaitAndShutdown(ctx, server, errCh, c.GracePeriod)
+type API struct {
+	Store  Store
+	Vault  Vault
+	Server http.Server
+	Mux    *http.ServeMux
 }
 
-func NewServer(
-	ctx context.Context,
-	c ServerConfig,
-	s Store,
-	v Vault,
-) (*http.Server, error) {
+const (
+	DefaultRequestReadTimeout  = 1000 * time.Millisecond
+	DefaultRequestWriteTimeout = 1000 * time.Millisecond
+	DefaultGracePeriod         = 5000 * time.Millisecond
+)
+
+func NewAPI(ctx context.Context, c APIConfig, s Store, v Vault) *API {
 	slog.Debug("initializing server")
-	return &http.Server{
+
+	api := API{
+		Store: s,
+		Vault: v,
+	}
+
+	localMux := http.NewServeMux()
+	api.Mux = localMux
+
+	api.Server = http.Server{
 		Addr:         c.ServerBaseURL,
 		ReadTimeout:  c.RequestReadTimeout,
 		WriteTimeout: c.RequestWriteTimeout,
-		Handler:      ServeMux(s, v),
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
-	}, nil
+		Handler:      localMux,
+	}
+
+	api.RegisterRoutes()
+
+	return &api
 }
 
-func WaitAndShutdown(
-	ctx context.Context,
-	server *http.Server,
-	errCh chan error,
-	gracePeriod time.Duration,
-) error {
+func (a *API) WaitAndShutdown(ctx context.Context, errCh chan error, gracePeriod time.Duration) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
@@ -488,12 +347,17 @@ func WaitAndShutdown(
 		"starting graceful shutdown",
 		"timeout", gracePeriod,
 	)
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := a.Server.Shutdown(shutdownCtx); err != nil {
 		slog.Error(
 			"failed to gracefully shutdown, forcing close",
 			"err", err,
 		)
-		server.Close()
+		if err := a.Server.Close(); err != nil {
+			slog.Error(
+				"failed to force close server",
+				"err", err,
+			)
+		}
 		return ErrFailedShutdownServer
 	}
 	slog.Info("HTTP server shutdown complete")
@@ -501,12 +365,85 @@ func WaitAndShutdown(
 	return nil
 }
 
+const (
+	DefaultEmbeddingsJobFrequency      = 1 * time.Hour
+	DefaultRecommendationsJobFrequency = 24 * time.Hour
+)
+
+func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
+	api := NewAPI(ctx, c, s, v)
+
+	slog.Debug(
+		"creating listener",
+		"addr", api.Server.Addr,
+	)
+	listener, err := net.Listen("tcp", api.Server.Addr)
+	if err != nil {
+		return err
+	}
+
+	slog.Debug(
+		"starting server",
+		"addr", api.Server.Addr,
+	)
+	errCh := make(chan error, 1)
+	go func() {
+		if err := api.Server.Serve(listener); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+	slog.Info("server ready", "addr", api.Server.Addr)
+
+	aiConfig := AIConfig{
+		UseEmbeddings:   c.UseEmbeddings,
+		UseReranker:     c.UseReranker,
+		TEIBaseURL:      c.TEIBaseURL,
+		TEIAPIKey:       c.TEIAPIKey,
+		EmbeddingsModel: c.EmbeddingsModel,
+		RerankerModel:   c.RerankerModel,
+	}
+
+	if c.UseEmbeddings {
+		go func() {
+			for range time.Tick(c.EmbeddingsJobFrequency) {
+				slog.Info("running embeddings job")
+				if err := api.RunEmbeddingsJob(aiConfig); err != nil {
+					slog.Error(
+						"failed to run embeddings job",
+						"err", err,
+					)
+				}
+			}
+		}()
+	}
+
+	go func() {
+		for range time.Tick(c.RecommendationsJobFrequency) {
+			slog.Info("running recommendations job")
+			if err := api.RunRecommendationsJob(aiConfig); err != nil {
+				slog.Error(
+					"failed to run recommendations job",
+					"err", err,
+				)
+			}
+		}
+	}()
+
+	if err := api.WaitAndShutdown(ctx, errCh, c.GracePeriod); err != nil {
+		slog.Error(
+			"failed to wait and shutdown",
+			"err", err,
+		)
+		return err
+	}
+
+	return nil
+}
+
 type ContextKey string
 
-const (
-	ContextKeyUserID ContextKey = "user_id"
-	ContextKeyClaims ContextKey = "claims"
-)
+const ContextKeyClaims ContextKey = "claims"
 
 type ResponseWriter struct {
 	http.ResponseWriter
@@ -520,15 +457,15 @@ func (rw *ResponseWriter) WriteHeader(code int) {
 
 type Middleware func(http.HandlerFunc) http.HandlerFunc
 
-func Chain(handl http.HandlerFunc, mdws ...Middleware) http.HandlerFunc {
-	wrapped := handl
-	for i := len(mdws) - 1; i >= 0; i-- {
-		wrapped = mdws[i](wrapped)
+func MiddlewareChain(handler http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
+	wrapped := handler
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		wrapped = middlewares[i](wrapped)
 	}
 	return wrapped
 }
 
-func PanicRecoverer(next http.HandlerFunc) http.HandlerFunc {
+func (a *API) MiddlewarePanicRecovery(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -539,7 +476,12 @@ func PanicRecoverer(next http.HandlerFunc) http.HandlerFunc {
 					"path", r.URL.Path,
 				)
 
-				Error(w, "internal server error", http.StatusInternalServerError)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
 			}
 		}()
 
@@ -547,8 +489,8 @@ func PanicRecoverer(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func GetClaims(r *http.Request) (*AccessTokenClaims, bool) {
-	claims, ok := r.Context().Value(ContextKeyClaims).(*AccessTokenClaims)
+func GetClaims(r *http.Request) (AccessTokenClaims, bool) {
+	claims, ok := r.Context().Value(ContextKeyClaims).(AccessTokenClaims)
 	return claims, ok
 }
 
@@ -570,20 +512,100 @@ func GetPagination(r *http.Request) Page {
 	return p
 }
 
-func Authentication(v Vault, roles map[Role]bool) Middleware {
+// OAuth2ErrorCode represents a standardized OAuth 2.0 error code used to identify the reason a request failed.
+// See https://www.rfc-editor.org/info/rfc6749.
+type OAuth2ErrorCode string
+
+const (
+	// OAuth2InvalidRequest indicates that the request is malformed, missing required parameters, or otherwise invalid.
+	OAuth2InvalidRequest OAuth2ErrorCode = "invalid_request"
+
+	// OAuth2InvalidGrant indicates that the provided authorization grant, refresh token, or credentials are invalid or expired.
+	OAuth2InvalidGrant OAuth2ErrorCode = "invalid_grant"
+
+	// OAuth2InvalidClient indicates that client authentication failed or the client credentials are invalid.
+	OAuth2InvalidClient OAuth2ErrorCode = "invalid_client"
+
+	// OAuth2UnauthorizedClient indicates that the authenticated client is not permitted to use the requested grant type.
+	OAuth2UnauthorizedClient OAuth2ErrorCode = "unauthorized_client"
+
+	// OAuth2UnsupportedGrantType indicates that the authorization server does not support the requested grant type.
+	OAuth2UnsupportedGrantType OAuth2ErrorCode = "unsupported_grant_type"
+)
+
+// OAuth2ErrorResponse represents a standard OAuth 2.0 error response returned by the authorization server.
+type OAuth2ErrorResponse struct {
+	// Error contains the OAuth 2.0 error code describing the failure.
+	Error OAuth2ErrorCode `json:"error"`
+
+	// ErrorDescription provides a human-readable explanation of the error.
+	ErrorDescription string `json:"error_description,omitempty"`
+
+	// ErrorURI provides a URL to documentation with additional details about the error.
+	ErrorURI string `json:"error_uri,omitempty"`
+}
+
+func OAuth2AccessToken(w http.ResponseWriter, accessToken AccessToken) {
+	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(accessToken); err != nil {
+		slog.Error("failed to encode OAuth2 access token", "err", err)
+	}
+}
+
+func OAuth2TokenPair(w http.ResponseWriter, tokenPair TokenPair) {
+	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(tokenPair); err != nil {
+		slog.Error("failed to encode OAuth2 token pair", "err", err)
+	}
+}
+
+func OAuth2Error(w http.ResponseWriter, code OAuth2ErrorCode, description string) {
+	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.WriteHeader(http.StatusBadRequest)
+	if err := json.NewEncoder(w).Encode(OAuth2ErrorResponse{
+		Error:            code,
+		ErrorDescription: description,
+	}); err != nil {
+		slog.Error("failed to encode OAuth2 token pair", "err", err)
+	}
+}
+
+func OAuth2Unauthorized(w http.ResponseWriter, code OAuth2ErrorCode, description string) {
+	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	w.WriteHeader(http.StatusUnauthorized)
+	if err := json.NewEncoder(w).Encode(OAuth2ErrorResponse{
+		Error:            code,
+		ErrorDescription: description,
+	}); err != nil {
+		slog.Error("failed to encode OAuth2 token pair", "err", err)
+	}
+}
+
+func (a *API) MiddlewareAuthentication(roles map[Role]bool) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 
 			bearer, found := strings.CutPrefix(authHeader, "Bearer ")
 			if !found || bearer == "" {
-				Unauthorized(w, AuthInvalidClient, "Bearer token is required")
+				OAuth2Unauthorized(w, OAuth2InvalidClient, "Bearer token is required")
 				return
 			}
 
-			claims, err := v.ParseAccessToken(bearer)
+			claims, err := a.Vault.ParseAccessToken(bearer)
 			if err != nil {
-				AuthError(w, AuthInvalidGrant, "invalid access token")
+				OAuth2Error(w, OAuth2InvalidGrant, "invalid access token")
 				return
 			}
 
@@ -596,35 +618,32 @@ func Authentication(v Vault, roles map[Role]bool) Middleware {
 					}
 				}
 				if !authorized {
-					AuthError(w, AuthInvalidGrant, "unauthorized")
+					OAuth2Error(w, OAuth2InvalidGrant, "unauthorized")
 					return
 				}
 			}
 
-			ctx := context.WithValue(r.Context(), ContextKeyUserID, claims.UserID)
-			ctx = context.WithValue(ctx, ContextKeyClaims, claims)
-
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ContextKeyClaims, claims)))
 		}
 	}
 }
 
-func Logger(next http.HandlerFunc) http.HandlerFunc {
+func (a *API) MiddlewareLogging(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		rec := &ResponseWriter{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
+		responseWriter := &ResponseWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(responseWriter, r)
 		slog.Info(
 			"request",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"status", rec.status,
+			"status", responseWriter.status,
 			"duration", time.Since(start),
 		)
 	}
 }
 
-func MaxBytesLimiter(next http.HandlerFunc) http.HandlerFunc {
+func (a *API) MiddlewareMaxBytesLimit(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, 1_000_000)
 		next.ServeHTTP(w, r)
@@ -643,392 +662,313 @@ const (
 type RouteConfig struct {
 	Method  Method
 	Handler http.HandlerFunc
-	Routes  []Route
+	Route   Route
 	Roles   []Role
 }
 
-func PublicRoute(c RouteConfig) {
-	handler := Chain(
+func (a *API) PublicRoute(c RouteConfig) {
+	handler := MiddlewareChain(
 		c.Handler,
-		Logger,
-		PanicRecoverer,
-		MaxBytesLimiter,
+		a.MiddlewareLogging,
+		a.MiddlewarePanicRecovery,
+		a.MiddlewareMaxBytesLimit,
 	)
 
-	for _, route := range c.Routes {
-		DefaultServeMux.Handle(
-			fmt.Sprintf("%s %s", c.Method, route),
-			handler,
-		)
-	}
+	a.Mux.Handle(
+		fmt.Sprintf("%s %s", c.Method, c.Route),
+		handler,
+	)
 }
 
-func ProtectedRoute(c RouteConfig, v Vault) {
+func (a *API) ProtectedRoute(c RouteConfig) {
 	rolesMap := make(map[Role]bool)
 	for _, role := range c.Roles {
 		rolesMap[role] = true
 	}
 
-	handler := Chain(
+	handler := MiddlewareChain(
 		c.Handler,
-		Logger,
-		PanicRecoverer,
-		MaxBytesLimiter,
-		Authentication(v, rolesMap),
+		a.MiddlewareLogging,
+		a.MiddlewarePanicRecovery,
+		a.MiddlewareMaxBytesLimit,
+		a.MiddlewareAuthentication(rolesMap),
 	)
 
-	for _, route := range c.Routes {
-		DefaultServeMux.Handle(
-			fmt.Sprintf("%s %s", c.Method, route),
-			handler,
-		)
-	}
+	a.Mux.Handle(
+		fmt.Sprintf("%s %s", c.Method, c.Route),
+		handler,
+	)
 }
 
 type Route string
 
 // Routes
 const (
-	// Unversioned (stable) routes
-	RouteHealth        Route = "/health"
-	RouteAccessToken   Route = "/auth/token"
-	RouteAuthorize     Route = "/auth/authorize"
-	RouteOAuthCallback Route = "/auth/callback"
-
-	// Versioned routes
-	RouteV1Users             Route = "/v1/users"
-	RouteV1UsersMe           Route = "/v1/users/me"
-	RouteV1Candidates        Route = "/v1/candidates"
-	RouteV1Recruiters        Route = "/v1/recruiters"
-	RouteV1MeRecommendations Route = "/v1/me/recommendations"
-	RouteV1MeReactions       Route = "/v1/me/reactions"
-	RouteV1MeMatches         Route = "/v1/me/matches"
-	RouteV1MeReaction        Route = "/v1/me/recommendations/{id}/reaction"
-
-	// Latest version (default) routes
-	RouteUsers             Route = "/users"
-	RouteUsersMe           Route = "/users/me"
-	RouteCandidates        Route = "/candidates"
-	RouteRecruiters        Route = "/recruiters"
-	RouteMeRecommendations Route = "/me/recommendations"
-	RouteMeReactions       Route = "/me/reactions"
-	RouteMeMatches         Route = "/me/matches"
-	RouteMeReaction        Route = "/me/recommendations/{id}/reaction"
+	RouteHealth            Route = "/health"
+	RouteOAuth2AccessToken Route = "/oauth2/token"
+	RouteOAuth2Authorize   Route = "/oauth2/authorize"
+	RouteOAuth2Callback    Route = "/oauth2/callback"
 )
-
-var DefaultServeMux = http.NewServeMux()
-
-func ServeMux(s Store, v Vault) http.Handler {
-	slog.Debug("registering routes")
-
-	PublicRoute(RouteConfig{
-		Method:  MethodGet,
-		Routes:  []Route{RouteHealth},
-		Handler: Health,
-	})
-
-	PublicRoute(RouteConfig{
-		Method:  MethodPost,
-		Routes:  []Route{RouteAuthorize},
-		Handler: HandlerAuthorize(s, v),
-	})
-
-	PublicRoute(RouteConfig{
-		Method:  MethodGet,
-		Routes:  []Route{RouteAuthorize},
-		Handler: HandlerAuthorize(s, v),
-	})
-
-	PublicRoute(RouteConfig{
-		Method:  MethodPost,
-		Routes:  []Route{RouteAccessToken},
-		Handler: HandlerCreateAccessToken(s, v),
-	})
-
-	PublicRoute(RouteConfig{
-		Method:  MethodPost,
-		Routes:  []Route{RouteOAuthCallback},
-		Handler: HandlerOAuthCallback(s, v),
-	})
-
-	PublicRoute(RouteConfig{
-		Method:  MethodGet,
-		Routes:  []Route{RouteOAuthCallback},
-		Handler: HandlerOAuthCallback(s, v),
-	})
-
-	PublicRoute(RouteConfig{
-		Method:  MethodPost,
-		Routes:  []Route{RouteV1Users, RouteUsers},
-		Handler: HandlerCreateUser(s, v),
-	})
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Routes:  []Route{RouteV1UsersMe, RouteUsersMe},
-		Handler: HandlerGetUsersMe(s, v),
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodPatch,
-		Routes:  []Route{RouteV1UsersMe, RouteUsersMe},
-		Handler: HandlerPatchUsersMe(s, v),
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodDelete,
-		Routes:  []Route{RouteV1UsersMe, RouteUsersMe},
-		Handler: HandlerDeleteUsersMe(s, v),
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodPost,
-		Routes:  []Route{RouteV1Candidates, RouteCandidates},
-		Handler: HandlerCreateCandidate(s, v),
-	}, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodGet,
-	// 	Route:   RouteCandidatesMe,
-	// 	Handler: HandlerGetCandidatesMe(s, v),
-	// 	Roles:   []Role{RoleCandidate},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodPatch,
-	// 	Route:   RouteCandidatesMe,
-	// 	Handler: HandlerDeleteCandidatesMe(s, v),
-	// 	Roles:   []Role{RoleCandidate},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodDelete,
-	// 	Route:   RouteCandidatesMe,
-	// 	Handler: HandlerDeleteCandidatesMe(s, v),
-	// 	Roles:   []Role{RoleCandidate},
-	// }, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodPost,
-		Routes:  []Route{RouteV1Recruiters, RouteRecruiters},
-		Handler: HandlerCreateRecruiter(s, v),
-	}, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodGet,
-	// 	Route:   RouteRecruitersMe,
-	// 	Handler: HandlerGetRecruitersMe(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodPatch,
-	// 	Route:   RouteRecruitersMe,
-	// 	Handler: HandlerPatchRecruitersMe(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodDelete,
-	// 	Route:   RouteRecruitersMe,
-	// 	Handler: HandlerDeleteRecruitersMe(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodPost,
-	// 	Route:   RoutePositions,
-	// 	Handler: HandlerCreatePosition(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodGet,
-	// 	Route:   RoutePosition,
-	// 	Handler: HandlerGetPosition(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodPatch,
-	// 	Route:   RoutePosition,
-	// 	Handler: HandlerPatchPosition(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodDelete,
-	// 	Route:   RoutePosition,
-	// 	Handler: HandlerDeletePosition(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	// ProtectedRoute(RouteConfig{
-	// 	Method:  MethodGet,
-	// 	Route:   RouteMePositions,
-	// 	Handler: HandlerGetMePositions(s, v),
-	// 	Roles:   []Role{RoleRecruiter},
-	// }, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Routes:  []Route{RouteV1MeRecommendations, RouteMeRecommendations},
-		Handler: HandlerGetMeRecommendations(s),
-		Roles:   []Role{RoleCandidate, RoleRecruiter},
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Routes:  []Route{RouteV1MeReactions, RouteMeReactions},
-		Handler: HandlerGetMeReactions(s),
-		Roles:   []Role{RoleCandidate, RoleRecruiter},
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Routes:  []Route{RouteV1MeMatches, RouteMeMatches},
-		Handler: HandlerGetMeMatches(s),
-		Roles:   []Role{RoleCandidate, RoleRecruiter},
-	}, v)
-
-	ProtectedRoute(RouteConfig{
-		Method:  MethodPost,
-		Routes:  []Route{RouteV1MeReaction, RouteMeReaction},
-		Handler: HandlerCreateMeReaction(s),
-		Roles:   []Role{RoleCandidate, RoleRecruiter},
-	}, v)
-
-	return DefaultServeMux
-}
-
-// See [RFC6749](https://www.rfc-editor.org/info/rfc6749).
-type AuthErrorCode string
 
 const (
-	/*
-		The request is missing a required parameter, includes an
-		unsupported parameter value (other than grant type),
-		repeats a parameter, includes multiple credentials,
-		utilizes more than one mechanism for authenticating the
-		client, or is otherwise malformed.
-	*/
-	AuthInvalidRequest AuthErrorCode = "invalid_request"
-
-	/*
-		The provided authorization grant (e.g., authorization
-		code, resource owner credentials) or refresh token is
-		invalid, expired, revoked, does not match the redirection
-		URI used in the authorization request, or was issued to
-		another client.
-	*/
-	AuthInvalidGrant AuthErrorCode = "invalid_grant"
-
-	/*
-		Client authentication failed (e.g., unknown client, no
-		client authentication included, or unsupported
-		authentication method).  The authorization server MAY
-		return an HTTP 401 (Unauthorized) status code to indicate
-		which HTTP authentication schemes are supported.  If the
-		client attempted to authenticate via the "Authorization"
-		request header field, the authorization server MUST
-		respond with an HTTP 401 (Unauthorized) status code and
-		include the "WWW-Authenticate" response header field
-		matching the authentication scheme used by the client.
-	*/
-	AuthInvalidClient AuthErrorCode = "invalid_client"
-
-	/*
-		The authenticated client is not authorized to use this
-		authorization grant type.
-	*/
-	AuthUnauthorizedClient AuthErrorCode = "unauthorized_client"
-
-	/*
-		The authorization grant type is not supported by the
-		authorization server.
-	*/
-	AuthUnsupportedGrantType AuthErrorCode = "unsupported_grant_type"
+	RouteV1Me                       Route = "/v1/me"
+	RouteV1MeCandidate              Route = "/v1/me/candidate"
+	RouteV1MeMatches                Route = "/v1/me/matches"
+	RouteV1MePositions              Route = "/v1/me/positions"
+	RouteV1MePosition               Route = "/v1/me/positions/{id}"
+	RouteV1MeReactions              Route = "/v1/me/reactions"
+	RouteV1MeRecommendations        Route = "/v1/me/recommendations"
+	RouteV1MeRecommendationReaction Route = "/v1/me/recommendations/{id}/reaction"
+	RouteV1MeRecruiter              Route = "/v1/me/recruiter"
 )
 
-type AuthErrorResponse struct {
-	Error            AuthErrorCode `json:"error"`
-	ErrorDescription string        `json:"error_description,omitempty"`
-	ErrorURI         string        `json:"error_uri,omitempty"`
+func (a *API) RegisterRoutes() {
+	slog.Debug("registering routes")
+
+	// TODO: Document the route in openapi.json
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteHealth,
+		Handler: a.HandlerHealth,
+	})
+
+	// TODO: Document the route in openapi.json
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteOAuth2Authorize,
+		Handler: a.HandlerOAuth2Authorize(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteOAuth2Authorize,
+		Handler: a.HandlerOAuth2Authorize(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteOAuth2AccessToken,
+		Handler: a.HandlerOAuth2CreateAccessToken(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteOAuth2Callback,
+		Handler: a.HandlerOAuth2Callback(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteOAuth2Callback,
+		Handler: a.HandlerOAuth2Callback(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteV1Me,
+		Handler: a.HandlerV1CreateMe(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1Me,
+		Handler: a.HandlerV1GetMe(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodPatch,
+		Route:   RouteV1Me,
+		Handler: a.HandlerV1PatchMe(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodDelete,
+		Route:   RouteV1Me,
+		Handler: a.HandlerV1DeleteMe(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteV1MeCandidate,
+		Handler: a.HandlerV1CreateMeCandidateProfile(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1MeCandidate,
+		Handler: a.HandlerV1GetMeCandidateProfile(),
+		Roles:   []Role{RoleCandidate},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodPatch,
+		Route:   RouteV1MeCandidate,
+		Handler: a.HandlerV1PatchMeCandidateProfile(),
+		Roles:   []Role{RoleCandidate},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodDelete,
+		Route:   RouteV1MeCandidate,
+		Handler: a.HandlerV1DeleteMeCandidateProfile(),
+		Roles:   []Role{RoleCandidate},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteV1MeRecruiter,
+		Handler: a.HandlerV1CreateMeRecruiterProfile(),
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1MeRecruiter,
+		Handler: a.HandlerV1GetMeRecruiterProfile(),
+		Roles:   []Role{RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodDelete,
+		Route:   RouteV1MeRecruiter,
+		Handler: a.HandlerV1DeleteMeRecruiterProfile(),
+		Roles:   []Role{RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteV1MePositions,
+		Handler: a.HandlerV1CreateMePosition(),
+		Roles:   []Role{RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1MePositions,
+		Handler: a.HandlerV1GetMePositions(),
+		Roles:   []Role{RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1MePosition,
+		Handler: a.HandlerV1GetMePosition(),
+		Roles:   []Role{RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodPatch,
+		Route:   RouteV1MePosition,
+		Handler: a.HandlerV1PatchMePosition(),
+		Roles:   []Role{RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodDelete,
+		Route:   RouteV1MePosition,
+		Handler: a.HandlerV1DeleteMePosition(),
+		Roles:   []Role{RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1MeRecommendations,
+		Handler: a.HandlerV1GetMeRecommendations(),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1MeReactions,
+		Handler: a.HandlerV1GetMeReactions(),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteV1MeRecommendationReaction,
+		Handler: a.HandlerV1CreateMeReaction(),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	a.ProtectedRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteV1MeMatches,
+		Handler: a.HandlerV1GetMeMatches(),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	})
 }
 
-func SetAuthHeaders(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
+func (a *API) OAuth2CreateAccessToken(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
+	accessToken, err := a.Vault.CreateAccessToken(userID, provider, roles)
+	if err != nil {
+		slog.Error(
+			"failed to create access token",
+			"err", err,
+		)
+		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+		return
+	}
+	OAuth2AccessToken(w, accessToken)
 }
 
-func SetUnauthorizedHeaders(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", "Bearer")
-}
-
-func AuthAccessToken(w http.ResponseWriter, accessToken AccessToken) {
-	SetDefaultHeaders(w)
-	SetAuthHeaders(w)
-	WriteJSON(w, accessToken, http.StatusOK)
-}
-
-func AuthTokenPair(w http.ResponseWriter, tokenPair TokenPair) {
-	SetDefaultHeaders(w)
-	SetAuthHeaders(w)
-	WriteJSON(w, tokenPair, http.StatusOK)
-}
-
-func AuthError(w http.ResponseWriter, code AuthErrorCode, desc string) {
-	SetDefaultHeaders(w)
-	SetAuthHeaders(w)
-	WriteJSON(w, AuthErrorResponse{
-		Error:            code,
-		ErrorDescription: desc,
-	}, http.StatusBadRequest)
-}
-
-func Unauthorized(w http.ResponseWriter, code AuthErrorCode, desc string) {
-	SetDefaultHeaders(w)
-	SetAuthHeaders(w)
-	SetUnauthorizedHeaders(w)
-	WriteJSON(w, AuthErrorResponse{
-		Error:            code,
-		ErrorDescription: desc,
-	}, http.StatusUnauthorized)
-}
-
-func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
+// TODO: Write tests for this handler
+func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 	type RequestBody struct {
 		GrantType    string `json:"grant_type"`
 		RefreshToken string `json:"refresh_token"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[RequestBody](r)
+		body, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
-			AuthError(w, AuthInvalidRequest, "invalid request body")
+			OAuth2Error(w, OAuth2InvalidRequest, "invalid request body")
 			return
 		}
-		if req.GrantType != "refresh_token" {
-			AuthError(w, AuthUnsupportedGrantType, "grant_type must be refresh_token")
+		if body.GrantType != "refresh_token" {
+			OAuth2Error(w, OAuth2UnsupportedGrantType, "grant_type must be refresh_token")
 			return
 		}
-		if req.RefreshToken == "" {
-			AuthError(w, AuthInvalidGrant, "refresh_token is required")
+		if body.RefreshToken == "" {
+			OAuth2Error(w, OAuth2InvalidGrant, "refresh_token is required")
 			return
 		}
 
-		claims, err := v.ParseRefreshToken(req.RefreshToken)
+		claims, err := a.Vault.ParseRefreshToken(body.RefreshToken)
 		if err != nil {
 			slog.Error(
 				"failed to parse refresh token",
 				"ip", r.RemoteAddr,
 				"err", err,
 			)
-			AuthError(w, AuthInvalidGrant, "invalid refresh token")
+			OAuth2Error(w, OAuth2InvalidGrant, "invalid refresh token")
 			return
 		}
 
-		isRevoked, err := s.IsRevokedRefreshToken(claims.JTI)
+		isRevoked, err := a.Store.IsRevokedRefreshToken(claims.JTI)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				slog.Warn(
@@ -1037,7 +977,7 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 					"user_id", claims.UserID,
 					"ip", r.RemoteAddr,
 				)
-				AuthError(w, AuthInvalidGrant, "invalid refresh token")
+				OAuth2Error(w, OAuth2InvalidGrant, "invalid refresh token")
 				return
 			}
 			slog.Error(
@@ -1047,7 +987,7 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 				"user_id", claims.UserID,
 				"ip", r.RemoteAddr,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 		if isRevoked {
@@ -1057,11 +997,11 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 				"user_id", claims.UserID,
 				"ip", r.RemoteAddr,
 			)
-			AuthError(w, AuthInvalidGrant, "invalid refresh token")
+			OAuth2Error(w, OAuth2InvalidGrant, "invalid refresh token")
 			return
 		}
 
-		roles, err := s.GetUserRoles(
+		roles, err := a.Store.GetUserRoles(
 			claims.UserID,
 			Provider(claims.Provider),
 		)
@@ -1072,111 +1012,93 @@ func HandlerCreateAccessToken(s Store, v Vault) http.HandlerFunc {
 				"ip", r.RemoteAddr,
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		accessToken, err := v.CreateAccessToken(
+		a.OAuth2CreateAccessToken(
+			w,
 			claims.UserID,
 			claims.Provider,
 			roles,
 		)
-		if err != nil {
-			slog.Error(
-				"failed to create access token",
-				"user_id", claims.UserID,
-				"ip", r.RemoteAddr,
-				"err", err,
-			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
-			return
-		}
-
-		AuthAccessToken(w, *accessToken)
 	}
 }
 
-func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
+// TODO: Write tests for this handler
+func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
+	type RequstBodyEmailAuthorization struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		providerRaw := r.URL.Query().Get("provider")
-		provider, err := StringToProvider(providerRaw, ProviderEmail)
+		providerString := r.URL.Query().Get("provider")
+		provider, err := StringToProvider(providerString, ProviderEmail)
 		if err != nil {
-			AuthError(
+			OAuth2Error(
 				w,
-				AuthInvalidRequest,
+				OAuth2InvalidRequest,
 				"invalid provider; must be one of: google, apple, email",
 			)
 			return
 		}
 
 		if provider == ProviderEmail {
-			var req struct {
-				Email    string `json:"email"`
-				Password string `json:"password"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				AuthError(w, AuthInvalidRequest, "invalid request body")
-				return
-			}
-			if req.Email == "" || req.Password == "" {
-				AuthError(w, AuthInvalidRequest, "email and password required")
-				return
-			}
-
-			user, roles, err := s.GetUserAndRolesByEmail(req.Email, ProviderEmail)
-			if errors.Is(err, ErrUserNotFound) {
-				Unauthorized(w, AuthInvalidRequest, "invalid credentials")
-				return
-			}
-			if user != nil {
-				if !v.IsValidPassword(user.PasswordHash, req.Password) {
-					Unauthorized(w, AuthInvalidRequest, "invalid credentials")
-					return
-				}
-				if errors.Is(err, ErrUserNoRole) {
-					// TODO: indicate next actions according to HAL
-					CreateAccessToken(v, w,
-						user.ID,
-						user.Provider,
-						map[Role]ULID{},
-					)
-					return
-				}
-			}
+			body, err := DecodeRequestBody[RequstBodyEmailAuthorization](r)
 			if err != nil {
-				slog.Error(
-					"failed to get user by email",
-					"err", err,
-				)
-				AuthError(w, AuthInvalidRequest, "internal server error")
+				OAuth2Error(w, OAuth2InvalidRequest, "invalid request body")
+				return
+			}
+			if body.Email == "" || body.Password == "" {
+				OAuth2Error(w, OAuth2InvalidRequest, "email and password required")
 				return
 			}
 
-			CreateTokenPair(s, v, w,
-				user.ID,
-				user.Provider,
-				roles,
-			)
+			user, roles, err := a.Store.GetUserAndRolesByEmail(body.Email, ProviderEmail)
+			switch {
+
+			case errors.Is(err, ErrUserNotFound):
+				OAuth2Unauthorized(w, OAuth2InvalidRequest, "invalid credentials")
+				return
+
+			case errors.Is(err, ErrUserNoRole):
+				a.OAuth2CreateAccessToken(w, user.ID, user.Provider, map[Role]ULID{})
+				return
+
+			case err != nil:
+				slog.Error("failed to get user by email", "err", err)
+				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+				return
+
+			}
+
+			if !a.Vault.IsValidPassword(user.PasswordHash, body.Password) {
+				OAuth2Unauthorized(w, OAuth2InvalidRequest, "invalid credentials")
+				return
+			}
+
+			a.OAuth2CreateTokenPair(w, user.ID, user.Provider, roles)
 			return
 		}
 
-		state, err := v.CreateStateToken(provider)
+		state, err := a.Vault.CreateStateToken(provider)
 		if err != nil {
 			slog.Error(
 				"failed to generate state token",
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		parsed, err := v.ParseStateToken(state)
+		parsed, err := a.Vault.ParseStateToken(state)
 		if err != nil {
 			slog.Error(
 				"failed to parse state token",
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
@@ -1184,7 +1106,7 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 			Name:     "oauth_csrf",
 			Value:    parsed.CSRF,
 			Path:     "/",
-			MaxAge:   int(v.StateTokenExpiration),
+			MaxAge:   int(a.Vault.StateTokenExpiration),
 			HttpOnly: true,
 			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
@@ -1195,83 +1117,86 @@ func HandlerAuthorize(s Store, v Vault) http.HandlerFunc {
 			Name:     "oauth_verifier",
 			Value:    verifier,
 			Path:     "/",
-			MaxAge:   int(v.VerifierExpiration),
+			MaxAge:   int(a.Vault.VerifierExpiration),
 			HttpOnly: true,
 			Secure:   true,
 			SameSite: http.SameSiteLaxMode,
 		})
 
-		url, err := v.CreateAuthCodeURL(state, verifier, provider)
+		url, err := a.Vault.CreateAuthCodeURL(state, verifier, provider)
 		if err != nil {
 			slog.Error(
 				"failed to generate auth code URL",
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		http.Redirect(w, r,
+		http.Redirect(
+			w, r,
 			url,
 			http.StatusTemporaryRedirect,
 		)
 	}
 }
 
-func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
+// TODO: Write tests for this handler
+func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(
 			r.Context(),
-			v.StateTokenExpiration,
+			a.Vault.StateTokenExpiration,
 		)
 		defer cancel()
 
-		stateRaw := r.URL.Query().Get("state")
-		if stateRaw == "" {
-			AuthError(w, AuthInvalidRequest, "missing state")
+		stateString := r.URL.Query().Get("state")
+		if stateString == "" {
+			OAuth2Error(w, OAuth2InvalidRequest, "missing state")
 			return
 		}
 
-		state, err := v.ParseStateToken(stateRaw)
+		state, err := a.Vault.ParseStateToken(stateString)
 		if err != nil {
-			AuthError(w, AuthInvalidRequest, "invalid state token")
+			OAuth2Error(w, OAuth2InvalidRequest, "invalid state token")
 			return
 		}
 
 		csrfCookie, err := r.Cookie("oauth_csrf")
 		if err != nil || csrfCookie.Value != state.CSRF {
-			AuthError(w, AuthInvalidRequest, "invalid CSRF token")
+			OAuth2Error(w, OAuth2InvalidRequest, "invalid CSRF token")
 			return
 		}
 
 		verifierCookie, err := r.Cookie("oauth_verifier")
 		if err != nil {
-			AuthError(w, AuthInvalidRequest, "missing PKCE verifier")
+			OAuth2Error(w, OAuth2InvalidRequest, "missing PKCE verifier")
 			return
 		}
 
 		if errParam := r.URL.Query().Get("error"); errParam != "" {
-			AuthError(w, AuthInvalidRequest, "authorization provider error")
+			OAuth2Error(w, OAuth2InvalidRequest, "authorization provider error")
 			return
 		}
 
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			AuthError(w, AuthInvalidRequest, "missing authorization code")
+			OAuth2Error(w, OAuth2InvalidRequest, "missing authorization code")
 			return
 		}
 
 		DeleteCookies(w, [2]string{"oauth_csrf", "oauth_verifier"})
 
-		var user *User
+		var user User
 		switch state.Provider {
 		case ProviderGoogle:
-			rawIDToken, err := v.ExchangeGoogleCodeForIDToken(ctx,
+			rawIDToken, err := a.Vault.ExchangeGoogleCodeForIDToken(
+				ctx,
 				code,
 				verifierCookie,
 			)
 			if errors.Is(err, ErrIDTokenRequired) {
-				AuthError(w, AuthInvalidRequest, "id_token is required")
+				OAuth2Error(w, OAuth2InvalidRequest, "id_token is required")
 				return
 			}
 			if err != nil {
@@ -1279,39 +1204,42 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 					"failed to exchange Google code",
 					"err", err,
 				)
-				AuthError(w, AuthInvalidRequest, "internal server error")
+				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
 
-			user, err = v.VerifyAndParseGoogleIDToken(ctx, rawIDToken)
-			if errors.Is(err, ErrInvalidIDToken) {
-				AuthError(w, AuthInvalidRequest, "invalid id_token")
+			user, err = a.Vault.VerifyAndParseGoogleIDToken(ctx, rawIDToken)
+			switch {
+
+			case errors.Is(err, ErrInvalidIDToken):
+				OAuth2Error(w, OAuth2InvalidRequest, "invalid id_token")
 				return
-			}
-			if errors.Is(err, ErrFailedParseClaims) {
-				AuthError(w, AuthInvalidRequest, "failed to parse claims")
+
+			case errors.Is(err, ErrFailedParseClaims):
+				OAuth2Error(w, OAuth2InvalidRequest, "failed to parse claims")
 				return
-			}
-			if errors.Is(err, ErrEmailNotVerified) {
-				AuthError(w, AuthInvalidRequest, "unverified provider email")
+
+			case errors.Is(err, ErrEmailNotVerified):
+				OAuth2Error(w, OAuth2InvalidRequest, "unverified provider email")
 				return
-			}
-			if err != nil {
+
+			case err != nil:
 				slog.Error(
 					"failed to verify Google ID token",
 					"err", err,
 				)
-				AuthError(w, AuthInvalidRequest, "internal server error")
+				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
 
 		case ProviderApple:
-			rawIDToken, err := v.ExchangeAppleCodeForIDToken(ctx,
+			idTokenString, err := a.Vault.ExchangeAppleCodeForIDToken(
+				ctx,
 				code,
 				verifierCookie,
 			)
 			if errors.Is(err, ErrIDTokenRequired) {
-				AuthError(w, AuthInvalidRequest, "id_token is required")
+				OAuth2Error(w, OAuth2InvalidRequest, "id_token is required")
 				return
 			}
 			if err != nil {
@@ -1319,169 +1247,178 @@ func HandlerOAuthCallback(s Store, v Vault) http.HandlerFunc {
 					"failed to exchange Apple code",
 					"err", err,
 				)
-				AuthError(w, AuthInvalidRequest, "internal server error")
+				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
 
-			user, err = v.VerifyAndParseAppleIDToken(ctx,
-				rawIDToken,
+			user, err = a.Vault.VerifyAndParseAppleIDToken(
+				ctx,
+				idTokenString,
 				r.FormValue("user"),
 			)
-			if errors.Is(err, ErrInvalidIDToken) {
-				AuthError(w, AuthInvalidRequest, "invalid id_token")
+			switch {
+
+			case errors.Is(err, ErrInvalidIDToken):
+				OAuth2Error(w, OAuth2InvalidRequest, "invalid id_token")
 				return
-			}
-			if errors.Is(err, ErrFailedParseClaims) {
-				AuthError(w, AuthInvalidRequest, "failed to parse claims")
+
+			case errors.Is(err, ErrFailedParseClaims):
+				OAuth2Error(w, OAuth2InvalidRequest, "failed to parse claims")
 				return
-			}
-			if err != nil {
+
+			case errors.Is(err, ErrEmailNotVerified):
+				OAuth2Error(w, OAuth2InvalidRequest, "unverified provider email")
+				return
+
+			case err != nil:
 				slog.Error(
 					"failed to verify Apple ID token",
 					"err", err,
 				)
-				AuthError(w, AuthInvalidRequest, "internal server error")
+				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
 
 		default:
-			AuthError(w,
-				AuthInvalidRequest,
+			OAuth2Error(
+				w,
+				OAuth2InvalidRequest,
 				"invalid provider; must be one of: google, apple",
 			)
 			return
 		}
 
-		FinishAuthFlow(s, v, w, *user)
+		a.FinishAuthFlow(w, user)
 	}
 }
 
+var RegexFullName = regexp.MustCompile(`^[\pL][\pL\s'’-]{2,512}\z`)
+
 const (
-	FailDataFullNameSize           = "full_name must be between 2 and 128 characters"
-	FailDataFullNameForbiddenChars = "full_name must be a valid 'passport-style' given name. It must start with a letter and can only contain letters, spaces, apostrophes, or hyphens"
+	DefaultUserFullNameMinLength = 2
+	DefaultUserFullNameMaxLength = 512
 )
 
-func FinishAuthFlow(s Store, v Vault, w http.ResponseWriter, user User) {
-	userID, roles, err := s.GetUserAndRolesByProvider(user.Provider, user.ProviderUserID)
+func NormalizeAndValidateUserFullName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	name = strings.Join(strings.Fields(name), " ")
+	if len(name) < DefaultUserFullNameMinLength {
+		return "", ErrTextTooShort
+	}
+	if len(name) > DefaultUserFullNameMaxLength {
+		return "", ErrTextTooLong
+	}
+	if !RegexFullName.MatchString(name) {
+		return "", ErrTextForbiddenChars
+	}
+	return name, nil
+}
 
-	if errors.Is(err, ErrUserNotFound) {
+var (
+	FailMessageUserFullNameWrongSize      = fmt.Sprintf("full_name must be between %v and %v characters", DefaultUserFullNameMinLength, DefaultUserFullNameMaxLength)
+	FailMessageUserFullNameForbiddenChars = "full_name must be a valid 'passport-style' full name. It must start with a letter and can only contain letters, spaces, apostrophes, or hyphens"
+)
+
+func (a *API) FinishAuthFlow(w http.ResponseWriter, user User) {
+	userID, roles, err := a.Store.GetUserAndRolesByProvider(user.Provider, user.ProviderUserID)
+	switch {
+
+	case errors.Is(err, ErrUserNotFound):
 		userID, ulidErr := NewUserULID()
 		if ulidErr != nil {
 			slog.Error(
 				"failed to generate user ULID",
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		user.UserName, err = GenerateUsername()
+		user.UserName, err = GenerateUserName()
 		if err != nil {
 			slog.Error(
-				"failed to generate username",
+				"failed to generate user name",
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		user.FullName, err = ValidateName(user.FullName)
-		if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-			AuthError(w, AuthInvalidRequest, FailDataFullNameSize)
+		user.FullName, err = NormalizeAndValidateUserFullName(user.FullName)
+		switch {
+
+		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+			OAuth2Error(w, OAuth2InvalidRequest, FailMessageUserFullNameWrongSize)
 			return
-		}
-		if errors.Is(err, ErrTextForbiddenChars) {
-			AuthError(w, AuthInvalidRequest, FailDataFullNameForbiddenChars)
-		}
-		if err != nil {
+
+		case errors.Is(err, ErrTextForbiddenChars):
+			OAuth2Error(w, OAuth2InvalidRequest, FailMessageUserFullNameForbiddenChars)
+			return
+
+		case err != nil:
 			slog.Error(
-				"failed to validate full_name",
+				"failed to validate full name",
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		err = s.CreateUser(user)
+		err = a.Store.CreateUser(user)
 		if err != nil {
 			slog.Error(
 				"failed to create user",
 				"err", err,
 			)
-			AuthError(w, AuthInvalidRequest, "internal server error")
+			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
-		// TODO: indicate next actions according to HAL
-		CreateAccessToken(v, w,
+		a.OAuth2CreateAccessToken(
+			w,
 			userID,
 			user.Provider,
 			map[Role]ULID{},
 		)
 		return
-	}
-	if errors.Is(err, ErrUserNoRole) {
-		// TODO: indicate next actions according to HAL
-		CreateAccessToken(v, w,
+
+	case errors.Is(err, ErrUserNoRole):
+		a.OAuth2CreateAccessToken(
+			w,
 			userID,
 			user.Provider,
 			map[Role]ULID{},
 		)
 		return
-	}
-	if err != nil {
+
+	case err != nil:
 		slog.Error(
 			"failed to get user by provider",
 			"err", err,
 		)
-		AuthError(w, AuthInvalidRequest, "internal server error")
+		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
 
-	CreateTokenPair(s, v, w,
+	a.OAuth2CreateTokenPair(
+		w,
 		userID,
 		user.Provider,
 		roles,
 	)
 }
 
-func CreateAccessToken(
-	v Vault,
-	w http.ResponseWriter,
-	userID ULID,
-	provider Provider,
-	roles map[Role]ULID,
-) {
-	accessToken, err := v.CreateAccessToken(userID, provider, roles)
-	if err != nil {
-		slog.Error(
-			"failed to create access token",
-			"err", err,
-		)
-		AuthError(w, AuthInvalidRequest, "internal server error")
-		return
-	}
-	AuthAccessToken(w, *accessToken)
-}
-
-func CreateTokenPair(
-	s Store,
-	v Vault,
-	w http.ResponseWriter,
-	userID ULID,
-	provider Provider,
-	roles map[Role]ULID,
-) {
+func (a *API) OAuth2CreateTokenPair(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
 	jti, err := NewJTIULID()
 	if err != nil {
 		slog.Error(
 			"failed to generate JTI ULID",
 			"err", err,
 		)
-		AuthError(w, AuthInvalidRequest, "internal server error")
+		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
 
-	err = s.CreateRefreshToken(
+	err = a.Store.CreateRefreshToken(
 		jti,
 		userID,
 		time.Now().UTC().Add(DefaultRefreshTokenExpiration),
@@ -1491,21 +1428,21 @@ func CreateTokenPair(
 			"failed to create refresh token",
 			"err", err,
 		)
-		AuthError(w, AuthInvalidRequest, "internal server error")
+		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
 
-	tokenPair, err := v.CreateTokenPair(userID, provider, jti, roles)
+	tokenPair, err := a.Vault.CreateTokenPair(userID, provider, jti, roles)
 	if err != nil {
 		slog.Error(
 			"failed to create token pair",
 			"err", err,
 		)
-		AuthError(w, AuthInvalidRequest, "internal server error")
+		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
 
-	AuthTokenPair(w, *tokenPair)
+	OAuth2TokenPair(w, tokenPair)
 }
 
 func DeleteCookies(w http.ResponseWriter, names [2]string) {
@@ -1521,174 +1458,112 @@ func DeleteCookies(w http.ResponseWriter, names [2]string) {
 	}
 }
 
-type (
-	// [JSend](https://github.com/omniti-labs/jsend)
-	FailData       map[string]string
-	ResponseStatus string
-	ErrorCode      uint16
-)
+// JSONAPIMediaType is the official media type used for JSON:API request and response payloads.
+// See https://jsonapi.org/format/.
+const JSONAPIMediaType = "application/vnd.api+json"
 
-type (
-	// [HAL](https://datatracker.ietf.org/doc/html/draft-kelly-json-hal-11)
-	Link struct {
-		Href      string `json:"href"`
-		Name      string `json:"name,omitempty"`
-		Templated bool   `json:"templated,omitempty"`
-	}
+// JSONAPIError represents a single error object returned when a request fails.
+type JSONAPIError struct {
+	// Status is the HTTP status code associated with the error, represented as a string.
+	Status string `json:"status,omitempty"`
 
-	RelType string
+	// Code is an application-specific error identifier used for programmatic handling.
+	Code string `json:"code,omitempty"`
 
-	Links    map[RelType]Link
-	Embedded map[string]any
-	Props    map[string]any
+	// Title is a short, human-readable summary of the error.
+	Title string `json:"title,omitempty"`
 
-	Resource struct {
-		Links    Links    `json:"_links,omitempty"`
-		Embedded Embedded `json:"_embedded,omitempty"`
-		Props    Props    `json:"-"`
-	}
-)
+	// Detail provides a more detailed explanation of the error.
+	Detail string `json:"detail,omitempty"`
 
-const (
-	// All went well, and (usually) some data was returned.
-	ResponseStatusSuccess = "success"
+	// Source identifies the specific field or parameter that caused the error.
+	Source *JSONAPIErrorSource `json:"source,omitempty"`
 
-	// There was a problem with the data submitted or some pre-condition failed
-	ResponseStatusFail = "fail"
-
-	// An error occurred in processing the request, i.e. an exception was thrown.
-	ResponseStatusError = "error"
-
-	// Conveys an identifier for the link's context.
-	RelTypeSelf RelType = "self"
-
-	// Refers to a parent document in a hierarchy of documents.
-	RelTypeUp RelType = "up"
-
-	// Refers to the previous resource in an ordered series of resources.
-	RelTypePrevious RelType = "previous"
-
-	// Refers to the next resource in a ordered series of resources.
-	RelTypeNext RelType = "next"
-
-	// An IRI that refers to the furthest preceding resource in a series.
-	RelTypeFirst RelType = "first"
-
-	// An IRI that refers to the furthest following resource in a series.
-	RelTypeLast RelType = "last"
-
-	// Refers to an index.
-	RelTypeIndex RelType = "index"
-
-	// Refers to a resource offering help.
-	RelTypeHelp RelType = "help"
-
-	// Refers to a resource that can be used to edit the link's context.
-	RelTypeEdit RelType = "edit"
-)
-
-func (res Resource) MarshalJSON() ([]byte, error) {
-	m := make(map[string]any, len(res.Props)+2)
-	for k, v := range res.Props {
-		m[k] = v
-	}
-	if len(res.Links) > 0 {
-		m["_links"] = res.Links
-	}
-	if len(res.Embedded) > 0 {
-		m["_embedded"] = res.Embedded
-	}
-	return json.Marshal(m)
+	// Meta contains additional custom information about the error.
+	Meta map[string]any `json:"meta,omitempty"`
 }
 
-func WriteJSON[T any](w http.ResponseWriter, data T, status int) {
+// JSONAPIErrorSource identifies where an error originated in the request.
+type JSONAPIErrorSource struct {
+	// Pointer is a JSON Pointer to the offending value in the request body.
+	Pointer string `json:"pointer,omitempty"`
+
+	// Parameter is the query string parameter that caused the error.
+	Parameter string `json:"parameter,omitempty"`
+}
+
+// JSONAPIResource represents a JSON:API resource object such as a user,
+// article, order, or any other domain entity.
+type JSONAPIResource struct {
+	// Type is the resource type, typically matching the collection name.
+	Type string `json:"type"`
+
+	// ID is the unique identifier of the resource.
+	ID string `json:"id"`
+
+	// Attributes contains the resource's actual data fields.
+	Attributes map[string]any `json:"attributes,omitempty"`
+
+	// Relationships contains references to related resources.
+	Relationships map[string]any `json:"relationships,omitempty"`
+
+	// Links contains URLs related to this resource.
+	Links map[string]any `json:"links,omitempty"`
+
+	// Meta contains additional resource-specific metadata.
+	Meta map[string]any `json:"meta,omitempty"`
+}
+
+// JSONAPIDocument is the top-level JSON:API response document.
+type JSONAPIDocument struct {
+	// Data contains the primary resource(s) returned by the request.
+	Data any `json:"data,omitempty"`
+
+	// Errors contains one or more errors when the request fails.
+	Errors []JSONAPIError `json:"errors,omitempty"`
+
+	// Meta contains response-level metadata.
+	Meta map[string]any `json:"meta,omitempty"`
+
+	// Included contains related resources that are side-loaded with the response
+	// to reduce the need for additional API requests.
+	Included []JSONAPIResource `json:"included,omitempty"`
+
+	// Links contains top-level navigation or pagination URLs.
+	Links map[string]any `json:"links,omitempty"`
+}
+
+func JSON(w http.ResponseWriter, document JSONAPIDocument, status int) {
+	w.Header().Set("Content-Type", JSONAPIMediaType)
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		slog.Error(
-			"failed to encode response data",
-			"err", err,
-		)
+	if err := json.NewEncoder(w).Encode(document); err != nil {
+		slog.Error("failed to encode json:api response", "err", err)
 	}
 }
 
-func SetDefaultHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-}
-
-func HALSuccess(w http.ResponseWriter, res Resource, status int) {
-	SetDefaultHeaders(w)
-	res.Props["status"] = ResponseStatusSuccess
-	WriteJSON(w, res, status)
-}
-
-type SuccessResponse[T any] struct {
-	Status ResponseStatus `json:"status"`
-	Data   T              `json:"data,omitempty"`
-}
-
-func Success[T any](w http.ResponseWriter, data T, status int) {
-	SetDefaultHeaders(w)
-	WriteJSON(w, SuccessResponse[T]{
-		Status: ResponseStatusSuccess,
-		Data:   data,
-	}, status)
-}
-
-func EmptySuccess(w http.ResponseWriter, status int) {
-	SetDefaultHeaders(w)
-	WriteJSON(w, map[string]string{"status": ResponseStatusSuccess}, status)
-}
-
-type ErrorResponse struct {
-	Status  ResponseStatus `json:"status"`
-	Message string         `json:"message"`
-	Code    ErrorCode      `json:"code,omitempty"`
-}
-
-func Error(w http.ResponseWriter, message string, status int) {
-	SetDefaultHeaders(w)
-	WriteJSON(w, ErrorResponse{
-		Status:  ResponseStatusError,
-		Message: message,
-	}, status)
-}
-
-type FailResponse struct {
-	Status ResponseStatus `json:"status"`
-	Data   FailData       `json:"data,omitempty"`
-}
-
-func Fail(w http.ResponseWriter, data FailData, status int) {
-	SetDefaultHeaders(w)
-	WriteJSON(w, FailResponse{
-		Status: ResponseStatusFail,
-		Data:   data,
-	}, status)
-}
-
-func DecodeRequestBody[T any](r *http.Request) (*T, error) {
+func DecodeRequestBody[T any](r *http.Request) (T, error) {
 	var data T
 
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
 
-	if err := dec.Decode(&data); err != nil {
-		return nil, err
+	if err := decoder.Decode(&data); err != nil {
+		return data, err
 	}
-	if dec.More() {
-		return nil, ErrExtraDataDecoded
+	if decoder.More() {
+		return data, ErrExtraDataDecoded
 	}
 
 	if err := r.Body.Close(); err != nil {
-		return nil, err
+		return data, err
 	}
 
-	return &data, nil
+	return data, nil
 }
 
 var (
-	// adjectives is an array for creating random usernames, used in conjunction with nouns
-	adjectives = [...]string{
+	// UserNameAdjectives is an array for creating random user names, used in conjunction with nouns
+	UserNameAdjectives = [...]string{
 		"fast",
 		"lazy",
 		"clever",
@@ -1701,8 +1576,8 @@ var (
 		"grumpy",
 	}
 
-	// nouns is an array for creating random usernames, used in conjunction with adjectives
-	nouns = [...]string{
+	// UserNameNouns is an array for creating random user names, used in conjunction with adjectives
+	UserNameNouns = [...]string{
 		"lion",
 		"tiger",
 		"panda",
@@ -1716,40 +1591,73 @@ var (
 	}
 )
 
-func GenerateUsername() (string, error) {
-	randInt := func(n int) int {
+func GenerateUserName() (string, error) {
+	randomInteger := func(n int) (int, error) {
 		if n <= 0 {
-			return 0
+			return 0, nil
 		}
 		b := make([]byte, 1)
-		_, _ = rand.Read(b)
-		return int(b[0]) % n
+		if _, err := rand.Read(b); err != nil {
+			return 0, err
+		}
+		return int(b[0]) % n, nil
 	}
-	adj := adjectives[randInt(len(adjectives))]
-	noun := nouns[randInt(len(nouns))]
+
+	indexAdjectives, err := randomInteger(len(UserNameAdjectives))
+	if err != nil {
+		return "", fmt.Errorf("failed to pull secure adjective seed: %w", err)
+	}
+	adjective := UserNameAdjectives[indexAdjectives]
+
+	indexNouns, err := randomInteger(len(UserNameNouns))
+	if err != nil {
+		return "", fmt.Errorf("failed to pull secure noun seed: %w", err)
+	}
+	noun := UserNameNouns[indexNouns]
 
 	suffix := make([]byte, 4)
-	_, err := rand.Read(suffix)
-	if err != nil {
-		return "", err
+	if _, err := rand.Read(suffix); err != nil {
+		return "", fmt.Errorf("failed to pull secure suffix seed: %w", err)
 	}
 
-	userName := fmt.Sprintf("%s_%s%s", adj, noun, hex.EncodeToString(suffix))
-	userName = strings.ToLower(userName)
-
+	userName := strings.ToLower(fmt.Sprintf("%s_%s%s", adjective, noun, hex.EncodeToString(suffix)))
 	return userName, nil
 }
 
-func Health(w http.ResponseWriter, r *http.Request) {
-	EmptySuccess(w, http.StatusOK)
+// TODO: Write tests for this handler
+func (a *API) HandlerHealth(w http.ResponseWriter, r *http.Request) {
+	JSON(w, JSONAPIDocument{
+		Meta: map[string]any{
+			"status": "ok",
+		},
+	}, http.StatusOK)
 }
 
-func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
+// TODO: Write integration tests for this handler
+func (a *API) HandlerV1GetMeRecommendations() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		candidateID, isCandidate := claims.Roles[RoleCandidate]
+		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
+		if !isCandidate && !isRecruiter {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing one of required roles: recruiter, candidate",
+				}},
+			}, http.StatusForbidden)
 			return
 		}
 
@@ -1764,146 +1672,116 @@ func HandlerGetMeRecommendations(s Store) http.HandlerFunc {
 		default:
 			excludeReacted = true
 		}
-		posNextCursor, canNextCursor := "done", "done"
+
 		page.Count = 0
-		embedded := Embedded{}
-
-		candidateID, isCandidate := claims.Roles[RoleCandidate]
-		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
-		if !isCandidate && !isRecruiter {
-			slog.Error("failed to determine user's role")
-			Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		posCursor := q.Get("pos_cursor")
-		if isCandidate && q.Get("exclude_positions") != "true" && posCursor != "done" {
-			recs, cursor, err := s.GetPositionRecommendations(
+		positionCursor := q.Get("pos_cursor")
+		positionNextCursor, candidateNextCursor := "done", "done"
+		data := make([]JSONAPIResource, 0)
+		if isCandidate && q.Get("exclude_positions") != "true" && positionCursor != "done" {
+			recommendations, cursor, err := a.Store.GetPositionRecommendations(
 				candidateID,
-				Page{Cursor: posCursor, Limit: page.Limit},
+				Page{Cursor: positionCursor, Limit: page.Limit},
 				excludeReacted,
 			)
 			if err != nil {
-				slog.Error(
-					"failed to fetch position recommendations",
-					"err", err,
-				)
-				Error(w, "internal server error", http.StatusInternalServerError)
+				slog.Error("failed to fetch position recommendations", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
 				return
 			}
-			posNextCursor = cmp.Or(string(cursor), "done")
-			page.Count += len(recs)
-			positions := make([]Resource, len(recs))
-			for i, rec := range recs {
-				positions[i] = Resource{
-					Links: Links{
-						RelTypeSelf: Link{
-							Href: fmt.Sprintf(
-								"%s/%s",
-								RouteV1MeRecommendations,
-								rec.RecommendationID),
-						},
-						RelType("reaction"): Link{
-							Href: fmt.Sprintf(
-								"%s/%s/reaction",
-								RouteV1MeRecommendations,
-								rec.RecommendationID),
-						},
-					}, Props: Props{
-						"recommendation_id": rec.RecommendationID,
-						"position_id":       rec.PositionID,
-						"title":             rec.Title,
-						"company":           rec.Company,
-						"description":       rec.Description,
+
+			positionNextCursor = cmp.Or(string(cursor), "done")
+			page.Count += len(recommendations)
+			for _, rec := range recommendations {
+				data = append(data, JSONAPIResource{
+					Type: "recommendations",
+					ID:   string(rec.RecommendationID),
+					Attributes: map[string]any{
+						"position_id": rec.PositionID,
+						"title":       rec.Title,
+						"company":     rec.Company,
+						"description": rec.Description,
 					},
-				}
-			}
-			if len(positions) > 0 {
-				embedded["positions"] = positions
+					Links: map[string]any{
+						"self":     fmt.Sprintf("%s/%s", RouteV1MeRecommendations, rec.RecommendationID),
+						"reaction": fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, rec.RecommendationID),
+					},
+				})
 			}
 		}
 
-		canCursor := q.Get("can_cursor")
-		if isRecruiter &&
-			q.Get("exclude_candidates") != "true" &&
-			canCursor != "done" {
-			recs, cursor, err := s.GetCandidateRecommendations(
+		candidateCursor := q.Get("can_cursor")
+		if isRecruiter && q.Get("exclude_candidates") != "true" && candidateCursor != "done" {
+			recommendations, cursor, err := a.Store.GetCandidateRecommendations(
 				recruiterID,
-				Page{Cursor: canCursor, Limit: page.Limit},
+				Page{Cursor: candidateCursor, Limit: page.Limit},
 				excludeReacted,
 			)
 			if err != nil {
-				slog.Error(
-					"failed to fetch candidate recommendations",
-					"err", err,
-				)
-				Error(w, "internal server error", http.StatusInternalServerError)
+				slog.Error("failed to fetch candidate recommendations", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
 				return
 			}
-			canNextCursor = cmp.Or(string(cursor), "done")
-			page.Count += len(recs)
-			candidates := make([]Resource, len(recs))
-			for i, rec := range recs {
-				candidates[i] = Resource{
-					Links: Links{
-						RelTypeSelf: Link{
-							Href: fmt.Sprintf(
-								"%s/%s",
-								RouteV1MeRecommendations,
-								rec.RecommendationID,
-							),
-						},
-						RelType("reaction"): Link{
-							Href: fmt.Sprintf(
-								"%s/%s/reaction",
-								RouteV1MeRecommendations,
-								rec.RecommendationID,
-							),
-						},
+
+			candidateNextCursor = cmp.Or(string(cursor), "done")
+			page.Count += len(recommendations)
+			for _, rec := range recommendations {
+				data = append(data, JSONAPIResource{
+					Type: "recommendations",
+					ID:   string(rec.RecommendationID),
+					Attributes: map[string]any{
+						"candidate_id": rec.CandidateID,
+						"full_name":    rec.FullName,
+						"about":        rec.About,
 					},
-					Props: Props{
-						"recommendation_id": rec.RecommendationID,
-						"candidate_id":      rec.CandidateID,
-						"full_name":         rec.FullName,
-						"about":             rec.About,
+					Links: map[string]any{
+						"self":     fmt.Sprintf("%s/%s", RouteV1MeRecommendations, rec.RecommendationID),
+						"reaction": fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, rec.RecommendationID),
 					},
-				}
-			}
-			if len(candidates) > 0 {
-				embedded["candidates"] = candidates
+				})
 			}
 		}
 
-		page.HasNext = posNextCursor != "done" || canNextCursor != "done"
-
-		selfHref := RouteV1MeRecommendations
+		page.HasNext = positionNextCursor != "done" || candidateNextCursor != "done"
+		selfHref := string(RouteV1MeRecommendations)
 		if excludeReacted {
 			selfHref += "?exclude_reacted=true"
 		}
-		links := Links{
-			RelTypeSelf:          Link{Href: string(selfHref)},
-			RelType("reactions"): Link{Href: string(RouteV1MeReactions)},
+
+		links := map[string]any{
+			"self":      selfHref,
+			"reactions": string(RouteV1MeReactions),
 		}
 		if page.HasNext {
 			nextHref := fmt.Sprintf(
 				"%s?pos_cursor=%s&can_cursor=%s&limit=%d",
-				RouteV1MeRecommendations, posNextCursor, canNextCursor, page.Limit,
+				RouteV1MeRecommendations, positionNextCursor, candidateNextCursor, page.Limit,
 			)
 			if excludeReacted {
 				nextHref += "&exclude_reacted=true"
 			}
-			links[RelTypeNext] = Link{Href: nextHref}
+			links["next"] = nextHref
 		}
 
-		HALSuccess(w, Resource{
-			Links:    links,
-			Embedded: embedded,
-			Props:    Props{"page": page},
+		JSON(w, JSONAPIDocument{
+			Data:  data,
+			Meta:  map[string]any{"page": page},
+			Links: links,
 		}, http.StatusOK)
 	}
 }
 
-func HandlerCreateMeReaction(s Store) http.HandlerFunc {
+// TODO: Write integration tests for this handler
+func (a *API) HandlerV1CreateMeReaction() http.HandlerFunc {
 	type RequestBody struct {
 		ReactionType ReactionType `json:"reaction_type"`
 	}
@@ -1912,213 +1790,305 @@ func HandlerCreateMeReaction(s Store) http.HandlerFunc {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			slog.Error("failed to access candidate's ID within claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: candidate",
+				}},
+			}, http.StatusForbidden)
 			return
 		}
 
-		recommendationID := ULID(r.PathValue("id"))
+		recommendationIDStr := r.PathValue("id")
+		recommendationID := ULID(recommendationIDStr)
 		if recommendationID == "" {
-			Fail(w, FailData{"id": "recommendation id is required"}, http.StatusBadRequest)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "recommendation id is required",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+		if !strings.HasPrefix(recommendationIDStr, ULIDPrefixRecommendation) {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid recommendation id",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		rec, err := s.GetRecommendation(recommendationID)
+		recommendation, err := a.Store.GetRecommendation(recommendationID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				Fail(w, FailData{"id": "recommendation not found"}, http.StatusNotFound)
+			if errors.Is(err, ErrRecommendationNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "recommendation not found",
+						Source: &JSONAPIErrorSource{Parameter: "id"},
+					}},
+				}, http.StatusNotFound)
 				return
 			}
-			slog.Error(
-				"failed to fetch recommendation",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to fetch recommendation", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
-		if rec.CandidateID != candidateID {
-			Fail(w, FailData{"reaction": "reaction forbidden"}, http.StatusForbidden)
+
+		if recommendation.CandidateID != candidateID {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "you do not have access to this resource",
+				}},
+			}, http.StatusForbidden)
 			return
 		}
 
 		body, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
-			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
-			return
-		}
-		if !body.ReactionType.IsValid() {
-			Fail(w, FailData{"reaction_type": "must be one of: positive, negative, neutral"}, http.StatusBadRequest)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid request body",
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		if err := s.CreateReaction(Reaction{
+		if !body.ReactionType.IsValid() {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "must be one of: positive, negative, neutral",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/reaction_type"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		if err := a.Store.CreateReaction(Reaction{
 			RecommendationID: recommendationID,
 			ReactorType:      ReactorTypeCandidate,
 			ReactorID:        candidateID,
 			ReactionType:     body.ReactionType,
 		}); err != nil {
 			if errors.Is(err, ErrReactionAlreadyExists) {
-				Fail(w, FailData{"id": "reaction already exists; reactions are immutable"}, http.StatusConflict)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "409",
+						Title:  "Conflict",
+						Detail: "reaction already exists; reactions are immutable",
+						Source: &JSONAPIErrorSource{Parameter: "id"},
+					}},
+				}, http.StatusConflict)
 				return
 			}
-			slog.Error(
-				"failed to record reaction",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to record reaction", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		HALSuccess(w, Resource{
-			Links: Links{
-				RelTypeSelf: Link{
-					Href: fmt.Sprintf(
-						"%s/%s/reaction",
-						RouteV1MeRecommendations,
-						recommendationID,
-					),
+		JSON(w, JSONAPIDocument{
+			Data: JSONAPIResource{
+				Type: "reactions",
+				ID:   string(recommendationID),
+				Attributes: map[string]any{
+					"reaction_type": body.ReactionType,
 				},
-				RelTypeUp:            Link{Href: string(RouteV1MeRecommendations)},
-				RelType("reactions"): Link{Href: string(RouteV1MeReactions)},
-				RelType("matches"):   Link{Href: string(RouteV1MeMatches)},
+				Links: map[string]any{
+					"self":      fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, recommendationID),
+					"up":        string(RouteV1MeRecommendations),
+					"reactions": string(RouteV1MeReactions),
+					"matches":   string(RouteV1MeMatches),
+				},
 			},
 		}, http.StatusCreated)
 	}
 }
 
-func HandlerGetMeReactions(s Store) http.HandlerFunc {
+// TODO: Write integration tests for this handler
+func (a *API) HandlerV1GetMeReactions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			slog.Error("failed to access candidate's ID within claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: candidate",
+				}},
+			}, http.StatusForbidden)
 			return
 		}
 
 		page := GetPagination(r)
 
-		reactions, nextCursor, err := s.GetReactionsByCandidateID(
+		reactions, nextCursor, err := a.Store.GetReactionsByCandidateID(
 			candidateID,
 			page,
 		)
 		if err != nil {
-			slog.Error(
-				"failed to fetch candidate",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to fetch reactions", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		page.Count = len(reactions)
 		page.HasNext = nextCursor != ""
 
-		links := Links{
-			RelTypeSelf: Link{Href: string(RouteV1MeReactions)},
+		links := map[string]any{
+			"self": string(RouteV1MeReactions),
 		}
 		if nextCursor != "" {
-			links[RelTypeNext] = Link{
-				Href: fmt.Sprintf(
-					"%s?cursor=%s",
-					RouteV1MeReactions,
-					nextCursor,
-				),
-			}
+			links["next"] = fmt.Sprintf(
+				"%s?cursor=%s",
+				RouteV1MeReactions,
+				nextCursor,
+			)
 		}
 
-		embedded := make([]Resource, len(reactions))
-		for i, rx := range reactions {
-			embedded[i] = Resource{
-				Links: Links{
-					RelTypeSelf: Link{
-						Href: fmt.Sprintf(
-							"%s/%s/reaction",
-							RouteV1MeRecommendations,
-							rx.RecommendationID,
-						),
-					},
+		data := make([]JSONAPIResource, len(reactions))
+		for i, reaction := range reactions {
+			data[i] = JSONAPIResource{
+				Type: "reactions",
+				ID:   string(reaction.RecommendationID),
+				Attributes: map[string]any{
+					"recommendation_id": reaction.RecommendationID,
+					"reactor_type":      reaction.ReactorType,
+					"reactor_id":        reaction.ReactorID,
+					"reaction_type":     reaction.ReactionType,
+					"reacted_at":        reaction.ReactedAt,
 				},
-				Props: Props{
-					"recommendation_id": rx.RecommendationID,
-					"reactor_type":      rx.ReactorType,
-					"reactor_id":        rx.ReactorID,
-					"reaction_type":     rx.ReactionType,
-					"reacted_at":        rx.ReactedAt,
+				Links: map[string]any{
+					"self": fmt.Sprintf(
+						"%s/%s/reaction",
+						RouteV1MeRecommendations,
+						reaction.RecommendationID,
+					),
 				},
 			}
 		}
 
-		HALSuccess(w, Resource{
-			Links:    links,
-			Embedded: Embedded{"reactions": embedded},
-			Props:    Props{"page": page},
+		JSON(w, JSONAPIDocument{
+			Data:  data,
+			Links: links,
+			Meta:  map[string]any{"page": page},
 		}, http.StatusOK)
 	}
 }
 
-func HandlerGetMeMatches(s Store) http.HandlerFunc {
+// TODO: Write integration tests for this handler
+func (a *API) HandlerV1GetMeMatches() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			slog.Error("failed to access candidate's ID within claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: candidate",
+				}},
+			}, http.StatusForbidden)
 			return
 		}
 
 		page := GetPagination(r)
 
-		matches, nextCursor, err := s.GetMatchesByCandidateID(candidateID, page)
+		matches, nextCursor, err := a.Store.GetMatchesByCandidateID(candidateID, page)
 		if err != nil {
-			slog.Error(
-				"failed to fetch matches",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to fetch matches", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		page.Count = len(matches)
 		page.HasNext = nextCursor != ""
 
-		links := Links{
-			RelTypeSelf: Link{Href: string(RouteV1MeMatches)},
+		links := map[string]any{
+			"self": string(RouteV1MeMatches),
 		}
 		if nextCursor != "" {
-			links[RelTypeNext] = Link{
-				Href: fmt.Sprintf(
-					"%s?cursor=%s&limit=%d",
-					RouteV1MeMatches,
-					nextCursor,
-					page.Limit,
-				),
-			}
+			links["next"] = fmt.Sprintf(
+				"%s?cursor=%s&limit=%d",
+				RouteV1MeMatches,
+				nextCursor,
+				page.Limit,
+			)
 		}
 
-		embedded := make([]Resource, len(matches))
+		data := make([]JSONAPIResource, len(matches))
 		for i, m := range matches {
-			embedded[i] = Resource{
-				Props: Props{
-					"position_id": m.PositionID,
+			data[i] = JSONAPIResource{
+				Type: "matches",
+				ID:   string(m.PositionID),
+				Attributes: map[string]any{
 					"title":       m.Title,
 					"description": m.Description,
 					"company":     m.Company,
@@ -2127,136 +2097,271 @@ func HandlerGetMeMatches(s Store) http.HandlerFunc {
 			}
 		}
 
-		HALSuccess(w, Resource{
-			Links:    links,
-			Embedded: Embedded{"matches": embedded},
-			Props:    Props{"page": page},
+		JSON(w, JSONAPIDocument{
+			Data:  data,
+			Links: links,
+			Meta:  map[string]any{"page": page},
 		}, http.StatusOK)
 	}
 }
 
-var nameRegex = regexp.MustCompile(`^[\pL][\pL\s'’-]{2,128}\z`)
+var (
+	RegexPasswordHasLower   = regexp.MustCompile(`[a-z]`)
+	RegexPasswordHasUpper   = regexp.MustCompile(`[A-Z]`)
+	RegexPasswordHasDigit   = regexp.MustCompile(`\d`)
+	RegexPasswordHasSpecial = regexp.MustCompile(`[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>/?]`)
+)
 
-func ValidateName(name string) (string, error) {
-	name = strings.TrimSpace(name)
-	name = strings.Join(strings.Fields(name), " ")
-	if len(name) < 2 {
-		return "", ErrTextTooShort
+const (
+	DefaultUserPasswordMinLength = 8
+	DefaultUserPasswordMaxLength = 128
+)
+
+func ValidateUserPassword(password string) error {
+	if len(password) < DefaultUserPasswordMinLength {
+		return ErrTextTooShort
 	}
-	if len(name) > 128 {
-		return "", ErrTextTooLong
+	if len(password) > DefaultUserPasswordMaxLength {
+		return ErrTextTooLong
 	}
-	if !nameRegex.MatchString(name) {
-		return "", ErrTextForbiddenChars
+	if !RegexPasswordHasLower.MatchString(password) {
+		return ErrPasswordHasNoLower
 	}
-	return name, nil
+	if !RegexPasswordHasUpper.MatchString(password) {
+		return ErrPasswordHasNoUpper
+	}
+	if !RegexPasswordHasDigit.MatchString(password) {
+		return ErrPasswordHasNoDigit
+	}
+	if !RegexPasswordHasSpecial.MatchString(password) {
+		return ErrPasswordHasNoSpecial
+	}
+	return nil
 }
 
-func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
+// TODO: Write integration tests for this handler
+func (a *API) HandlerV1CreateMe() http.HandlerFunc {
+	type RequestBody struct {
+		Email    string `json:"email"`
+		FullName string `json:"full_name"`
+		Password string `json:"password"`
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Email    string `json:"email"`
-			FullName string `json:"full_name"`
-			Password string `json:"password"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
-			return
-		}
-		if req.Email == "" {
-			Fail(w, FailData{"email": "email is required"}, http.StatusBadRequest)
-			return
-		}
-
-		email, err := mail.ParseAddress(req.Email)
+		body, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
-			Fail(w, FailData{"email": "invalid email"}, http.StatusBadRequest)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid request body",
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		fullName, err := ValidateName(req.FullName)
-		if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-			Fail(w, FailData{"full_name": FailDataFullNameSize}, http.StatusBadRequest)
+		if body.Email == "" {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "email is required",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/email"},
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
-		if errors.Is(err, ErrTextForbiddenChars) {
-			Fail(w, FailData{"full_name": FailDataFullNameForbiddenChars}, http.StatusBadRequest)
-			return
-		}
+
+		email, err := mail.ParseAddress(body.Email)
 		if err != nil {
-			slog.Error(
-				"failed to validate name",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid email",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/email"},
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		exists, err := s.UserExistsByEmail(email.Address, ProviderEmail)
+		err = ValidateUserPassword(body.Password)
+		switch {
+		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "password must be between 8 and 128 characters",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case errors.Is(err, ErrPasswordHasNoLower):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "password must contain at least one lowercase letter",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case errors.Is(err, ErrPasswordHasNoUpper):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "password must contain at least one uppercase letter",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case errors.Is(err, ErrPasswordHasNoDigit):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "password must contain at least one digit",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case errors.Is(err, ErrPasswordHasNoSpecial):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "password must contain at least one special character",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case err != nil:
+			slog.Error("failed to validate password", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		fullName, err := NormalizeAndValidateUserFullName(body.FullName)
+		switch {
+		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: FailMessageUserFullNameWrongSize,
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case errors.Is(err, ErrTextForbiddenChars):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: FailMessageUserFullNameForbiddenChars,
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case err != nil:
+			slog.Error("failed to validate full name", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		exists, err := a.Store.UserExistsByEmail(email.Address, ProviderEmail)
+		if err != nil {
+			slog.Error("failed to check user existance", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
 		if exists {
-			Fail(w, FailData{"email": "user already exists"}, http.StatusConflict)
-			return
-		}
-		if !exists && err != nil {
-			slog.Error(
-				"failed to check user existance",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		userName, err := GenerateUsername()
-		if err != nil {
-			slog.Error(
-				"failed to generate a username",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "409",
+					Title:  "Conflict",
+					Detail: "user already exists",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/email"},
+				}},
+			}, http.StatusConflict)
 			return
 		}
 
-		ulid, err := NewUserULID()
+		userName, err := GenerateUserName()
 		if err != nil {
-			slog.Error(
-				"failed to generate a user ULID",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to generate a user name", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		passwordHash, err := v.HashPassword(req.Password)
+		userID, err := NewUserULID()
 		if err != nil {
-			slog.Error(
-				"failed to hash password",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to generate a user ULID", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		passwordHash, err := a.Vault.HashPassword(body.Password)
+		if err != nil {
+			slog.Error("failed to hash password", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		user := User{
-			ID:             ulid,
-			Provider:       ProviderEmail,
-			ProviderUserID: "",
-			Email:          email.Address,
-			FullName:       fullName,
-			UserName:       userName,
-			PasswordHash:   passwordHash,
+			ID:           userID,
+			Provider:     ProviderEmail,
+			Email:        email.Address,
+			FullName:     fullName,
+			UserName:     userName,
+			PasswordHash: passwordHash,
 		}
-		err = s.CreateUser(user)
+		err = a.Store.CreateUser(user)
 		if err != nil {
-			slog.Error(
-				"failed to create user",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to create user", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		// TODO: indicate next actions according to HAL
-		CreateAccessToken(v, w,
+		a.OAuth2CreateTokenPair(
+			w,
 			user.ID,
 			user.Provider,
 			map[Role]ULID{},
@@ -2264,60 +2369,70 @@ func HandlerCreateUser(s Store, v Vault) http.HandlerFunc {
 	}
 }
 
-func HandlerCreateRecruiter(s Store, v Vault) http.HandlerFunc {
+// TODO: Write integration tests for this handler
+func (a *API) HandlerV1CreateMeRecruiterProfile() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ulid, err := NewRecruiterULID()
+		recruiterID, err := NewRecruiterULID()
 		if err != nil {
-			slog.Error(
-				"failed to generate a recruiter ULID",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to generate a recruiter ULID", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		err = s.CreateRecruiter(Recruiter{ulid, claims.UserID})
-		if errors.Is(err, ErrRecruiterAlreadyExists) {
-			Fail(w, FailData{"user_id": "recruiter already exists"}, http.StatusConflict)
-			return
-		}
+		err = a.Store.CreateRecruiter(Recruiter{recruiterID, claims.UserID})
 		if err != nil {
-			slog.Error(
-				"failed to create recruiter",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			if errors.Is(err, ErrRecruiterAlreadyExists) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "409",
+						Title:  "Conflict",
+						Detail: "recruiter already exists",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_id"},
+					}},
+				}, http.StatusConflict)
+				return
+			}
+			slog.Error("failed to create recruiter", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		roles, err := s.GetUserRoles(claims.UserID, claims.Provider)
+		roles, err := a.Store.GetUserRoles(claims.UserID, claims.Provider)
 		if err != nil {
-			slog.Error(
-				"failed to get user roles",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to get user roles", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		_, ok = roles[RoleCandidate]
-		if ok {
-			CreateAccessToken(v, w,
-				claims.UserID,
-				claims.Provider,
-				roles,
-			)
-			return
-		}
-
-		CreateTokenPair(s, v, w,
+		a.OAuth2CreateAccessToken(
+			w,
 			claims.UserID,
 			claims.Provider,
 			roles,
@@ -2325,97 +2440,128 @@ func HandlerCreateRecruiter(s Store, v Vault) http.HandlerFunc {
 	}
 }
 
-func ValidateAbout(about string) (string, error) {
+var RegexHasTags = regexp.MustCompile(`<[^>]*>`)
+
+const (
+	DefaultCandidateAboutMaxLength = 1024
+)
+
+func NormalizeAndValidateCandidateAbout(about string) (string, error) {
 	about = strings.TrimSpace(about)
-	reTags := regexp.MustCompile(`<[^>]*>`)
-	about = reTags.ReplaceAllString(about, "")
-	if len(about) > 1024 {
+	about = RegexHasTags.ReplaceAllString(about, "")
+	if len(about) > DefaultCandidateAboutMaxLength {
 		return "", ErrTextTooLong
 	}
 	return html.EscapeString(about), nil
 }
 
-func HandlerCreateCandidate(s Store, v Vault) http.HandlerFunc {
+// TODO: Write integration tests for this handler
+func (a *API) HandlerV1CreateMeCandidateProfile() http.HandlerFunc {
 	type RequestBody struct {
 		About string `json:"about"`
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		req, err := DecodeRequestBody[RequestBody](r)
+		body, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
-			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid request body",
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		about, err := ValidateAbout(req.About)
+		about, err := NormalizeAndValidateCandidateAbout(body.About)
 		if errors.Is(err, ErrTextTooLong) {
-			Fail(w, FailData{"about": "about must be up to 1024 characters"}, http.StatusBadRequest)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "about must be up to 1024 characters",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/about"},
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
 		if err != nil {
-			slog.Error(
-				"failed to create candidate",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to validate about", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		ulid, err := NewCandidateULID()
+		candidateID, err := NewCandidateULID()
 		if err != nil {
-			slog.Error(
-				"failed to generate a candidate ULID",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to generate a candidate ULID", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		err = s.CreateCandidate(Candidate{
-			ID:     ulid,
+		err = a.Store.CreateCandidate(Candidate{
+			ID:     candidateID,
 			UserID: claims.UserID,
 			About:  about,
 		})
-		if errors.Is(err, ErrCandidateAlreadyExists) {
-			Fail(w, FailData{"user_id": "candidate already exists"}, http.StatusConflict)
-			return
-		}
 		if err != nil {
-			slog.Error(
-				"failed to create candidate",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			if errors.Is(err, ErrCandidateAlreadyExists) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "409",
+						Title:  "Conflict",
+						Detail: "candidate already exists",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_id"},
+					}},
+				}, http.StatusConflict)
+				return
+			}
+			slog.Error("failed to create candidate", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		roles, err := s.GetUserRoles(claims.UserID, claims.Provider)
+		roles, err := a.Store.GetUserRoles(claims.UserID, claims.Provider)
 		if err != nil {
-			slog.Error(
-				"failed to get user roles",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			slog.Error("failed to get user roles", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		if _, ok = roles[RoleRecruiter]; ok {
-			CreateAccessToken(v, w,
-				claims.UserID,
-				claims.Provider,
-				roles,
-			)
-			return
-		}
-
-		CreateTokenPair(s, v, w,
+		a.OAuth2CreateAccessToken(
+			w,
 			claims.UserID,
 			claims.Provider,
 			roles,
@@ -2423,65 +2569,90 @@ func HandlerCreateCandidate(s Store, v Vault) http.HandlerFunc {
 	}
 }
 
-func HandlerGetUsersMe(s Store, v Vault) http.HandlerFunc {
+// TODO: Write tests for this handler
+func (a *API) HandlerV1GetMe() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		user, err := s.GetUser(claims.UserID)
-		if errors.Is(err, ErrUserNotFound) {
-			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
-			return
-		}
+		user, err := a.Store.GetUser(claims.UserID)
 		if err != nil {
-			slog.Error(
-				"failed to get user",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			if errors.Is(err, ErrUserNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "user not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to get user", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		// TODO: Implement HAL for this success
-		Success(w, map[string]User{
-			"user": {
-				ID:        user.ID,
-				Provider:  user.Provider,
-				Email:     user.Email,
-				FullName:  user.FullName,
-				UserName:  user.UserName,
-				UpdatedAt: user.UpdatedAt,
+		JSON(w, JSONAPIDocument{
+			Data: JSONAPIResource{
+				Type: "users",
+				ID:   string(user.ID),
+				Attributes: map[string]any{
+					"provider":   user.Provider,
+					"email":      user.Email,
+					"full_name":  user.FullName,
+					"user_name":  user.UserName,
+					"updated_at": user.UpdatedAt,
+				},
+				Links: map[string]any{
+					"self": string(RouteV1Me),
+				},
 			},
 		}, http.StatusOK)
 	}
 }
 
-var userNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+var RegexUserName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
-func ValidateUserName(userName string) (string, error) {
+const (
+	DefaultUserNameMinLength = 4
+	DefaultUesrNameMaxLength = 32
+)
+
+func NormalizeAndValidateUserName(userName string) (string, error) {
 	userName = strings.TrimSpace(userName)
-	if len(userName) < 4 {
+	if len(userName) < DefaultUserNameMinLength {
 		return "", ErrTextTooShort
 	}
-	if len(userName) > 32 {
+	if len(userName) > DefaultUesrNameMaxLength {
 		return "", ErrTextTooLong
 	}
-	if !userNameRegex.MatchString(userName) {
+	if !RegexUserName.MatchString(userName) {
 		return "", ErrTextForbiddenChars
 	}
 	return userName, nil
 }
 
 const (
-	FailDataUserNameSize           = "user_name must be between 4 and 32 characters"
-	FailDataUserNameForbiddenChars = "user_name can only contain underscores, latin characters and numbers"
+	FailMessageUserNameWrongSize      = "user_name must be between 4 and 32 characters"
+	FailMessageUserNameForbiddenChars = "user_name can only contain underscores, latin characters and numbers"
 )
 
-func HandlerPatchUsersMe(s Store, v Vault) http.HandlerFunc {
+// TODO: Write tests for this handler
+func (a *API) HandlerV1PatchMe() http.HandlerFunc {
 	type RequestBody struct {
 		UserName *string `json:"user_name,omitempty"`
 		FullName *string `json:"full_name,omitempty"`
@@ -2491,183 +2662,1434 @@ func HandlerPatchUsersMe(s Store, v Vault) http.HandlerFunc {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		body, err := DecodeRequestBody[RequestBody](r)
 		if err != nil {
-			slog.Debug("err", err)
-			Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid request body",
+				}},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		user, err := s.GetUser(claims.UserID)
-		if errors.Is(err, ErrUserNotFound) {
-			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
-			return
-		}
+		user, err := a.Store.GetUser(claims.UserID)
 		if err != nil {
-			slog.Error(
-				"failed to get user",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			if errors.Is(err, ErrUserNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "user not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to get user", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		changed := false
 		if body.FullName != nil {
-			validated, err := ValidateName(*body.FullName)
-			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-				Fail(w, FailData{"full_name": FailDataFullNameSize}, http.StatusBadRequest)
+			fullName, err := NormalizeAndValidateUserFullName(*body.FullName)
+			switch {
+			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: FailMessageUserFullNameWrongSize,
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			case errors.Is(err, ErrTextForbiddenChars):
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: FailMessageUserFullNameForbiddenChars,
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			case err != nil:
+				slog.Error("failed to validate full name", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
 				return
 			}
-			if errors.Is(err, ErrTextForbiddenChars) {
-				Fail(w, FailData{"full_name": FailDataFullNameForbiddenChars}, http.StatusBadRequest)
-				return
-			}
-			if err != nil {
-				slog.Error(
-					"failed to validate full_name",
-					"err", err,
-				)
-				Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			if user.FullName != validated {
-				user.FullName = validated
+
+			if user.FullName != fullName {
+				user.FullName = fullName
 				changed = true
 			}
 		}
 
 		if body.UserName != nil {
-			validated, err := ValidateUserName(*body.UserName)
-			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-				Fail(w, FailData{"user_name": FailDataUserNameSize}, http.StatusBadRequest)
+			userName, err := NormalizeAndValidateUserName(*body.UserName)
+			switch {
+			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: FailMessageUserNameWrongSize,
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_name"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			case errors.Is(err, ErrTextForbiddenChars):
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: FailMessageUserNameForbiddenChars,
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_name"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			case err != nil:
+				slog.Error("failed to validate user name", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
 				return
 			}
-			if errors.Is(err, ErrTextForbiddenChars) {
-				Fail(w, FailData{"user_name": FailDataUserNameForbiddenChars}, http.StatusBadRequest)
-				return
-			}
-			if err != nil {
-				slog.Error(
-					"failed to validate user_name",
-					"err", err,
-				)
-				Error(w, "internal server error", http.StatusInternalServerError)
-				return
-			}
-			if user.UserName != validated {
-				user.UserName = validated
+
+			if user.UserName != userName {
+				user.UserName = userName
 				changed = true
 			}
 		}
 
 		if !changed {
-			// TODO: Implement HAL for this success
-			Success(w, map[string]User{
-				"user": {
-					ID:        user.ID,
-					Provider:  user.Provider,
-					Email:     user.Email,
-					FullName:  user.FullName,
-					UserName:  user.UserName,
-					UpdatedAt: user.UpdatedAt,
+			JSON(w, JSONAPIDocument{
+				Meta: map[string]any{
+					"status": "success",
 				},
 			}, http.StatusOK)
 			return
 		}
 
-		updatedUser, err := s.UpdateUser(*user)
-		if errors.Is(err, ErrUserNotFound) {
-			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
-			return
-		}
+		err = a.Store.UpdateUser(user)
 		if err != nil {
-			slog.Error(
-				"failed to update user",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			if errors.Is(err, ErrUserNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "user not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to update user", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		// TODO: Impelment HAL for this success
-		Success(w, map[string]User{
-			"user": {
-				ID:        updatedUser.ID,
-				Provider:  updatedUser.Provider,
-				Email:     updatedUser.Email,
-				FullName:  updatedUser.FullName,
-				UserName:  updatedUser.UserName,
-				UpdatedAt: updatedUser.UpdatedAt,
+		JSON(w, JSONAPIDocument{
+			Meta: map[string]any{
+				"status": "success",
 			},
 		}, http.StatusOK)
 	}
 }
 
-func HandlerDeleteUsersMe(s Store, v Vault) http.HandlerFunc {
+// TODO: Write tests for this handler
+func (a *API) HandlerV1DeleteMe() http.HandlerFunc {
+	type RequestBodyPassword struct {
+		Password string `json:"password"`
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			Error(w, "internal server error", http.StatusInternalServerError)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		user, err := s.GetUser(claims.UserID)
-		if errors.Is(err, ErrUserNotFound) {
-			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
-			return
-		}
+		user, err := a.Store.GetUser(claims.UserID)
 		if err != nil {
-			slog.Error(
-				"failed to get user",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			if errors.Is(err, ErrUserNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "user not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to get user", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
 		if user.Provider == ProviderEmail {
-			var req struct {
-				Password string `json:"password"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				Fail(w, FailData{"body": "invalid request body"}, http.StatusBadRequest)
+			body, err := DecodeRequestBody[RequestBodyPassword](r)
+			if err != nil {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: "invalid request body",
+					}},
+				}, http.StatusBadRequest)
 				return
 			}
-			if req.Password == "" {
-				Fail(w, FailData{"password": "password is required"}, http.StatusBadRequest)
+			if body.Password == "" {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: "password is required",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
+					}},
+				}, http.StatusBadRequest)
 				return
 			}
-			if !v.IsValidPassword(user.PasswordHash, req.Password) {
-				Fail(w, FailData{"password": "incorrect password"}, http.StatusUnauthorized)
+			if !a.Vault.IsValidPassword(user.PasswordHash, body.Password) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "401",
+						Title:  "Unauthorized",
+						Detail: "incorrect password",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
+					}},
+				}, http.StatusUnauthorized)
 				return
 			}
 		} else {
 			// TODO: Add user deletion support for SSO
-			Fail(w, FailData{
-				"provider": "account deletion is not supported for this provider",
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "account deletion is not supported for this provider",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/provider"},
+				}},
 			}, http.StatusForbidden)
 			return
 		}
 
-		if err = s.DeleteUser(user.ID); errors.Is(err, ErrUserNotFound) {
-			Fail(w, FailData{"user": "user not found"}, http.StatusNotFound)
-			return
-		}
+		err = a.Store.DeleteUser(user.ID)
 		if err != nil {
-			slog.Error(
-				"failed to delete user",
-				"err", err,
-			)
-			Error(w, "internal server error", http.StatusInternalServerError)
+			if errors.Is(err, ErrUserNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "user not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to delete user", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
 			return
 		}
 
-		EmptySuccess(w, http.StatusOK)
+		JSON(w, JSONAPIDocument{
+			Meta: map[string]any{
+				"status": "success",
+			},
+		}, http.StatusOK)
+	}
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1GetMeCandidateProfile() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		candidateID, ok := claims.Roles[RoleCandidate]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: candidate",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		candidate, err := a.Store.GetCandidate(candidateID)
+		if err != nil {
+			if errors.Is(err, ErrCandidateNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "candidate not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to get candidate", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Data: JSONAPIResource{
+				Type: "candidates",
+				ID:   string(candidateID),
+				Attributes: map[string]any{
+					"user_id":             candidate.UserID,
+					"about":               candidate.About,
+					"last_recommended_at": candidate.LastRecommendedAt,
+				},
+				Links: map[string]any{
+					"self": string(RouteV1MeCandidate),
+				},
+			},
+		}, http.StatusOK)
+	}
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1PatchMeCandidateProfile() http.HandlerFunc {
+	type RequestBody struct {
+		About *string `json:"about,omitempty"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		candidateID, ok := claims.Roles[RoleCandidate]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: candidate",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		body, err := DecodeRequestBody[RequestBody](r)
+		if err != nil {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid request body",
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		candidate, err := a.Store.GetCandidate(candidateID)
+		if err != nil {
+			if errors.Is(err, ErrCandidateNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "candidate not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to get candidate", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		changed := false
+		if body.About != nil {
+			about, err := NormalizeAndValidateCandidateAbout(*body.About)
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: "about must be up to 1024 characters",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/about"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate about", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
+				return
+			}
+
+			if candidate.About != about {
+				candidate.About = about
+				changed = true
+			}
+		}
+
+		if !changed {
+			JSON(w, JSONAPIDocument{
+				Meta: map[string]any{
+					"status": "success",
+				},
+			}, http.StatusOK)
+			return
+		}
+
+		err = a.Store.UpdateCandidate(candidate)
+		if err != nil {
+			if errors.Is(err, ErrCandidateNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "candidate not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to update candidate", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Meta: map[string]any{
+				"status": "success",
+			},
+		}, http.StatusOK)
+	}
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1DeleteMeCandidateProfile() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		candidateID, ok := claims.Roles[RoleCandidate]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: candidate",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		err := a.Store.DeleteCandidate(candidateID)
+		if err != nil {
+			if errors.Is(err, ErrCandidateNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "candidate not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to delete candidate", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Meta: map[string]any{
+				"status": "success",
+			},
+		}, http.StatusOK)
+	}
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1GetMeRecruiterProfile() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		recruiterID, ok := claims.Roles[RoleRecruiter]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: recruiter",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		recruiter, err := a.Store.GetRecruiter(recruiterID)
+		if err != nil {
+			if errors.Is(err, ErrRecruiterNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "recruiter not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to get recruiter", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Data: JSONAPIResource{
+				Type: "recruiters",
+				ID:   string(recruiterID),
+				Attributes: map[string]any{
+					"user_id": recruiter.UserID,
+				},
+				Links: map[string]any{
+					"self": string(RouteV1MeRecruiter),
+				},
+			},
+		}, http.StatusOK)
+	}
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1DeleteMeRecruiterProfile() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		recruiterID, ok := claims.Roles[RoleRecruiter]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: recruiter",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		err := a.Store.DeleteRecruiter(recruiterID)
+		if err != nil {
+			if errors.Is(err, ErrRecruiterNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "recruiter not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to delete recruiter", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Meta: map[string]any{
+				"status": "success",
+			},
+		}, http.StatusOK)
+	}
+}
+
+var RegexUrl = regexp.MustCompile(`https?://|www\.`)
+
+const (
+	DefaultPositionTitleMinLength = 4
+	DefaultPositionTitleMaxLength = 64
+)
+
+func NormalizeAndValidatePositionTitle(title string) (string, error) {
+	title = strings.TrimSpace(title)
+	title = strings.Join(strings.Fields(title), " ")
+	if len(title) < DefaultPositionTitleMinLength {
+		return "", ErrTextTooShort
+	}
+	if len(title) > DefaultPositionTitleMaxLength {
+		return "", ErrTextTooLong
+	}
+	if _, err := url.ParseRequestURI(title); err == nil || RegexUrl.MatchString(title) {
+		return "", ErrPositionTitleHasURL
+	}
+	return title, nil
+}
+
+var RegexTags = regexp.MustCompile(`<[^>]*>`)
+
+const (
+	DefaultPositionDescriptionMaxLength = 2048
+)
+
+func NormalizeAndValidatePositionDescription(description string) (string, error) {
+	description = strings.TrimSpace(description)
+	description = RegexTags.ReplaceAllString(description, "")
+	if len(description) > DefaultPositionDescriptionMaxLength {
+		return "", ErrTextTooLong
+	}
+	return html.EscapeString(description), nil
+}
+
+const (
+	DefaultPositionCompanyNameMinLength = 2
+	DefaultPositionCompanyNameMaxLength = 512
+)
+
+func NormalizeAndValidatePositionCompanyName(company string) (string, error) {
+	company = strings.TrimSpace(company)
+	if len(company) < DefaultPositionCompanyNameMinLength {
+		return "", ErrTextTooShort
+	}
+	if len(company) > DefaultPositionCompanyNameMaxLength {
+		return "", ErrTextTooLong
+	}
+	return company, nil
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1CreateMePosition() http.HandlerFunc {
+	type RequestBody struct {
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Company     string `json:"company"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		recruiterID, ok := claims.Roles[RoleRecruiter]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: recruiter",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		body, err := DecodeRequestBody[RequestBody](r)
+		if err != nil {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid request body",
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		title, err := NormalizeAndValidatePositionTitle(body.Title)
+		switch {
+		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "title must be between 4 and 64 characters",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case errors.Is(err, ErrPositionTitleHasURL):
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "title cannot contain a URL",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		case err != nil:
+			slog.Error("failed to validate position title", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		description, err := NormalizeAndValidatePositionDescription(body.Description)
+		if errors.Is(err, ErrTextTooLong) {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "description must be up to 2048 characters",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/description"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+		if err != nil {
+			slog.Error("failed to validate description", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		company, err := NormalizeAndValidatePositionCompanyName(body.Company)
+		if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "company name must be between 2 and 512 characters",
+					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/company"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+		if err != nil {
+			slog.Error("failed to validate company name", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		positionID, err := NewPositionULID()
+		if err != nil {
+			slog.Error("failed to generate position ULID", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		err = a.Store.CreatePosition(Position{
+			positionID,
+			recruiterID,
+			title,
+			description,
+			company,
+			true,
+		})
+		if err != nil {
+			if errors.Is(err, ErrPositionAlreadyExists) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "409",
+						Title:  "Conflict",
+						Detail: "position with the same title, description and company already exists",
+					}},
+				}, http.StatusConflict)
+				return
+			}
+			slog.Error("failed to create position", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Data: JSONAPIResource{
+				Type: "positions",
+				ID:   string(positionID),
+				Attributes: map[string]any{
+					"is_active": true,
+				},
+				Links: map[string]any{
+					"self": fmt.Sprintf("%s/%s", RouteV1MePositions, positionID),
+				},
+			},
+		}, http.StatusCreated)
+	}
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1GetMePositions() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		recruiterID, ok := claims.Roles[RoleRecruiter]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: recruiter",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		page := GetPagination(r)
+		positions, nextCursor, err := a.Store.GetPositions(recruiterID, page)
+		if err != nil {
+			slog.Error("failed to fetch positions", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		links := map[string]any{
+			"self": string(RouteV1MePositions),
+		}
+		if nextCursor != "" {
+			links["next"] = fmt.Sprintf("%s?cursor=%s", RouteV1MePositions, nextCursor)
+		}
+
+		data := make([]JSONAPIResource, len(positions))
+		for i, pos := range positions {
+			data[i] = JSONAPIResource{
+				Type: "positions",
+				ID:   string(pos.ID),
+				Attributes: map[string]any{
+					"title":       pos.Title,
+					"description": pos.Description,
+					"company":     pos.Company,
+					"is_active":   pos.IsActive,
+				},
+				Links: map[string]any{
+					"self": fmt.Sprintf("%s/%s", RouteV1MePositions, pos.ID),
+				},
+			}
+		}
+
+		JSON(w, JSONAPIDocument{
+			Data:  data,
+			Links: links,
+		}, http.StatusOK)
+	}
+}
+
+// TODO: Write tests for this handler
+func (a *API) HandlerV1GetMePosition() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		recruiterID, ok := claims.Roles[RoleRecruiter]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: recruiter",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		positionIDStr := r.PathValue("id")
+		positionID := ULID(positionIDStr)
+		if positionID == "" {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "position id is required",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+		if !strings.HasPrefix(positionIDStr, ULIDPrefixPosition) {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid position id",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		position, err := a.Store.GetPosition(positionID)
+		if err != nil {
+			if errors.Is(err, ErrPositionNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "position not found",
+						Source: &JSONAPIErrorSource{Parameter: "id"},
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to fetch position", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		if position.RecruiterID != recruiterID {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "you do not have access to this resource",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Data: JSONAPIResource{
+				Type: "positions",
+				ID:   string(position.ID),
+				Attributes: map[string]any{
+					"title":       position.Title,
+					"description": position.Description,
+					"company":     position.Company,
+					"is_active":   position.IsActive,
+				},
+				Links: map[string]any{
+					"self": fmt.Sprintf("%s/%s", RouteV1MePositions, position.ID),
+				},
+			},
+		}, http.StatusOK)
+	}
+}
+
+func (a *API) HandlerV1PatchMePosition() http.HandlerFunc {
+	type RequestBody struct {
+		Title       *string `json:"title,omitempty"`
+		Description *string `json:"description,omitempty"`
+		Company     *string `json:"company,omitempty"`
+		IsActive    *bool   `json:"is_active,omitempty"`
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		recruiterID, ok := claims.Roles[RoleRecruiter]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: recruiter",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		positionIDStr := r.PathValue("id")
+		positionID := ULID(positionIDStr)
+		if positionID == "" {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "position id is required",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+		if !strings.HasPrefix(positionIDStr, ULIDPrefixPosition) {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid position id",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		body, err := DecodeRequestBody[RequestBody](r)
+		if err != nil {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid request body",
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		position, err := a.Store.GetPosition(positionID)
+		if err != nil {
+			if errors.Is(err, ErrPositionNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "position not found",
+						Source: &JSONAPIErrorSource{Parameter: "id"},
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to fetch position", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		if position.RecruiterID != recruiterID {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "you do not have access to this resource",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		changed := false
+
+		if body.Title != nil {
+			title, err := NormalizeAndValidatePositionTitle(*body.Title)
+			switch {
+			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: "title must be between 4 and 64 characters",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			case errors.Is(err, ErrPositionTitleHasURL):
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: "title cannot contain a URL",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			case err != nil:
+				slog.Error("failed to validate position title", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
+				return
+			}
+			if position.Title != title {
+				position.Title = title
+				changed = true
+			}
+		}
+
+		if body.Description != nil {
+			description, err := NormalizeAndValidatePositionDescription(*body.Description)
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: "description must be up to 2048 characters",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/description"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate description", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
+				return
+			}
+			if position.Description != description {
+				position.Description = description
+				changed = true
+			}
+		}
+
+		if body.Company != nil {
+			company, err := NormalizeAndValidatePositionCompanyName(*body.Company)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "400",
+						Title:  "Bad Request",
+						Detail: "company name must be between 2 and 512 characters",
+						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/company"},
+					}},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate company name", "err", err)
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "500",
+						Title:  "Internal Server Error",
+					}},
+				}, http.StatusInternalServerError)
+				return
+			}
+			if position.Company != company {
+				position.Company = company
+				changed = true
+			}
+		}
+
+		if body.IsActive != nil {
+			if position.IsActive != *body.IsActive {
+				position.IsActive = *body.IsActive
+				changed = true
+			}
+		}
+
+		if !changed {
+			JSON(w, JSONAPIDocument{
+				Meta: map[string]any{
+					"status": "success",
+				},
+			}, http.StatusOK)
+			return
+		}
+
+		err = a.Store.UpdatePosition(position)
+		if err != nil {
+			if errors.Is(err, ErrPositionNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "position not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to update position", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Meta: map[string]any{
+				"status": "success",
+			},
+		}, http.StatusOK)
+	}
+}
+
+func (a *API) HandlerV1DeleteMePosition() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		recruiterID, ok := claims.Roles[RoleRecruiter]
+		if !ok {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "missing required role: recruiter",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		positionIDStr := r.PathValue("id")
+		positionID := ULID(positionIDStr)
+		if positionID == "" {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "position id is required",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+		if !strings.HasPrefix(positionIDStr, ULIDPrefixPosition) {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "400",
+					Title:  "Bad Request",
+					Detail: "invalid position id",
+					Source: &JSONAPIErrorSource{Parameter: "id"},
+				}},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		position, err := a.Store.GetPosition(positionID)
+		if err != nil {
+			if errors.Is(err, ErrPositionNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "position not found",
+						Source: &JSONAPIErrorSource{Parameter: "id"},
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to fetch position", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		if position.RecruiterID != recruiterID {
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "403",
+					Title:  "Forbidden",
+					Detail: "you do not have access to this resource",
+				}},
+			}, http.StatusForbidden)
+			return
+		}
+
+		err = a.Store.DeletePosition(positionID)
+		if err != nil {
+			if errors.Is(err, ErrPositionNotFound) {
+				JSON(w, JSONAPIDocument{
+					Errors: []JSONAPIError{{
+						Status: "404",
+						Title:  "Not Found",
+						Detail: "position not found",
+					}},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to delete position", "err", err)
+			JSON(w, JSONAPIDocument{
+				Errors: []JSONAPIError{{
+					Status: "500",
+					Title:  "Internal Server Error",
+				}},
+			}, http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, JSONAPIDocument{
+			Meta: map[string]any{
+				"status": "success",
+			},
+		}, http.StatusOK)
 	}
 }

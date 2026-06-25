@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: Unlicense
 
-// Package hirevec implements internal server features
+// Package hirevec implements core server and client.
 package hirevec
 
 import (
@@ -15,16 +15,20 @@ import (
 	"time"
 )
 
+const (
+	DefaultLogLevel = slog.LevelDebug
+)
+
 func InitLogger(level slog.Level) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 }
 
 func ParseDurationWithDefault(value string, defaultValue time.Duration) time.Duration {
-	parsedReadTimeout, err := strconv.ParseInt(value, 10, 64)
+	parsed, err := time.ParseDuration(value)
 	if err != nil {
 		return defaultValue
 	}
-	return time.Duration(parsedReadTimeout) * time.Millisecond
+	return parsed
 }
 
 func ParseLogLevelWithDefault(value string, defaultValue slog.Level) slog.Level {
@@ -59,20 +63,22 @@ func ParseBoolWithDefault(value string, defaultValue bool) bool {
 }
 
 type AppConfig struct {
-	ServerBaseURL       string
-	LogLevel            slog.Level
-	RequestReadTimeout  time.Duration
-	RequestWriteTimeout time.Duration
-	GracePeriod         time.Duration
-	PostgresDatabaseURL string
-	TEIBaseURL          string
-	TEIAPIKey           string
-	SymmetricKey        string
-	AsymmetricKey       string
-	GoogleClientID      string
-	GoogleClientSecret  string
-	AppleClientID       string
-	AppleClientSecret   string
+	ServerBaseURL               string
+	LogLevel                    slog.Level
+	RequestReadTimeout          time.Duration
+	RequestWriteTimeout         time.Duration
+	GracePeriod                 time.Duration
+	PostgreSQLDatabaseURL       string
+	TEIBaseURL                  string
+	TEIAPIKey                   string
+	EmbeddingsJobFrequency      time.Duration
+	RecommendationsJobFrequency time.Duration
+	SymmetricKey                string
+	AsymmetricKey               string
+	GoogleClientID              string
+	GoogleClientSecret          string
+	AppleClientID               string
+	AppleClientSecret           string
 }
 
 func RunApp(c AppConfig) error {
@@ -108,44 +114,36 @@ func RunApp(c AppConfig) error {
 		return fmt.Errorf("vault init failed: %w", err)
 	}
 
-	usePostgres := true
-	if c.PostgresDatabaseURL == "" {
-		usePostgres = false
+	dbProvider := DatabaseProviderSQLite
+	if c.PostgreSQLDatabaseURL != "" {
+		dbProvider = DatabaseProviderPostgreSQL
 	}
 
 	store, err := NewStore(StoreConfig{
-		UsePostgres:         usePostgres,
-		PostgresDatabaseURL: c.PostgresDatabaseURL,
+		DatabaseProvider:      dbProvider,
+		PostgreSQLDatabaseURL: c.PostgreSQLDatabaseURL,
 	})
 	if err != nil {
 		return fmt.Errorf("store init failed: %w", err)
 	}
 
-	useEmbeddings := true
-	useReranker := true
-	if !usePostgres {
-		useEmbeddings = false
-	}
-	if c.TEIBaseURL == "" || c.TEIAPIKey == "" {
-		useEmbeddings = false
-		useReranker = false
-	}
-
-	return RunServer(
+	return RunAPI(
 		ctx,
-		ServerConfig{
-			ServerBaseURL:       c.ServerBaseURL,
-			RequestReadTimeout:  c.RequestReadTimeout,
-			RequestWriteTimeout: c.RequestWriteTimeout,
-			GracePeriod:         c.GracePeriod,
-			UseGoogleSSO:        useGoogleSSO,
-			UseAppleSSO:         useAppleSSO,
-			TEIBaseURL:          c.TEIBaseURL,
-			TEIAPIKey:           c.TEIAPIKey,
-			UseEmbeddings:       useEmbeddings,
-			UseReranker:         useReranker,
+		APIConfig{
+			ServerBaseURL:               c.ServerBaseURL,
+			RequestReadTimeout:          c.RequestReadTimeout,
+			RequestWriteTimeout:         c.RequestWriteTimeout,
+			GracePeriod:                 c.GracePeriod,
+			UseGoogleSSO:                useGoogleSSO,
+			UseAppleSSO:                 useAppleSSO,
+			TEIBaseURL:                  c.TEIBaseURL,
+			TEIAPIKey:                   c.TEIAPIKey,
+			UseEmbeddings:               (dbProvider != DatabaseProviderSQLite) && (c.TEIBaseURL != "" && c.TEIAPIKey != ""),
+			UseReranker:                 (c.TEIBaseURL != "" && c.TEIAPIKey != ""),
+			EmbeddingsJobFrequency:      c.EmbeddingsJobFrequency,
+			RecommendationsJobFrequency: c.RecommendationsJobFrequency,
 		},
-		*store,
-		*vault,
+		store,
+		vault,
 	)
 }
