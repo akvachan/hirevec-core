@@ -66,9 +66,6 @@ There are plans to extend it to utilize collaborative filtering with matrix fact
 7. [ ] Candidate has required years of experience (low weight, $`S_{yoe}`$)
 8. [ ] Candidate already worked for the company before (low weight, $`S_{company}`$)
 
-> [!NOTE]
-> All implemented features are marked as [x].
-
 $`\text{Score} = \left(0.60 \cdot S_{cv} + 0.15 \cdot S_{skills} + 0.10 \cdot S_{title} + 0.05 \cdot S_{yoe} + 0.02 \cdot S_{company} \right) \left(0.20 + 0.80 \cdot (0.40 \cdot H_{loc} + 0.30 \cdot H_{mode} + 0.30 \cdot H_{lang}) \right)`$
 
 ## Server Features
