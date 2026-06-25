@@ -58,23 +58,18 @@ There are plans to extend it to utilize collaborative filtering with matrix fact
 #### Model Features
 
 1. [x] Semantic/lexical similarity between candidate's CV and job posting (high weight, $`S_{cv}`$)
-2. [ ] Hard constraints (high weight):
-   - [ ] Candidate is based in the same location ($`H_{loc}`$)
-   - [ ] Candidate searches the same working mode (Remote / Hybrid / Office) ($`H_{mode}`$)
-   - [ ] Candidate speaks required working language ($`H_{lang}`$)
-3. [ ] Skills overlap (medium weight, $`S_{skills}`$)
-4. [ ] Semantic/lexical similarity between previous candidate's titles and title in the job posting (medium weight, $`S_{title}`$)
-5. [ ] Weak constraints (low weight):
-   - [ ] Candidate has required years of experience ($`S_{yoe}`$)
-   - [ ] Candidate already worked for the company before ($`S_{company}`$)
+2. [ ] Candidate is based in the same location (high weight, $`H_{loc}`$)
+3. [ ] Candidate searches the same working mode (Remote / Hybrid / Office) (high weight, $`H_{mode}`$)
+4. [ ] Candidate speaks required working language (high weight, $`H_{lang}`$)
+5. [ ] Skills overlap (medium weight, $`S_{skills}`$)
+6. [ ] Semantic/lexical similarity between previous candidate's titles and title in the job posting (medium weight, $`S_{title}`$)
+7. [ ] Candidate has required years of experience (low weight, $`S_{yoe}`$)
+8. [ ] Candidate already worked for the company before (low weight, $`S_{company}`$)
 
 > [!NOTE]
 > All implemented features are marked as [x].
 
-Model is a simple weighted sum:
-$$
-\text{Score} = \left(0.60 \cdot S_{cv} + 0.15 \cdot S_{skills} + 0.10 \cdot S_{title} + 0.05 \cdot S_{yoe} + 0.02 \cdot S_{company} \right) \left(0.20 + 0.80 \cdot (0.40 \cdot H_{loc} + 0.30 \cdot H_{mode} + 0.30 \cdot H_{lang}) \right)
-$$
+$`\text{Score} = \left(0.60 \cdot S_{cv} + 0.15 \cdot S_{skills} + 0.10 \cdot S_{title} + 0.05 \cdot S_{yoe} + 0.02 \cdot S_{company} \right) \left(0.20 + 0.80 \cdot (0.40 \cdot H_{loc} + 0.30 \cdot H_{mode} + 0.30 \cdot H_{lang}) \right)`$
 
 ## Server Features
 
