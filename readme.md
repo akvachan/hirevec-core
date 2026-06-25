@@ -57,20 +57,20 @@ There are plans to extend it to utilize collaborative filtering with matrix fact
 
 #### Model Features
 
-| Variable          | Meaning                       |
-| ----------------- | ----------------------------- |
-| ($`S_{bm25}$`)    | Normalized BM25/FTS score     |
-| ($`S_{embed}$`)   | Embedding cosine similarity   |
-| ($`S_{rerank}$`)  | Reranker score                |
-| ($`S_{skills}$`)  | Skills overlap                |
-| ($`S_{title}$`)   | Previous-title similarity     |
-| ($`S_{yoe}$`)     | Years-of-experience match     |
-| ($`S_{company}$`) | Worked for company before     |
-| ($`H_{loc}$`)     | Location match (0/1)          |
-| ($`H_{mode}$`)    | Work mode match (0/1)         |
-| ($`H_{lang}$`)    | Language match (0/1)          |
-| ($`\alpha`$)      | 1 if reranker enabled, else 0 |
-| ($`\beta`$)       | BM25/embedding mixture weight |
+| Variable        | Meaning                       |
+| --------------- | ----------------------------- |
+| $`S_{bm25}`$    | Normalized BM25/FTS score     |
+| $`S_{embed}`$   | Embedding cosine similarity   |
+| $`S_{rerank}`$  | Reranker score                |
+| $`S_{skills}`$  | Skills overlap                |
+| $`S_{title}`$   | Previous-title similarity     |
+| $`S_{yoe}`$     | Years-of-experience match     |
+| $`S_{company}`$ | Worked for company before     |
+| $`H_{loc}`$     | Location match (0/1)          |
+| $`H_{mode}`$    | Work mode match (0/1)         |
+| $`H_{lang}`$    | Language match (0/1)          |
+| $`\alpha`$      | 1 if reranker enabled, else 0 |
+| $`\beta`$       | BM25/embedding mixture weight |
 
 $`Score=\left(0.8\left(\alpha S_{rerank}+(1-\alpha)\left(\beta S_{embed}+(1-\beta)S_{bm25}\right)\right)+0.2\left(0.6S_{skills}+0.25S_{title}+0.1S_{yoe}+0.05S_{company}\right)\right)\times\left(0.2+0.8\left(0.4H_{loc}+0.3H_{mode}+0.3H_{lang}\right)\right)`$
 
