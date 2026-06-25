@@ -47,7 +47,7 @@ go run cmd/hv-cli/main.go negative <recommendation_id>
 go run cmd/hv-cli/main.go matches
 ```
 
-A match occurs when a candidate applies for a position 
+A match occurs when a candidate applies for a position
 and a recruiter that created this position, shortlists the candidate.
 
 ### Recommendation Engine
@@ -57,16 +57,22 @@ There are plans to extend it to utilize collaborative filtering with matrix fact
 
 #### Model Features
 
-1. [x] Semantic/lexical similarity between candidate's CV and job posting (high weight, $`S_{cv}`$)
-2. [ ] Candidate is based in the same location (high weight, $`H_{loc}`$)
-3. [ ] Candidate searches the same working mode (Remote / Hybrid / Office) (high weight, $`H_{mode}`$)
-4. [ ] Candidate speaks required working language (high weight, $`H_{lang}`$)
-5. [ ] Skills overlap (medium weight, $`S_{skills}`$)
-6. [ ] Semantic/lexical similarity between previous candidate's titles and title in the job posting (medium weight, $`S_{title}`$)
-7. [ ] Candidate has required years of experience (low weight, $`S_{yoe}`$)
-8. [ ] Candidate already worked for the company before (low weight, $`S_{company}`$)
+| Variable          | Meaning                       |
+| ----------------- | ----------------------------- |
+| ($`S_{bm25}$`)    | Normalized BM25/FTS score     |
+| ($`S_{embed}$`)   | Embedding cosine similarity   |
+| ($`S_{rerank}$`)  | Reranker score                |
+| ($`S_{skills}$`)  | Skills overlap                |
+| ($`S_{title}$`)   | Previous-title similarity     |
+| ($`S_{yoe}$`)     | Years-of-experience match     |
+| ($`S_{company}$`) | Worked for company before     |
+| ($`H_{loc}$`)     | Location match (0/1)          |
+| ($`H_{mode}$`)    | Work mode match (0/1)         |
+| ($`H_{lang}$`)    | Language match (0/1)          |
+| ($`\alpha`$)      | 1 if reranker enabled, else 0 |
+| ($`\beta`$)       | BM25/embedding mixture weight |
 
-$`\text{Score} = \left(0.60 \cdot S_{cv} + 0.15 \cdot S_{skills} + 0.10 \cdot S_{title} + 0.05 \cdot S_{yoe} + 0.02 \cdot S_{company} \right) \left(0.20 + 0.80 \cdot (0.40 \cdot H_{loc} + 0.30 \cdot H_{mode} + 0.30 \cdot H_{lang}) \right)`$
+$`Score=\left(0.8\left(\alpha S_{rerank}+(1-\alpha)\left(\beta S_{embed}+(1-\beta)S_{bm25}\right)\right)+0.2\left(0.6S_{skills}+0.25S_{title}+0.1S_{yoe}+0.05S_{company}\right)\right)\times\left(0.2+0.8\left(0.4H_{loc}+0.3H_{mode}+0.3H_{lang}\right)\right)`$
 
 ## Server Features
 

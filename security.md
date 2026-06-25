@@ -17,8 +17,8 @@ Developers should familiarize themselves with [PASETO](https://paseto.io/).
 
 ## Authentication
 
-- Utilize `/auth/authorize` to obtain an access and refresh tokens.
-- Utilize `/auth/token` to get a new access token after the old one expires.
+- Utilize `/oauth2/authorize` to obtain an access and refresh tokens.
+- Utilize `/oauth2/token` to get a new access token after the old one expires.
 
 ## Authorization
 
