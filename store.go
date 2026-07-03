@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"time"
 
@@ -19,23 +20,29 @@ import (
 )
 
 var (
-	ErrPositionAlreadyExists       = errors.New("position already exists")
-	ErrPositionNotFound            = errors.New("position not found")
-	ErrMissingDatabaseURL          = errors.New("database URL is not set")
-	ErrRecommendationAlreadyExists = errors.New("recommendation already exists")
-	ErrRecommendationNotFound      = errors.New("recommendation not found")
-	ErrUserAlreadyExists           = errors.New("user already exists")
-	ErrCandidateAlreadyExists      = errors.New("candidate already exists")
-	ErrRecruiterAlreadyExists      = errors.New("recruiter already exists")
-	ErrUserNoRole                  = errors.New("user has no role")
-	ErrUserNotFound                = errors.New("user not found")
-	ErrCandidateNotFound           = errors.New("candidate not found")
-	ErrRecruiterNotFound           = errors.New("recruiter not found")
-	ErrRecommendationExists        = errors.New("recommendation already exists")
-	ErrReactionAlreadyExists       = errors.New("reaction already exists")
-	ErrEmbeddingsCountConflict     = errors.New("mismatch between count of embedding IDs and embeddings")
-	ErrUnsupportedDatabaseProvider = errors.New("unsupported database provider")
-	ErrEmptyCandidateProfile       = errors.New("candidate profile is empty")
+	ErrPositionAlreadyExists            = errors.New("position already exists")
+	ErrPositionNotFound                 = errors.New("position not found")
+	ErrMissingDatabaseURL               = errors.New("database URL is not set")
+	ErrRecommendationAlreadyExists      = errors.New("recommendation already exists")
+	ErrRecommendationNotFound           = errors.New("recommendation not found")
+	ErrUserAlreadyExists                = errors.New("user already exists")
+	ErrCandidateAlreadyExists           = errors.New("candidate already exists")
+	ErrRecruiterAlreadyExists           = errors.New("recruiter already exists")
+	ErrUserNoRole                       = errors.New("user has no role")
+	ErrUserNotFound                     = errors.New("user not found")
+	ErrCandidateNotFound                = errors.New("candidate not found")
+	ErrRecruiterNotFound                = errors.New("recruiter not found")
+	ErrRecommendationExists             = errors.New("recommendation already exists")
+	ErrReactionAlreadyExists            = errors.New("reaction already exists")
+	ErrEmbeddingsCountConflict          = errors.New("mismatch between count of embedding IDs and embeddings")
+	ErrUnsupportedDatabaseProvider      = errors.New("unsupported database provider")
+	ErrEmptyCandidateProfile            = errors.New("candidate profile is empty")
+	ErrFailedGenerateUserULID           = errors.New("failed to generate ULID for user")
+	ErrFailedGenerateJTIULID            = errors.New("failed to generate ULID for refresh token (JTI)")
+	ErrFailedGenerateRecommendationULID = errors.New("failed to generate ULID for recommendation")
+	ErrFailedGenerateRecruiterULID      = errors.New("failed to generate ULID for recruiter")
+	ErrFailedGeneratePositionULID       = errors.New("failed to generate ULID for position")
+	ErrFailedGenerateCandidateULID      = errors.New("failed to generate ULID for candidate")
 )
 
 const Enc = "0123456789abcdefghjkmnpqrstvwxyz"
@@ -112,76 +119,15 @@ type StoreConfig struct {
 	PostgreSQLDatabaseURL string
 }
 
-func InitPostgreSQLFTS(db *sql.DB) error {
-	_, err := db.Exec(`
-		-- Positions FTS
-		alter table positions 
-		add column if not exists search_vector tsvector generated always as (to_tsvector('english', title || ' ' || description || ' ' || coalesce(company, ''))) stored;
-
-		create index if not exists idx_positions_search on positions using gin(search_vector);
-
-		-- Candidates FTS
-		alter table candidates 
-		add column if not exists search_vector tsvector generated always as (to_tsvector('english', coalesce(about, ''))) stored;
-
-		create index if not exists idx_candidates_search on candidates using gin(search_vector);
-	`)
-	return err
-}
-
-func InitSQLiteFTS(db *sql.DB) error {
-	_, err := db.Exec(`
-		-- Positions FTS Setup
-		create virtual table if not exists positions_fts using fts5(
-			id unindexed,
-			title,
-			description,
-			company
-		);
-
-		create trigger if not exists positions_ai after insert on positions
-		begin
-			insert into positions_fts(id, title, description, company)
-			values (new.id, new.title, new.description, new.company);
-		end;
-
-		create trigger if not exists positions_ad after delete on positions
-		begin
-			delete from positions_fts where id = old.id;
-		end;
-
-		create trigger if not exists positions_au after update on positions
-		begin
-			delete from positions_fts where id = old.id;
-			insert into positions_fts(id, title, description, company)
-			values (new.id, new.title, new.description, new.company);
-		end;
-
-		-- Candidates FTS Setup
-		create virtual table if not exists candidates_fts using fts5(
-			id unindexed,
-			about
-		);
-
-		create trigger if not exists candidates_ai after insert on candidates
-		begin
-			insert into candidates_fts(id, about)
-			values (new.id, new.about);
-		end;
-
-		create trigger if not exists candidates_ad after delete on candidates
-		begin
-			delete from candidates_fts where id = old.id;
-		end;
-
-		create trigger if not exists candidates_au after update on candidates
-		begin
-			delete from candidates_fts where id = old.id;
-			insert into candidates_fts(id, about)
-			values (new.id, new.about);
-		end;
-	`)
-	return err
+func ExecMigration(db *sql.DB, path string) error {
+	sql, err := EmbeddedStatic.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(string(sql)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ConnectPostgreSQL(url string) (*sql.DB, error) {
@@ -207,7 +153,7 @@ func ConnectPostgreSQL(url string) (*sql.DB, error) {
 	return db, nil
 }
 
-var DefaultSQLiteConn = "file:.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+var DefaultSQLiteConn = "file:db/.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 
 func ConnectSQLite() (*sql.DB, error) {
 	slog.Debug("connecting to database", "database", "SQLite")
@@ -235,6 +181,14 @@ func ConnectSQLite() (*sql.DB, error) {
 	return db, nil
 }
 
+var (
+	PathInitMigration          = path.Join("db/migrations/init.sql")
+	PathEmbeddingsMigration    = path.Join("db/migrations/embeddings.sql")
+	PathPostgreSQLFTSMigration = path.Join("db/migrations/postgresql-fts.sql")
+	PathSQLiteFTSMigration     = path.Join("db/migrations/sqlite-fts.sql")
+	PathQuickStartMigration    = path.Join("db/migrations/quick-start.sql")
+)
+
 func InitPostgreSQL(url string) (*sql.DB, error) {
 	db, err := ConnectPostgreSQL(url)
 	if err != nil {
@@ -243,25 +197,17 @@ func InitPostgreSQL(url string) (*sql.DB, error) {
 	}
 
 	slog.Debug("creating database schema", "database", "PostgreSQL")
-	initSQL, err := EmbeddedAssets.ReadFile("assets/init.sql")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(string(initSQL)); err != nil {
+	if err := ExecMigration(db, PathInitMigration); err != nil {
 		return nil, err
 	}
 
 	slog.Debug("creating embeddings tables", "database", "PostgreSQL")
-	embbeddingsSQL, err := EmbeddedAssets.ReadFile("assets/embeddings.sql")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(string(embbeddingsSQL)); err != nil {
+	if err := ExecMigration(db, PathEmbeddingsMigration); err != nil {
 		return nil, err
 	}
 
 	slog.Debug("initializing FTS", "database", "PostgreSQL")
-	if err := InitPostgreSQLFTS(db); err != nil {
+	if err := ExecMigration(db, PathPostgreSQLFTSMigration); err != nil {
 		return nil, err
 	}
 
@@ -276,16 +222,12 @@ func InitSQLite() (*sql.DB, error) {
 	}
 
 	slog.Debug("creating database schema", "database", "SQLite")
-	initSQL, err := EmbeddedAssets.ReadFile("assets/init.sql")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := db.Exec(string(initSQL)); err != nil {
+	if err := ExecMigration(db, PathInitMigration); err != nil {
 		return nil, err
 	}
 
 	slog.Debug("initializing FTS", "database", "SQLite")
-	if err := InitSQLiteFTS(db); err != nil {
+	if err := ExecMigration(db, PathSQLiteFTSMigration); err != nil {
 		return nil, err
 	}
 
@@ -304,33 +246,32 @@ func NewStore(c StoreConfig) (Store, error) {
 	if c.DatabaseProvider == DatabaseProviderPostgreSQL {
 		slog.Debug("initializing store", "database", "PostgreSQL")
 		if s.DB, err = InitPostgreSQL(c.PostgreSQLDatabaseURL); err != nil {
-			slog.Error("failed to initialize database", "database", "PostgreSQL")
+			slog.Error("failed to initialize database", "database", "PostgreSQL", "err", err)
+			return s, err
 		}
-
 	} else if c.DatabaseProvider == DatabaseProviderSQLite {
 		slog.Debug("initializing store", "database", "SQLite")
 		if s.DB, err = InitSQLite(); err != nil {
-			slog.Error("failed to initialize database", "database", "SQLite")
+			slog.Error("failed to initialize database", "database", "SQLite", "err", err)
+			return s, err
 		}
-
 	} else {
 		return s, ErrUnsupportedDatabaseProvider
 	}
-
 	s.DatabaseProvider = c.DatabaseProvider
 
 	return s, nil
 }
 
 func (s Store) GetRecommendation(recommendationID ULID) (Recommendation, error) {
-	var recommendation Recommendation
+	var candidateID, positionID ULID
 	err := s.DB.QueryRow(`
 		select candidate_id, position_id
 		from recommendations
 		where id = $1
 	`, recommendationID).Scan(
-		&recommendation.CandidateID,
-		&recommendation.PositionID,
+		&candidateID,
+		&positionID,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -338,7 +279,11 @@ func (s Store) GetRecommendation(recommendationID ULID) (Recommendation, error) 
 		}
 		return Recommendation{}, err
 	}
-	return recommendation, nil
+	return Recommendation{
+		recommendationID,
+		positionID,
+		candidateID,
+	}, nil
 }
 
 func (s Store) GetUserAndRolesByEmail(email string, provider Provider) (User, map[Role]ULID, error) {
@@ -407,7 +352,7 @@ func (s Store) GetUserAndRolesByEmail(email string, provider Provider) (User, ma
 	return user, roles, nil
 }
 
-func (s Store) GetUserAndRolesByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error) {
+func (s Store) GetUserIDAndRolesByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error) {
 	var userID ULID
 	var candidateID, recruiterID sql.NullString
 	err := s.DB.QueryRow(`
@@ -489,7 +434,27 @@ type User struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-func (s Store) CreateUser(user User) error {
+func CurrentTimestamp(offset ...time.Duration) string {
+	t := time.Now()
+	if len(offset) > 0 {
+		t = t.Add(offset[0])
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+func (s Store) CreateUser(
+	provider Provider,
+	providerUserID,
+	email string,
+	fullName string,
+	userName string,
+	passwordHash string,
+) (ULID, error) {
+	id, err := NewUserULID()
+	if err != nil {
+		return "", ErrFailedGenerateUserULID
+	}
+
 	result, err := s.DB.Exec(
 		`
 		insert into users (
@@ -504,27 +469,20 @@ func (s Store) CreateUser(user User) error {
 		)
 		values ($1, $2, nullif($3, ''), $4, $5, $6, $7, $8)
 		on conflict (provider, provider_user_id) do nothing
-	`,
-		user.ID,
-		user.Provider,
-		user.ProviderUserID,
-		user.Email,
-		user.FullName,
-		user.UserName,
-		user.PasswordHash,
-		CurrentTimestamp(),
-	)
+	`, id, provider, providerUserID, email, fullName, userName, passwordHash, CurrentTimestamp())
 	if err != nil {
-		return err
+		return "", err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rows == 0 {
-		return ErrUserAlreadyExists
+		return "", ErrUserAlreadyExists
 	}
-	return err
+
+	return id, nil
 }
 
 type ReactionType string
@@ -561,15 +519,12 @@ type Reaction struct {
 	ReactedAt        time.Time    `json:"reacted_at"`
 }
 
-func CurrentTimestamp(offset ...time.Duration) string {
-	t := time.Now()
-	if len(offset) > 0 {
-		t = t.Add(offset[0])
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func (s Store) CreateReaction(reaction Reaction) error {
+func (s Store) CreateReaction(
+	recommendationID ULID,
+	reactorType ReactorType,
+	reactorID ULID,
+	reactionType ReactionType,
+) error {
 	result, err := s.DB.Exec(
 		`
 		insert into reactions (
@@ -582,11 +537,10 @@ func (s Store) CreateReaction(reaction Reaction) error {
 		values ($1, $2, $3, $4, $5)
 		on conflict (recommendation_id, reactor_type, reactor_id) do nothing
 	`,
-		reaction.RecommendationID,
-		reaction.ReactorType,
-		reaction.ReactorID,
-		reaction.ReactionType,
-		reaction.ReactedAt,
+		recommendationID,
+		reactorType,
+		reactorID,
+		reactionType,
 		CurrentTimestamp(),
 	)
 	if err != nil {
@@ -614,10 +568,15 @@ func (s Store) IsRevokedRefreshToken(jti ULID) (bool, error) {
 
 const DefaultMaxRefreshTokensCount = 5
 
-func (s Store) CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) error {
+func (s Store) CreateRefreshToken(userID ULID) (jti ULID, err error) {
+	jti, err = NewJTIULID()
+	if err != nil {
+		return "", ErrFailedGenerateJTIULID
+	}
+
 	tx, err := s.DB.Begin()
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() {
 		if err != nil {
@@ -635,7 +594,7 @@ func (s Store) CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) er
 		  and revoked = false
 		  and expires_at > $2
 	`, userID, currentTimestamp).Scan(&count); err != nil {
-		return err
+		return "", err
 	}
 	if count >= DefaultMaxRefreshTokensCount {
 		if _, err = tx.Exec(`
@@ -651,18 +610,22 @@ func (s Store) CreateRefreshToken(jti ULID, userID ULID, expiresAt time.Time) er
 				limit 1
 			)
 		`, userID, currentTimestamp); err != nil {
-			return err
+			return "", err
 		}
 	}
 
 	if _, err = tx.Exec(`
 		insert into refresh_tokens (jti, user_id, created_at, expires_at)
 		values ($1, $2, $3, $4)
-	`, jti, userID, currentTimestamp, expiresAt); err != nil {
-		return err
+	`, jti, userID, currentTimestamp, CurrentTimestamp(DefaultRefreshTokenExpiration)); err != nil {
+		return "", err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+
+	return jti, nil
 }
 
 type Recommendation struct {
@@ -671,92 +634,32 @@ type Recommendation struct {
 	CandidateID ULID `json:"candidate_id"`
 }
 
-func (s Store) CreateRecommendation(recommendation Recommendation) error {
+func (s Store) CreateRecommendation(
+	positionID ULID,
+	candidateID ULID,
+) (ULID, error) {
+	id, err := NewRecommendationULID()
+	if err != nil {
+		return "", ErrFailedGenerateRecommendationULID
+	}
+
 	result, err := s.DB.Exec(`
 		insert into recommendations (recommendation_id, position_id, candidate_id)
 		values ($1, $2, $3)
-	`, recommendation.ID, recommendation.PositionID, recommendation.CandidateID)
+	`, id, positionID, candidateID)
 	if err != nil {
-		return err
+		return "", err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rows == 0 {
-		return ErrRecommendationAlreadyExists
-	}
-	return nil
-}
-
-func (s Store) CreateRecommendations(recommendations []Recommendation) error {
-	if len(recommendations) == 0 {
-		return nil
+		return "", ErrRecommendationAlreadyExists
 	}
 
-	tx, err := s.DB.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	insertTx, err := tx.Prepare(`
-		insert into recommendations (recommendation_id, position_id, candidate_id)
-		values ($1, $2, $3)
-	`)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := insertTx.Close(); err != nil {
-			slog.Error(
-				"failed to close insert recommendations transaction",
-				"method", "CreateRecommendations",
-				"err", err,
-			)
-		}
-	}()
-
-	upsertTx, err := tx.Prepare(`
-		update candidates
-		set last_recommended_at = $1
-		where id = $2 
-	`)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := upsertTx.Close(); err != nil {
-			slog.Error(
-				"failed to close upsert candidates transaction",
-				"method", "CreateRecommendations",
-				"err", err,
-			)
-		}
-	}()
-
-	for _, recommendation := range recommendations {
-		if _, err = insertTx.Exec(
-			recommendation.ID,
-			recommendation.PositionID,
-			recommendation.CandidateID,
-		); err != nil {
-			return err
-		}
-
-		if _, err = upsertTx.Exec(
-			CurrentTimestamp(),
-			recommendation.CandidateID,
-		); err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
+	return id, nil
 }
 
 type Page struct {
@@ -1223,23 +1126,30 @@ type Recruiter struct {
 	UserID ULID `json:"user_id"`
 }
 
-func (s Store) CreateRecruiter(recruiter Recruiter) error {
+func (s Store) CreateRecruiter(userID ULID) (ULID, error) {
+	id, err := NewRecruiterULID()
+	if err != nil {
+		return "", ErrFailedGenerateRecruiterULID
+	}
+
 	result, err := s.DB.Exec(`
 		insert into recruiters (id, user_id)
 		values ($1, $2)
 		on conflict (user_id) do nothing
-	`, recruiter.ID, recruiter.UserID)
+	`, id, userID)
 	if err != nil {
-		return err
+		return "", err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rows == 0 {
-		return ErrRecruiterAlreadyExists
+		return "", ErrRecruiterAlreadyExists
 	}
-	return nil
+
+	return id, nil
 }
 
 type Position struct {
@@ -1251,31 +1161,44 @@ type Position struct {
 	IsActive    bool   `json:"is_active"`
 }
 
-func (s Store) CreatePosition(position Position) error {
+func (s Store) CreatePosition(
+	recruiterID ULID,
+	title string,
+	description string,
+	company string,
+	isActive bool,
+) (ULID, error) {
+	id, err := NewPositionULID()
+	if err != nil {
+		return "", ErrFailedGeneratePositionULID
+	}
+
 	result, err := s.DB.Exec(
 		`
 		insert into positions (id, recruiter_id, title, description, company, is_active)
 		values ($1, $2, $3, $4, $5, $6)
 		on conflict (title, description, company) do nothing
 	`,
-		position.ID,
-		position.RecruiterID,
-		position.Title,
-		position.Description,
-		position.Company,
-		position.IsActive,
+		id,
+		recruiterID,
+		title,
+		description,
+		company,
+		isActive,
 	)
 	if err != nil {
-		return err
+		return "", err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rows == 0 {
-		return ErrPositionAlreadyExists
+		return "", ErrPositionAlreadyExists
 	}
-	return nil
+
+	return id, nil
 }
 
 type Candidate struct {
@@ -1285,29 +1208,39 @@ type Candidate struct {
 	LastRecommendedAt time.Time `json:"last_recommended_at"`
 }
 
-func (s Store) CreateCandidate(candidate Candidate) error {
+func (s Store) CreateCandidate(
+	userID ULID,
+	about string,
+) (ULID, error) {
+	id, err := NewCandidateULID()
+	if err != nil {
+		return "", ErrFailedGenerateCandidateULID
+	}
+
 	result, err := s.DB.Exec(
 		`
 		insert into candidates (id, user_id, about, last_recommended_at)
 		values ($1, $2, $3, $4)
 		on conflict (user_id) do nothing
 	`,
-		candidate.ID,
-		candidate.UserID,
-		candidate.About,
+		id,
+		userID,
+		about,
 		CurrentTimestamp(-7*24*time.Hour),
 	)
 	if err != nil {
-		return err
+		return "", err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rows == 0 {
-		return ErrCandidateAlreadyExists
+		return "", ErrCandidateAlreadyExists
 	}
-	return nil
+
+	return id, nil
 }
 
 func (s Store) ClearAll(ctx context.Context) error {
@@ -1342,6 +1275,7 @@ func (s Store) UserExistsByEmail(email string, provider Provider) (bool, error) 
 	if err != nil {
 		return false, err
 	}
+
 	return exists, nil
 }
 
@@ -1461,7 +1395,11 @@ func (s Store) GetUser(userID ULID) (User, error) {
 	}, nil
 }
 
-func (s Store) UpdateUser(user User) error {
+func (s Store) UpdateUser(
+	userID ULID,
+	newFullName string,
+	newUserName string,
+) error {
 	result, err := s.DB.Exec(`
 		update users
 		set
@@ -1469,10 +1407,11 @@ func (s Store) UpdateUser(user User) error {
 			user_name = $2,
 			updated_at = $3
 		where id = $4
-	`, user.FullName, user.UserName, CurrentTimestamp(), user.ID)
+	`, newFullName, newUserName, CurrentTimestamp(), userID)
 	if err != nil {
 		return err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return err
@@ -1480,13 +1419,18 @@ func (s Store) UpdateUser(user User) error {
 	if rows == 0 {
 		return ErrUserNotFound
 	}
+
 	return nil
 }
 
-func (s Store) UpdateUserAndReturn(user User) (User, error) {
+func (s Store) UpdateUserAndReturn(
+	userID ULID,
+	newFullName string,
+	newUserName string,
+) (User, error) {
 	var updatedAt time.Time
 	var optionalProviderUserID sql.NullString
-	var providerUserID, fullName, userName, passwordHash, email string
+	var providerUserID, passwordHash, email string
 	var provider Provider
 	err := s.DB.QueryRow(`
 		update users
@@ -1503,12 +1447,12 @@ func (s Store) UpdateUserAndReturn(user User) (User, error) {
 			user_name,
 			password_hash,
 			updated_at
-	`, user.FullName, user.UserName, CurrentTimestamp(), user.ID).Scan(
+	`, newFullName, newUserName, CurrentTimestamp(), userID).Scan(
 		&provider,
 		&optionalProviderUserID,
 		&email,
-		&fullName,
-		&userName,
+		&newFullName,
+		&newUserName,
 		&passwordHash,
 		&updatedAt,
 	)
@@ -1524,12 +1468,12 @@ func (s Store) UpdateUserAndReturn(user User) (User, error) {
 	}
 
 	return User{
-		user.ID,
+		userID,
 		provider,
 		providerUserID,
 		email,
-		fullName,
-		userName,
+		newFullName,
+		newUserName,
 		passwordHash,
 		updatedAt,
 	}, nil
@@ -1543,6 +1487,7 @@ func (s Store) DeleteUser(userID ULID) error {
 	if err != nil {
 		return err
 	}
+
 	rows, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -1550,6 +1495,7 @@ func (s Store) DeleteUser(userID ULID) error {
 	if rows == 0 {
 		return ErrUserNotFound
 	}
+
 	return nil
 }
 
@@ -1575,6 +1521,7 @@ func (s Store) GetCandidate(candidateID ULID) (Candidate, error) {
 		}
 		return Candidate{}, err
 	}
+
 	return Candidate{
 		candidateID,
 		userID,
@@ -1583,15 +1530,19 @@ func (s Store) GetCandidate(candidateID ULID) (Candidate, error) {
 	}, nil
 }
 
-func (s Store) UpdateCandidate(candidate Candidate) error {
+func (s Store) UpdateCandidate(
+	candidateID ULID,
+	newAbout string,
+) error {
 	result, err := s.DB.Exec(`
 		update candidates
 		set about = $1
 		where id = $2
-	`, candidate.About, candidate.ID)
+	`, newAbout, candidateID)
 	if err != nil {
 		return err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return err
@@ -1599,12 +1550,15 @@ func (s Store) UpdateCandidate(candidate Candidate) error {
 	if rows == 0 {
 		return ErrCandidateNotFound
 	}
+
 	return nil
 }
 
-func (s Store) UpdateCandidateAndReturn(candidate Candidate) (Candidate, error) {
+func (s Store) UpdateCandidateAndReturn(
+	candidateID ULID,
+	newAbout string,
+) (Candidate, error) {
 	var userID ULID
-	var about string
 	var lastRecommendedAt time.Time
 	err := s.DB.QueryRow(`
 		update candidates
@@ -1615,9 +1569,9 @@ func (s Store) UpdateCandidateAndReturn(candidate Candidate) (Candidate, error) 
 			user_id,
 			about,
 			last_recommended_at
-	`, candidate.About, candidate.ID).Scan(
+	`, newAbout, candidateID).Scan(
 		&userID,
-		&about,
+		&newAbout,
 		&lastRecommendedAt,
 	)
 	if err != nil {
@@ -1626,10 +1580,11 @@ func (s Store) UpdateCandidateAndReturn(candidate Candidate) (Candidate, error) 
 		}
 		return Candidate{}, err
 	}
+
 	return Candidate{
-		candidate.ID,
+		candidateID,
 		userID,
-		about,
+		newAbout,
 		lastRecommendedAt,
 	}, nil
 }
@@ -1642,6 +1597,7 @@ func (s Store) DeleteCandidate(candidateID ULID) error {
 	if err != nil {
 		return err
 	}
+
 	rows, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -1649,6 +1605,7 @@ func (s Store) DeleteCandidate(candidateID ULID) error {
 	if rows == 0 {
 		return ErrCandidateNotFound
 	}
+
 	return nil
 }
 
@@ -1665,6 +1622,7 @@ func (s Store) GetRecruiter(recruiterID ULID) (Recruiter, error) {
 		}
 		return Recruiter{}, err
 	}
+
 	return Recruiter{
 		recruiterID,
 		userID,
@@ -1679,6 +1637,7 @@ func (s Store) DeleteRecruiter(recruiterID ULID) error {
 	if err != nil {
 		return err
 	}
+
 	rows, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -1686,6 +1645,7 @@ func (s Store) DeleteRecruiter(recruiterID ULID) error {
 	if rows == 0 {
 		return ErrRecruiterNotFound
 	}
+
 	return nil
 }
 
@@ -1701,6 +1661,7 @@ func (s Store) RecruiterExists(recruiterID ULID) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+
 	return exists, nil
 }
 
@@ -1781,7 +1742,13 @@ func (s Store) GetPositions(recruiterID ULID, page Page) (positions []Position, 
 	return positions, nextCursor, nil
 }
 
-func (s Store) UpdatePosition(position Position) error {
+func (s Store) UpdatePosition(
+	positionID ULID,
+	newTitle string,
+	newDescription string,
+	newCompany string,
+	isActive bool,
+) error {
 	result, err := s.DB.Exec(
 		`
 		update positions
@@ -1792,15 +1759,16 @@ func (s Store) UpdatePosition(position Position) error {
 			is_active = $5
 		where id = $1
 	`,
-		position.ID,
-		position.Title,
-		position.Description,
-		position.Company,
-		position.IsActive,
+		positionID,
+		newTitle,
+		newDescription,
+		newCompany,
+		isActive,
 	)
 	if err != nil {
 		return err
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return err
@@ -1808,6 +1776,7 @@ func (s Store) UpdatePosition(position Position) error {
 	if rows == 0 {
 		return ErrPositionNotFound
 	}
+
 	return nil
 }
 
@@ -1819,6 +1788,7 @@ func (s Store) DeletePosition(positionID ULID) error {
 	if err != nil {
 		return err
 	}
+
 	rows, err := res.RowsAffected()
 	if err != nil {
 		return err
@@ -1826,6 +1796,7 @@ func (s Store) DeletePosition(positionID ULID) error {
 	if rows == 0 {
 		return ErrPositionNotFound
 	}
+
 	return nil
 }
 

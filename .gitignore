@@ -55,9 +55,17 @@ __pycache__
 # Database
 .db
 bm25_cache.json
+*.db
+db/.db
 
 # Binaries
 bin
 
 .fdignore
 .ignore
+
+# Custom data
+hv-data.json
+.hv-data.json
+.data.json
+data.json

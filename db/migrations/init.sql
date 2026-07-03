@@ -1,3 +1,5 @@
+begin transaction;
+
 create table if not exists users (
   id text primary key not null,
   provider text not null,
@@ -6,7 +8,7 @@ create table if not exists users (
   full_name text,
   user_name text unique not null,
   password_hash text,
-  updated_at timestamp not null, -- UTC, ISO 8601
+  updated_at timestamp not null, -- UTC, RFC3339
   check (provider in ('google', 'apple', 'email')),
   unique(provider, provider_user_id)
 );
@@ -14,8 +16,8 @@ create table if not exists users (
 create table if not exists refresh_tokens (
   jti text primary key not null,
   user_id text not null,
-  created_at timestamp not null, -- UTC, ISO 8601
-  expires_at timestamp not null, -- UTC, ISO 8601
+  created_at timestamp not null, -- UTC, RFC3339
+  expires_at timestamp not null, -- UTC, RFC3339
   revoked integer not null default 0,
   foreign key (user_id) references users(id) on delete cascade,
   check (revoked in (0, 1))
@@ -28,7 +30,7 @@ create table if not exists candidates (
   id text primary key not null,
   user_id text not null,
   about text not null,
-  last_recommended_at timestamp not null, -- UTC, ISO 8601
+  last_recommended_at timestamp not null, -- UTC, RFC3339
   unique(user_id),
   foreign key (user_id) references users(id) on delete cascade
 );
@@ -81,7 +83,7 @@ create table if not exists reactions (
   reactor_type text not null,
   reactor_id text not null,
   reaction_type text not null,
-  created_at timestamp not null, -- UTC, ISO 8601
+  created_at timestamp not null, -- UTC, RFC3339
   primary key (recommendation_id, reactor_type, reactor_id),
   foreign key (recommendation_id) references recommendations(id) on delete cascade,
   check (reactor_type in ('candidate', 'recruiter')),
@@ -94,8 +96,10 @@ on reactions(recommendation_id);
 create table if not exists matches (
   candidate_id text not null,
   position_id text not null,
-  created_at timestamp not null, -- UTC, ISO 8601
+  created_at timestamp not null, -- UTC, RFC3339
   primary key (candidate_id, position_id),
   foreign key (candidate_id) references candidates(id) on delete cascade,
   foreign key (position_id) references positions(id) on delete cascade
 );
+
+commit;

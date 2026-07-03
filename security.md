@@ -7,7 +7,7 @@
 - [x] The JTI is issued by the server as ULID.
 - [x] Access token expiration = 30 minutes.
 - [x] Refresh token expiration = 30 days.
-- [x] Developers and testers must go through the same security layers as ordinary users
+- [x] Developers and testers must go through the same security layers as ordinary users.
 - [ ] Google and Apple SSO is supported.
 
 ## Tokens Schema

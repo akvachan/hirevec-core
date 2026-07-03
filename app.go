@@ -6,6 +6,7 @@ package hirevec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,51 +16,34 @@ import (
 	"time"
 )
 
+var ErrUnknownLogLevel = errors.New("unknown log level")
+
 const (
-	DefaultLogLevel = slog.LevelDebug
+	DefaultLogLevel = slog.LevelWarn
 )
 
 func InitLogger(level slog.Level) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 }
 
-func ParseDurationWithDefault(value string, defaultValue time.Duration) time.Duration {
-	parsed, err := time.ParseDuration(value)
-	if err != nil {
-		return defaultValue
-	}
-	return parsed
-}
-
-func ParseLogLevelWithDefault(value string, defaultValue slog.Level) slog.Level {
+func ParseLogLevel(value string) (slog.Level, error) {
 	switch value {
 	case "INFO":
-		return slog.LevelInfo
+		return slog.LevelInfo, nil
 	case "ERROR":
-		return slog.LevelError
+		return slog.LevelError, nil
 	case "WARN":
-		return slog.LevelWarn
+		return slog.LevelWarn, nil
 	case "DEBUG":
-		return slog.LevelDebug
+		return slog.LevelDebug, nil
 	default:
-		return defaultValue
+		return -1, ErrUnknownLogLevel
 	}
 }
 
-func ParseIntWithDefault(value string, defaultValue int) int {
+func ParseInt(value string) (int, error) {
 	parsedValue, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return defaultValue
-	}
-	return int(parsedValue)
-}
-
-func ParseBoolWithDefault(value string, defaultValue bool) bool {
-	parsedValue, err := strconv.ParseBool(value)
-	if err != nil {
-		return defaultValue
-	}
-	return parsedValue
+	return int(parsedValue), err
 }
 
 type AppConfig struct {
@@ -68,17 +52,17 @@ type AppConfig struct {
 	RequestReadTimeout          time.Duration
 	RequestWriteTimeout         time.Duration
 	GracePeriod                 time.Duration
-	PostgreSQLDatabaseURL       string
-	TEIBaseURL                  string
-	TEIAPIKey                   string
 	EmbeddingsJobFrequency      time.Duration
 	RecommendationsJobFrequency time.Duration
 	SymmetricKey                string
 	AsymmetricKey               string
-	GoogleClientID              string
-	GoogleClientSecret          string
 	AppleClientID               string
 	AppleClientSecret           string
+	GoogleClientID              string
+	GoogleClientSecret          string
+	PostgreSQLDatabaseURL       string
+	TEIAPIKey                   string
+	TEIBaseURL                  string
 }
 
 func RunApp(c AppConfig) error {
@@ -87,14 +71,8 @@ func RunApp(c AppConfig) error {
 
 	InitLogger(c.LogLevel)
 
-	useGoogleSSO := true
-	useAppleSSO := true
-	if c.GoogleClientID == "" || c.GoogleClientSecret == "" {
-		useGoogleSSO = false
-	}
-	if c.AppleClientID == "" || c.AppleClientSecret == "" {
-		useAppleSSO = false
-	}
+	useGoogleSSO := (c.GoogleClientID != "" || c.GoogleClientSecret != "")
+	useAppleSSO := (c.AppleClientID != "" || c.AppleClientSecret != "")
 
 	vault, err := NewVault(
 		ctx,

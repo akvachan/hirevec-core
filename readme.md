@@ -2,53 +2,48 @@
 
 ## About Hirevec
 
-Hirevec is a modern job recommendation engine that finds jobs and suitable candidates.
-
-- Homepage: hirevec.com
-- API: api.hirevec.com
+[Hirevec](hirevec.com) is a modern job recommendation engine that finds jobs and suitable candidates.
 
 ## Quick Start
 
 1. Start server:
 
 ```sh
-go run cmd/hv-server/main.go
+go run cmd/hvserver/main.go
 ```
 
-2. Ingest some test data and login as a test user:
+2. Ingest some test data and auto-login as a test user:
 
 ```sh
-go run cmd/hv-cli/main.go quick-start
+go run cmd/hvcli/main.go dev quickstart
 ```
 
-3. List recommendations for the logged in user:
+3. List recommendations:
 
 ```sh
-go run cmd/hv-cli/main.go recommendations
+go run cmd/hvcli/main.go recommendations
 ```
 
-4. React to the first recommendation:
-
-- Positively:
+4. React positively to the first recommendation:
 
 ```sh
-go run cmd/hv-cli/main.go positive <recommendation_id>
-```
-
-- Negatively:
-
-```
-go run cmd/hv-cli/main.go negative <recommendation_id>
+go run cmd/hvcli/main.go positive 1
 ```
 
 5. See all your matches:
 
 ```sh
-go run cmd/hv-cli/main.go matches
+go run cmd/hvcli/main.go matches
 ```
 
 A match occurs when a candidate applies for a position
 and a recruiter that created this position, shortlists the candidate.
+
+For more commands, run:
+
+```sh
+go run cmd/hvcli/main.go help
+```
 
 ### Recommendation Engine
 
@@ -77,19 +72,14 @@ $`Score=\left(0.8\left(\alpha S_{rerank}+(1-\alpha)\left(\beta S_{embed}+(1-\bet
 ## Server Features
 
 All currently available server settings are demonstrated in [./.example.env](./.example.env).
-You can define them in a `.env` file or via environment variables.
-
-Following paths will be searched for a `.env`:
-
-- Current working directory
-- `~/.config/hv-server`
+You can define them in a `.env` file of a current working directory or via environment variables.
 
 ### Checklist
 
-- [ ] Users can enable PostgreSQL
-- [ ] Users can enable TEI (embeddings and reranker worker)
-- [ ] Users can enable SMTP relay for security-critical operations
-- [ ] Users can enable SSO with Google and Apple
+- [ ] Developers can enable PostgreSQL.
+- [ ] Developers can enable TEI (embeddings and reranker worker).
+- [ ] Developers can enable SMTP relay for resetting user password (e-mail users).
+- [ ] Developers can enable SSO with Google and Apple.
 
 ## Misc
 
@@ -97,7 +87,7 @@ Following paths will be searched for a `.env`:
 
 ```sh
 air \
-  --build.cmd "go build -o bin/app cmd/hv-server/main.go" \
+  --build.cmd "go build -o bin/app cmd/hvserver/main.go" \
   --build.entrypoint "./bin/app" \
   --build.include_ext "go,sql,env" \
   --misc.clean_on_exit true \
@@ -107,5 +97,5 @@ air \
   --log.silent true \
   --screen.clear_on_rebuild true \
   --color never \
-  --screen.keep_scroll false
+  --screen.keep_scroll false \
 ```

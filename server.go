@@ -97,10 +97,7 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 	}
 	defer func() {
 		if err := response.Body.Close(); err != nil {
-			slog.Error(
-				"failed to close response body",
-				"err", err,
-			)
+			slog.Error("failed to close response body", "err", err)
 		}
 	}()
 
@@ -127,8 +124,8 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 	return parsed.Data, nil
 }
 
-//go:embed assets/*
-var EmbeddedAssets embed.FS
+//go:embed db/migrations/*
+var EmbeddedStatic embed.FS
 
 var (
 	RegexHTMLTag = regexp.MustCompile(`(?s)<[^>]*>`)
@@ -139,6 +136,8 @@ var (
 const DefaultEmbeddingsBatchSize = 64
 
 func (a *API) RunEmbeddingsJob(c AIConfig) error {
+	slog.Debug("running embeddings job")
+
 	// TODO: test this store method, rethink it once more
 	ids, texts, err := a.Store.FetchPendingEmbeddingsMetadata(DefaultEmbeddingsBatchSize)
 	if err != nil || len(ids) == 0 {
@@ -216,6 +215,8 @@ const (
 )
 
 func (a *API) RunRecommendationsJob(c AIConfig) error {
+	slog.Debug("running recommendations job")
+
 	candidateIDs, err := a.Store.GetCandidates(
 		DefaultCandidatesBatchSize,
 		DefaultRecommendationsJobFrequency,
@@ -224,7 +225,7 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		return err
 	}
 	if len(candidateIDs) == 0 {
-		slog.Warn("candidates list is empty")
+		slog.Debug("candidates list is empty")
 	}
 
 	for i := range len(candidateIDs) {
@@ -253,10 +254,7 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		}
 
 		if len(positionIDs) == 0 {
-			slog.Warn(
-				"positions list is empty",
-				"candidateID", candidateIDs[i],
-			)
+			slog.Debug("positions list is empty", "candidateID", candidateIDs[i])
 			continue
 		}
 
@@ -273,22 +271,15 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		}
 
 		limit := min(len(positionIDs), int(DefaultRecommendationsDailyLimit))
-		recommendations := make([]Recommendation, limit)
 		for i := range limit {
-			recommendationID, err := NewRecommendationULID()
-			if err != nil {
+			if _, err := a.Store.CreateRecommendation(
+				positionIDs[i],
+				candidateIDs[i],
+			); err != nil {
 				return err
-			}
-			recommendations[i] = Recommendation{
-				ID:          recommendationID,
-				PositionID:  positionIDs[i],
-				CandidateID: candidateIDs[i],
 			}
 		}
 
-		if err := a.Store.CreateRecommendations(recommendations); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -313,10 +304,8 @@ func NewAPI(ctx context.Context, c APIConfig, s Store, v Vault) *API {
 	api := API{
 		Store: s,
 		Vault: v,
+		Mux:   http.NewServeMux(),
 	}
-
-	localMux := http.NewServeMux()
-	api.Mux = localMux
 
 	api.Server = http.Server{
 		Addr:         c.ServerBaseURL,
@@ -324,7 +313,7 @@ func NewAPI(ctx context.Context, c APIConfig, s Store, v Vault) *API {
 		WriteTimeout: c.RequestWriteTimeout,
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 		BaseContext:  func(_ net.Listener) context.Context { return ctx },
-		Handler:      localMux,
+		Handler:      api.Mux,
 	}
 
 	api.RegisterRoutes()
@@ -343,20 +332,11 @@ func (a *API) WaitAndShutdown(ctx context.Context, errCh chan error, gracePeriod
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
 	defer cancel()
 
-	slog.Info(
-		"starting graceful shutdown",
-		"timeout", gracePeriod,
-	)
+	slog.Info("starting graceful shutdown", "timeout", gracePeriod)
 	if err := a.Server.Shutdown(shutdownCtx); err != nil {
-		slog.Error(
-			"failed to gracefully shutdown, forcing close",
-			"err", err,
-		)
+		slog.Error("failed to gracefully shutdown, forcing close", "err", err)
 		if err := a.Server.Close(); err != nil {
-			slog.Error(
-				"failed to force close server",
-				"err", err,
-			)
+			slog.Error("failed to force close server", "err", err)
 		}
 		return ErrFailedShutdownServer
 	}
@@ -373,23 +353,16 @@ const (
 func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 	api := NewAPI(ctx, c, s, v)
 
-	slog.Debug(
-		"creating listener",
-		"addr", api.Server.Addr,
-	)
+	slog.Debug("creating listener", "addr", api.Server.Addr)
 	listener, err := net.Listen("tcp", api.Server.Addr)
 	if err != nil {
 		return err
 	}
 
-	slog.Debug(
-		"starting server",
-		"addr", api.Server.Addr,
-	)
+	slog.Debug("starting server", "addr", api.Server.Addr)
 	errCh := make(chan error, 1)
 	go func() {
-		if err := api.Server.Serve(listener); err != nil &&
-			!errors.Is(err, http.ErrServerClosed) {
+		if err := api.Server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -407,12 +380,8 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 	if c.UseEmbeddings {
 		go func() {
 			for range time.Tick(c.EmbeddingsJobFrequency) {
-				slog.Info("running embeddings job")
 				if err := api.RunEmbeddingsJob(aiConfig); err != nil {
-					slog.Error(
-						"failed to run embeddings job",
-						"err", err,
-					)
+					slog.Error("failed to run embeddings job", "err", err)
 				}
 			}
 		}()
@@ -420,21 +389,14 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 
 	go func() {
 		for range time.Tick(c.RecommendationsJobFrequency) {
-			slog.Info("running recommendations job")
 			if err := api.RunRecommendationsJob(aiConfig); err != nil {
-				slog.Error(
-					"failed to run recommendations job",
-					"err", err,
-				)
+				slog.Error("failed to run recommendations job", "err", err)
 			}
 		}
 	}()
 
 	if err := api.WaitAndShutdown(ctx, errCh, c.GracePeriod); err != nil {
-		slog.Error(
-			"failed to wait and shutdown",
-			"err", err,
-		)
+		slog.Error("failed to wait and shutdown", "err", err)
 		return err
 	}
 
@@ -925,10 +887,7 @@ func (a *API) RegisterRoutes() {
 func (a *API) OAuth2CreateAccessToken(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
 	accessToken, err := a.Vault.CreateAccessToken(userID, provider, roles)
 	if err != nil {
-		slog.Error(
-			"failed to create access token",
-			"err", err,
-		)
+		slog.Error("failed to create access token", "err", err)
 		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
@@ -1057,7 +1016,6 @@ func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
 
 			user, roles, err := a.Store.GetUserAndRolesByEmail(body.Email, ProviderEmail)
 			switch {
-
 			case errors.Is(err, ErrUserNotFound):
 				OAuth2Unauthorized(w, OAuth2InvalidRequest, "invalid credentials")
 				return
@@ -1070,10 +1028,9 @@ func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
 				slog.Error("failed to get user by email", "err", err)
 				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
-
 			}
 
-			if !a.Vault.IsValidPassword(user.PasswordHash, body.Password) {
+			if !IsValidPassword(user.PasswordHash, body.Password) {
 				OAuth2Unauthorized(w, OAuth2InvalidRequest, "invalid credentials")
 				return
 			}
@@ -1084,20 +1041,14 @@ func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
 
 		state, err := a.Vault.CreateStateToken(provider)
 		if err != nil {
-			slog.Error(
-				"failed to generate state token",
-				"err", err,
-			)
+			slog.Error("failed to generate state token", "err", err)
 			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
 		parsed, err := a.Vault.ParseStateToken(state)
 		if err != nil {
-			slog.Error(
-				"failed to parse state token",
-				"err", err,
-			)
+			slog.Error("failed to parse state token", "err", err)
 			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
@@ -1125,10 +1076,7 @@ func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
 
 		url, err := a.Vault.CreateAuthCodeURL(state, verifier, provider)
 		if err != nil {
-			slog.Error(
-				"failed to generate auth code URL",
-				"err", err,
-			)
+			slog.Error("failed to generate auth code URL", "err", err)
 			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
@@ -1187,7 +1135,7 @@ func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 
 		DeleteCookies(w, [2]string{"oauth_csrf", "oauth_verifier"})
 
-		var user User
+		var idToken IDToken
 		switch state.Provider {
 		case ProviderGoogle:
 			rawIDToken, err := a.Vault.ExchangeGoogleCodeForIDToken(
@@ -1200,17 +1148,13 @@ func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 				return
 			}
 			if err != nil {
-				slog.Error(
-					"failed to exchange Google code",
-					"err", err,
-				)
+				slog.Error("failed to exchange Google code", "err", err)
 				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
 
-			user, err = a.Vault.VerifyAndParseGoogleIDToken(ctx, rawIDToken)
+			idToken, err = a.Vault.VerifyAndParseGoogleIDToken(ctx, rawIDToken)
 			switch {
-
 			case errors.Is(err, ErrInvalidIDToken):
 				OAuth2Error(w, OAuth2InvalidRequest, "invalid id_token")
 				return
@@ -1224,10 +1168,7 @@ func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 				return
 
 			case err != nil:
-				slog.Error(
-					"failed to verify Google ID token",
-					"err", err,
-				)
+				slog.Error("failed to verify Google ID token", "err", err)
 				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
@@ -1243,21 +1184,17 @@ func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 				return
 			}
 			if err != nil {
-				slog.Error(
-					"failed to exchange Apple code",
-					"err", err,
-				)
+				slog.Error("failed to exchange Apple code", "err", err)
 				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
 
-			user, err = a.Vault.VerifyAndParseAppleIDToken(
+			idToken, err = a.Vault.VerifyAndParseAppleIDToken(
 				ctx,
 				idTokenString,
 				r.FormValue("user"),
 			)
 			switch {
-
 			case errors.Is(err, ErrInvalidIDToken):
 				OAuth2Error(w, OAuth2InvalidRequest, "invalid id_token")
 				return
@@ -1271,10 +1208,7 @@ func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 				return
 
 			case err != nil:
-				slog.Error(
-					"failed to verify Apple ID token",
-					"err", err,
-				)
+				slog.Error("failed to verify Apple ID token", "err", err)
 				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 				return
 			}
@@ -1288,7 +1222,7 @@ func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 			return
 		}
 
-		a.FinishAuthFlow(w, user)
+		a.FinishAuthFlow(w, idToken)
 	}
 }
 
@@ -1319,34 +1253,18 @@ var (
 	FailMessageUserFullNameForbiddenChars = "full_name must be a valid 'passport-style' full name. It must start with a letter and can only contain letters, spaces, apostrophes, or hyphens"
 )
 
-func (a *API) FinishAuthFlow(w http.ResponseWriter, user User) {
-	userID, roles, err := a.Store.GetUserAndRolesByProvider(user.Provider, user.ProviderUserID)
+func (a *API) FinishAuthFlow(w http.ResponseWriter, idToken IDToken) {
+	userID, roles, err := a.Store.GetUserIDAndRolesByProvider(idToken.Provider, idToken.ProviderUserID)
 	switch {
-
 	case errors.Is(err, ErrUserNotFound):
-		userID, ulidErr := NewUserULID()
-		if ulidErr != nil {
-			slog.Error(
-				"failed to generate user ULID",
-				"err", err,
-			)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-			return
-		}
-
-		user.UserName, err = GenerateUserName()
+		userName, err := GenerateUserName()
 		if err != nil {
-			slog.Error(
-				"failed to generate user name",
-				"err", err,
-			)
+			slog.Error("failed to generate user name", "err", err)
 			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		user.FullName, err = NormalizeAndValidateUserFullName(user.FullName)
 		switch {
-
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
 			OAuth2Error(w, OAuth2InvalidRequest, FailMessageUserFullNameWrongSize)
 			return
@@ -1356,27 +1274,28 @@ func (a *API) FinishAuthFlow(w http.ResponseWriter, user User) {
 			return
 
 		case err != nil:
-			slog.Error(
-				"failed to validate full name",
-				"err", err,
-			)
+			slog.Error("failed to validate full name", "err", err)
 			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 
-		err = a.Store.CreateUser(user)
+		userID, err := a.Store.CreateUser(
+			idToken.Provider,
+			idToken.ProviderUserID,
+			idToken.Email,
+			idToken.FullName,
+			userName,
+			"",
+		)
 		if err != nil {
-			slog.Error(
-				"failed to create user",
-				"err", err,
-			)
+			slog.Error("failed to create user", "err", err)
 			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 			return
 		}
 		a.OAuth2CreateAccessToken(
 			w,
 			userID,
-			user.Provider,
+			idToken.Provider,
 			map[Role]ULID{},
 		)
 		return
@@ -1385,16 +1304,13 @@ func (a *API) FinishAuthFlow(w http.ResponseWriter, user User) {
 		a.OAuth2CreateAccessToken(
 			w,
 			userID,
-			user.Provider,
+			idToken.Provider,
 			map[Role]ULID{},
 		)
 		return
 
 	case err != nil:
-		slog.Error(
-			"failed to get user by provider",
-			"err", err,
-		)
+		slog.Error("failed to get user by provider", "err", err)
 		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
@@ -1402,42 +1318,22 @@ func (a *API) FinishAuthFlow(w http.ResponseWriter, user User) {
 	a.OAuth2CreateTokenPair(
 		w,
 		userID,
-		user.Provider,
+		idToken.Provider,
 		roles,
 	)
 }
 
 func (a *API) OAuth2CreateTokenPair(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
-	jti, err := NewJTIULID()
+	jti, err := a.Store.CreateRefreshToken(userID)
 	if err != nil {
-		slog.Error(
-			"failed to generate JTI ULID",
-			"err", err,
-		)
-		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-		return
-	}
-
-	err = a.Store.CreateRefreshToken(
-		jti,
-		userID,
-		time.Now().UTC().Add(DefaultRefreshTokenExpiration),
-	)
-	if err != nil {
-		slog.Error(
-			"failed to create refresh token",
-			"err", err,
-		)
+		slog.Error("failed to create refresh token", "err", err)
 		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
 
 	tokenPair, err := a.Vault.CreateTokenPair(userID, provider, jti, roles)
 	if err != nil {
-		slog.Error(
-			"failed to create token pair",
-			"err", err,
-		)
+		slog.Error("failed to create token pair", "err", err)
 		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
 		return
 	}
@@ -1894,12 +1790,12 @@ func (a *API) HandlerV1CreateMeReaction() http.HandlerFunc {
 			return
 		}
 
-		if err := a.Store.CreateReaction(Reaction{
-			RecommendationID: recommendationID,
-			ReactorType:      ReactorTypeCandidate,
-			ReactorID:        candidateID,
-			ReactionType:     body.ReactionType,
-		}); err != nil {
+		if err := a.Store.CreateReaction(
+			recommendationID,
+			ReactorTypeCandidate,
+			candidateID,
+			body.ReactionType,
+		); err != nil {
 			if errors.Is(err, ErrReactionAlreadyExists) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -2185,8 +2081,7 @@ func (a *API) HandlerV1CreateMe() http.HandlerFunc {
 			return
 		}
 
-		err = ValidateUserPassword(body.Password)
-		switch {
+		switch err = ValidateUserPassword(body.Password); {
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
 			JSON(w, JSONAPIDocument{
 				Errors: []JSONAPIError{{
@@ -2316,19 +2211,7 @@ func (a *API) HandlerV1CreateMe() http.HandlerFunc {
 			return
 		}
 
-		userID, err := NewUserULID()
-		if err != nil {
-			slog.Error("failed to generate a user ULID", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
-			return
-		}
-
-		passwordHash, err := a.Vault.HashPassword(body.Password)
+		passwordHash, err := HashPassword(body.Password)
 		if err != nil {
 			slog.Error("failed to hash password", "err", err)
 			JSON(w, JSONAPIDocument{
@@ -2340,15 +2223,14 @@ func (a *API) HandlerV1CreateMe() http.HandlerFunc {
 			return
 		}
 
-		user := User{
-			ID:           userID,
-			Provider:     ProviderEmail,
-			Email:        email.Address,
-			FullName:     fullName,
-			UserName:     userName,
-			PasswordHash: passwordHash,
-		}
-		err = a.Store.CreateUser(user)
+		id, err := a.Store.CreateUser(
+			ProviderEmail,
+			"",
+			email.Address,
+			fullName,
+			userName,
+			passwordHash,
+		)
 		if err != nil {
 			slog.Error("failed to create user", "err", err)
 			JSON(w, JSONAPIDocument{
@@ -2362,8 +2244,8 @@ func (a *API) HandlerV1CreateMe() http.HandlerFunc {
 
 		a.OAuth2CreateTokenPair(
 			w,
-			user.ID,
-			user.Provider,
+			id,
+			ProviderEmail,
 			map[Role]ULID{},
 		)
 	}
@@ -2372,18 +2254,6 @@ func (a *API) HandlerV1CreateMe() http.HandlerFunc {
 // TODO: Write integration tests for this handler
 func (a *API) HandlerV1CreateMeRecruiterProfile() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		recruiterID, err := NewRecruiterULID()
-		if err != nil {
-			slog.Error("failed to generate a recruiter ULID", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
-			return
-		}
-
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
@@ -2396,8 +2266,7 @@ func (a *API) HandlerV1CreateMeRecruiterProfile() http.HandlerFunc {
 			return
 		}
 
-		err = a.Store.CreateRecruiter(Recruiter{recruiterID, claims.UserID})
-		if err != nil {
+		if _, err := a.Store.CreateRecruiter(claims.UserID); err != nil {
 			if errors.Is(err, ErrRecruiterAlreadyExists) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -2497,18 +2366,6 @@ func (a *API) HandlerV1CreateMeCandidateProfile() http.HandlerFunc {
 			return
 		}
 
-		candidateID, err := NewCandidateULID()
-		if err != nil {
-			slog.Error("failed to generate a candidate ULID", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
-			return
-		}
-
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
@@ -2521,12 +2378,7 @@ func (a *API) HandlerV1CreateMeCandidateProfile() http.HandlerFunc {
 			return
 		}
 
-		err = a.Store.CreateCandidate(Candidate{
-			ID:     candidateID,
-			UserID: claims.UserID,
-			About:  about,
-		})
-		if err != nil {
+		if _, err = a.Store.CreateCandidate(claims.UserID, about); err != nil {
 			if errors.Is(err, ErrCandidateAlreadyExists) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -2795,8 +2647,7 @@ func (a *API) HandlerV1PatchMe() http.HandlerFunc {
 			return
 		}
 
-		err = a.Store.UpdateUser(user)
-		if err != nil {
+		if err = a.Store.UpdateUser(user.ID, user.FullName, user.UserName); err != nil {
 			if errors.Is(err, ErrUserNotFound) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -2889,7 +2740,7 @@ func (a *API) HandlerV1DeleteMe() http.HandlerFunc {
 				}, http.StatusBadRequest)
 				return
 			}
-			if !a.Vault.IsValidPassword(user.PasswordHash, body.Password) {
+			if IsValidPassword(user.PasswordHash, body.Password) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
 						Status: "401",
@@ -2913,8 +2764,7 @@ func (a *API) HandlerV1DeleteMe() http.HandlerFunc {
 			return
 		}
 
-		err = a.Store.DeleteUser(user.ID)
-		if err != nil {
+		if err = a.Store.DeleteUser(user.ID); err != nil {
 			if errors.Is(err, ErrUserNotFound) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -3114,8 +2964,7 @@ func (a *API) HandlerV1PatchMeCandidateProfile() http.HandlerFunc {
 			return
 		}
 
-		err = a.Store.UpdateCandidate(candidate)
-		if err != nil {
+		if err = a.Store.UpdateCandidate(candidate.ID, candidate.About); err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -3171,8 +3020,7 @@ func (a *API) HandlerV1DeleteMeCandidateProfile() http.HandlerFunc {
 			return
 		}
 
-		err := a.Store.DeleteCandidate(candidateID)
-		if err != nil {
+		if err := a.Store.DeleteCandidate(candidateID); err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -3292,8 +3140,7 @@ func (a *API) HandlerV1DeleteMeRecruiterProfile() http.HandlerFunc {
 			return
 		}
 
-		err := a.Store.DeleteRecruiter(recruiterID)
-		if err != nil {
+		if err := a.Store.DeleteRecruiter(recruiterID); err != nil {
 			if errors.Is(err, ErrRecruiterNotFound) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -3511,15 +3358,7 @@ func (a *API) HandlerV1CreateMePosition() http.HandlerFunc {
 			return
 		}
 
-		err = a.Store.CreatePosition(Position{
-			positionID,
-			recruiterID,
-			title,
-			description,
-			company,
-			true,
-		})
-		if err != nil {
+		if _, err = a.Store.CreatePosition(recruiterID, title, description, company, true); err != nil {
 			if errors.Is(err, ErrPositionAlreadyExists) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{
@@ -3949,8 +3788,13 @@ func (a *API) HandlerV1PatchMePosition() http.HandlerFunc {
 			return
 		}
 
-		err = a.Store.UpdatePosition(position)
-		if err != nil {
+		if err = a.Store.UpdatePosition(
+			position.ID,
+			position.Title,
+			position.Description,
+			position.Company,
+			position.IsActive,
+		); err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
 				JSON(w, JSONAPIDocument{
 					Errors: []JSONAPIError{{

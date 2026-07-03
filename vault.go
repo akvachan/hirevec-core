@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/mail"
 	"os"
 	"strings"
 	"sync"
@@ -28,7 +29,7 @@ import (
 
 var (
 	ErrFailedParseClaims = errors.New("failed to parse claims")
-	ErrIDTokenRequired   = errors.New("id_token required")
+	ErrIDTokenRequired   = errors.New("id_token is required")
 	ErrInvalidIDToken    = errors.New("invalid id_token")
 	ErrInvalidProvider   = errors.New("invalid provider")
 	ErrInvalidRole       = errors.New("invalid role")
@@ -79,8 +80,8 @@ const (
 )
 
 const (
-	TokenAudience      = "api.hirevec.com"
-	TokenIssuer        = "api.hirevec.com"
+	TokenAudience      = "hirevec.com"
+	TokenIssuer        = "hirevec.com"
 	StateTokenAudience = "oauth-state"
 )
 
@@ -346,28 +347,35 @@ type GoogleClaims struct {
 	Picture       string `json:"picture"`
 }
 
-func (v Vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (User, error) {
+type IDToken struct {
+	Provider       Provider
+	ProviderUserID string
+	Email          string
+	FullName       string
+}
+
+func (v Vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (IDToken, error) {
 	idToken, err := v.GoogleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return User{}, ErrInvalidIDToken
+		return IDToken{}, ErrInvalidIDToken
 	}
 
 	var claims GoogleClaims
 	if err := idToken.Claims(&claims); err != nil {
-		return User{}, ErrFailedParseClaims
+		return IDToken{}, ErrFailedParseClaims
 	}
 	if !claims.EmailVerified {
-		return User{}, ErrEmailNotVerified
+		return IDToken{}, ErrEmailNotVerified
 	}
 
 	// TODO: Handler error here and handle error after the caller
 	name, _ := NormalizeAndValidateUserFullName(claims.Name)
 
-	return User{
-		Provider:       ProviderGoogle,
-		ProviderUserID: claims.Sub,
-		Email:          claims.Email,
-		FullName:       name,
+	return IDToken{
+		ProviderGoogle,
+		claims.Sub,
+		claims.Email,
+		name,
 	}, nil
 }
 
@@ -378,15 +386,15 @@ type AppleClaims struct {
 	IsPrivateEmail string          `json:"is_private_email"`
 }
 
-func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (User, error) {
+func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string, userJSON string) (IDToken, error) {
 	idToken, err := v.AppleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return User{}, ErrInvalidIDToken
+		return IDToken{}, ErrInvalidIDToken
 	}
 
 	var claims AppleClaims
 	if err := idToken.Claims(&claims); err != nil {
-		return User{}, ErrFailedParseClaims
+		return IDToken{}, ErrFailedParseClaims
 	}
 
 	var verified bool
@@ -399,8 +407,9 @@ func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string
 		}
 	}
 	if !verified {
-		return User{}, ErrEmailNotVerified
+		return IDToken{}, ErrEmailNotVerified
 	}
+	email, err := mail.ParseAddress(claims.Email)
 
 	var fullName string
 	if userJSON != "" {
@@ -417,11 +426,11 @@ func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string
 		}
 	}
 
-	return User{
-		Provider:       ProviderApple,
-		ProviderUserID: claims.Sub,
-		Email:          claims.Email,
-		FullName:       fullName,
+	return IDToken{
+		ProviderApple,
+		claims.Sub,
+		email.Address,
+		fullName,
 	}, nil
 }
 
@@ -724,6 +733,16 @@ func Getenv(key string, defaultValue string) string {
 	return value
 }
 
+// GetenvAndParse parses extracted value of an environment variable and returns a default in case of an error.
+func GetenvAndParse[T any](key string, parser func(string) (T, error), defaultValue T) T {
+	value, exists := os.LookupEnv(key)
+	parsed, err := parser(value)
+	if !exists || value == "" || err != nil {
+		return defaultValue
+	}
+	return parsed
+}
+
 func Loadenv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -761,14 +780,14 @@ func Loadenv(path string) error {
 	return scanner.Err()
 }
 
-func (v Vault) IsValidPassword(passwordHash string, password string) bool {
+func IsValidPassword(passwordHash string, password string) bool {
 	return bcrypt.CompareHashAndPassword(
 		[]byte(passwordHash),
 		[]byte(password),
 	) == nil
 }
 
-func (v Vault) HashPassword(password string) (string, error) {
+func HashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword(
 		[]byte(password),
 		bcrypt.DefaultCost,
