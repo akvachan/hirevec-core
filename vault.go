@@ -368,14 +368,11 @@ func (v Vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken strin
 		return IDToken{}, ErrEmailNotVerified
 	}
 
-	// TODO: Handler error here and handle error after the caller
-	name, _ := NormalizeAndValidateUserFullName(claims.Name)
-
 	return IDToken{
 		ProviderGoogle,
 		claims.Sub,
 		claims.Email,
-		name,
+		claims.Name,
 	}, nil
 }
 
@@ -420,9 +417,7 @@ func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string
 			} `json:"name"`
 		}
 		if err := json.Unmarshal([]byte(userJSON), &appleUser); err == nil {
-			rawName := fmt.Sprintf("%s %s", appleUser.Name.FirstName, appleUser.Name.LastName)
-			// TODO: Handle error here and handle error after the caller
-			fullName, _ = NormalizeAndValidateUserFullName(rawName)
+			fullName = fmt.Sprintf("%s %s", appleUser.Name.FirstName, appleUser.Name.LastName)
 		}
 	}
 

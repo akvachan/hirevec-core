@@ -138,16 +138,19 @@ const DefaultEmbeddingsBatchSize = 64
 func (a *API) RunEmbeddingsJob(c AIConfig) error {
 	slog.Debug("running embeddings job")
 
-	// TODO: test this store method, rethink it once more
+	// TODO: Test this store method, rethink it once more
+	// https://github.com/akvachan/hirevec-core/issues/21
 	ids, texts, err := a.Store.FetchPendingEmbeddingsMetadata(DefaultEmbeddingsBatchSize)
 	if err != nil || len(ids) == 0 {
 		return err
 	}
 
-	// TODO: test this store method, rethink it once more
+	// TODO: Test this store method, rethink it once more
+	// https://github.com/akvachan/hirevec-core/issues/21
 	batchOut, err := CreateEmbeddings(c, texts)
 	if err != nil {
-		// TODO: test this store method, rethink it once more
+		// TODO: Test this store method, rethink it once more
+		// https://github.com/akvachan/hirevec-core/issues/21
 		return a.Store.MarkEmbeddingsStatus(ids, EmbeddingStatusPending)
 	}
 
@@ -156,7 +159,8 @@ func (a *API) RunEmbeddingsJob(c AIConfig) error {
 		return err
 	}
 
-	// TODO: test this store method, rethink it once more
+	// TODO: Test this store method, rethink it once more
+	// https://github.com/akvachan/hirevec-core/issues/21
 	if err := a.Store.UpsertEmbeddingsTx(tx, ids, batchOut); err != nil {
 		if err := tx.Rollback(); err != nil {
 			slog.Error(
@@ -174,7 +178,8 @@ func (a *API) RunEmbeddingsJob(c AIConfig) error {
 		return err
 	}
 
-	// TODO: test this store method, rethink it once more
+	// TODO: Test this store method, rethink it once more
+	// https://github.com/akvachan/hirevec-core/issues/21
 	if err := a.Store.MarkEmbeddingsStatusTx(tx, ids, EmbeddingStatusDone); err != nil {
 		if err := tx.Rollback(); err != nil {
 			slog.Error(
@@ -688,6 +693,7 @@ func (a *API) RegisterRoutes() {
 	slog.Debug("registering routes")
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteHealth,
@@ -695,6 +701,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteOAuth2Authorize,
@@ -702,6 +709,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteOAuth2Authorize,
@@ -709,6 +717,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteOAuth2AccessToken,
@@ -716,6 +725,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteOAuth2Callback,
@@ -723,6 +733,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteOAuth2Callback,
@@ -730,6 +741,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteV1Me,
@@ -737,6 +749,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1Me,
@@ -744,6 +757,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodPatch,
 		Route:   RouteV1Me,
@@ -751,6 +765,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodDelete,
 		Route:   RouteV1Me,
@@ -758,6 +773,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteV1MeCandidate,
@@ -765,6 +781,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1MeCandidate,
@@ -773,6 +790,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodPatch,
 		Route:   RouteV1MeCandidate,
@@ -781,6 +799,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodDelete,
 		Route:   RouteV1MeCandidate,
@@ -789,6 +808,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteV1MeRecruiter,
@@ -796,6 +816,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1MeRecruiter,
@@ -804,6 +825,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodDelete,
 		Route:   RouteV1MeRecruiter,
@@ -812,6 +834,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteV1MePositions,
@@ -820,6 +843,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1MePositions,
@@ -828,6 +852,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1MePosition,
@@ -836,6 +861,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodPatch,
 		Route:   RouteV1MePosition,
@@ -844,6 +870,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodDelete,
 		Route:   RouteV1MePosition,
@@ -852,6 +879,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1MeRecommendations,
@@ -860,6 +888,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1MeReactions,
@@ -868,6 +897,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodPost,
 		Route:   RouteV1MeRecommendationReaction,
@@ -876,6 +906,7 @@ func (a *API) RegisterRoutes() {
 	})
 
 	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
 	a.ProtectedRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteV1MeMatches,
@@ -894,7 +925,8 @@ func (a *API) OAuth2CreateAccessToken(w http.ResponseWriter, userID ULID, provid
 	OAuth2AccessToken(w, accessToken)
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 	type RequestBody struct {
 		GrantType    string `json:"grant_type"`
@@ -984,7 +1016,8 @@ func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
 	type RequstBodyEmailAuthorization struct {
 		Email    string `json:"email"`
@@ -1089,7 +1122,8 @@ func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(
@@ -1520,7 +1554,8 @@ func GenerateUserName() (string, error) {
 	return userName, nil
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerHealth(w http.ResponseWriter, r *http.Request) {
 	JSON(w, JSONAPIDocument{
 		Meta: map[string]any{
@@ -1530,6 +1565,7 @@ func (a *API) HandlerHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMeRecommendations() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -1677,6 +1713,7 @@ func (a *API) HandlerV1GetMeRecommendations() http.HandlerFunc {
 }
 
 // TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1CreateMeReaction() http.HandlerFunc {
 	type RequestBody struct {
 		ReactionType ReactionType `json:"reaction_type"`
@@ -1836,6 +1873,7 @@ func (a *API) HandlerV1CreateMeReaction() http.HandlerFunc {
 }
 
 // TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMeReactions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -1924,6 +1962,7 @@ func (a *API) HandlerV1GetMeReactions() http.HandlerFunc {
 }
 
 // TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMeMatches() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2036,6 +2075,7 @@ func ValidateUserPassword(password string) error {
 }
 
 // TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1CreateMe() http.HandlerFunc {
 	type RequestBody struct {
 		Email    string `json:"email"`
@@ -2252,6 +2292,7 @@ func (a *API) HandlerV1CreateMe() http.HandlerFunc {
 }
 
 // TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1CreateMeRecruiterProfile() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2325,6 +2366,7 @@ func NormalizeAndValidateCandidateAbout(about string) (string, error) {
 }
 
 // TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1CreateMeCandidateProfile() http.HandlerFunc {
 	type RequestBody struct {
 		About string `json:"about"`
@@ -2421,7 +2463,8 @@ func (a *API) HandlerV1CreateMeCandidateProfile() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMe() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2503,7 +2546,8 @@ const (
 	FailMessageUserNameForbiddenChars = "user_name can only contain underscores, latin characters and numbers"
 )
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1PatchMe() http.HandlerFunc {
 	type RequestBody struct {
 		UserName *string `json:"user_name,omitempty"`
@@ -2676,7 +2720,8 @@ func (a *API) HandlerV1PatchMe() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1DeleteMe() http.HandlerFunc {
 	type RequestBodyPassword struct {
 		Password string `json:"password"`
@@ -2753,6 +2798,7 @@ func (a *API) HandlerV1DeleteMe() http.HandlerFunc {
 			}
 		} else {
 			// TODO: Add user deletion support for SSO
+			// https://github.com/akvachan/hirevec-core/issues/35
 			JSON(w, JSONAPIDocument{
 				Errors: []JSONAPIError{{
 					Status: "403",
@@ -2793,7 +2839,8 @@ func (a *API) HandlerV1DeleteMe() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMeCandidateProfile() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2859,7 +2906,8 @@ func (a *API) HandlerV1GetMeCandidateProfile() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1PatchMeCandidateProfile() http.HandlerFunc {
 	type RequestBody struct {
 		About *string `json:"about,omitempty"`
@@ -2993,7 +3041,8 @@ func (a *API) HandlerV1PatchMeCandidateProfile() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1DeleteMeCandidateProfile() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3049,7 +3098,8 @@ func (a *API) HandlerV1DeleteMeCandidateProfile() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMeRecruiterProfile() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3113,7 +3163,8 @@ func (a *API) HandlerV1GetMeRecruiterProfile() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1DeleteMeRecruiterProfile() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3222,7 +3273,8 @@ func NormalizeAndValidatePositionCompanyName(company string) (string, error) {
 	return company, nil
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1CreateMePosition() http.HandlerFunc {
 	type RequestBody struct {
 		Title       string `json:"title"`
@@ -3394,7 +3446,8 @@ func (a *API) HandlerV1CreateMePosition() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMePositions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3465,7 +3518,8 @@ func (a *API) HandlerV1GetMePositions() http.HandlerFunc {
 	}
 }
 
-// TODO: Write tests for this handler
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerV1GetMePosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)

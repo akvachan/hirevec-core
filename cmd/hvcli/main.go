@@ -119,6 +119,7 @@ func RegisterAndSaveToken(ctx context.Context, client hirevec.Client) error {
 }
 
 // TODO: Save credentials into environment variables
+// https://github.com/akvachan/hirevec-core/issues/32
 func QuickStartAndSaveCredentials() error {
 	var err error
 	var db *sql.DB
@@ -151,10 +152,14 @@ const (
 
 type OutputFormat string
 
+// TODO: Support JSON output format
+// https://github.com/akvachan/hirevec-core/issues/31
 const (
 	OutputFormatTable OutputFormat = "table"
 )
 
+// TODO: Implement stdout printer method for the API/Client responses.
+// https://github.com/akvachan/hirevec-core/issues/29
 func PrintClientResponse[T any](response T, requestType ClientRequestType, format OutputFormat) {
 }
 
@@ -212,9 +217,8 @@ func main() {
 			fmt.Println(hash)
 		}
 
-	// TODO: Implement recommendations
 	case "recommendations":
-		response, err := client.GetMeRecommendations(ctx, "", "", 0, true)
+		response, err := client.GetMeRecommendations(ctx, "", "", hirevec.DefaultPageSize, true)
 		if err != nil {
 			fmt.Println("Failed to fetch recommendations:", err)
 			os.Exit(69)
@@ -222,7 +226,6 @@ func main() {
 
 		PrintClientResponse(response, ClientRequestTypeGetMeRecommendations, OutputFormatTable)
 
-	// TODO: Implement positive reaction
 	case "positive":
 		if len(os.Args) < 3 {
 			fmt.Println("Usage: hvcli positive RECOMMENDATION_ID")
@@ -237,7 +240,6 @@ func main() {
 
 		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatTable)
 
-	// TODO: Implement negative reaction
 	case "negative":
 		if len(os.Args) < 3 {
 			fmt.Println("Usage: hvcli negative RECOMMENDATION_ID")
@@ -252,7 +254,6 @@ func main() {
 
 		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatTable)
 
-	// TODO: Implement matches
 	case "matches":
 		response, err := client.GetMeMatches(ctx, "", 0)
 		if err != nil {
@@ -262,7 +263,6 @@ func main() {
 
 		PrintClientResponse(response, ClientRequestTypeGetMeMatches, OutputFormatTable)
 
-	// TODO: Implement help
 	case "help":
 		fmt.Println(GeneralCommandsInfo)
 
