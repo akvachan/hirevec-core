@@ -2,7 +2,7 @@
 
 ## About Hirevec
 
-[Hirevec](hirevec.com) is a modern job recommendation engine that finds jobs and suitable candidates.
+[Hirevec](https://hirevec.com) is a modern job recommendation engine that finds jobs and suitable candidates.
 
 ## Quick Start
 
