@@ -159,21 +159,13 @@ func QuickStartAndLogin(ctx context.Context, client hirevec.Client, prompt bool)
 	return nil
 }
 
-type ClientRequestType string
-
-const (
-	ClientRequestTypeGetMeRecommendations ClientRequestType = "GetMeRecommendations"
-	ClientRequestTypeCreateMeReaction     ClientRequestType = "CreateMeReaction"
-	ClientRequestTypeGetMeMatches         ClientRequestType = "GetMeMatches"
-)
-
 type OutputFormat string
 
 const (
 	OutputFormatJSON OutputFormat = "json"
 )
 
-func PrintClientResponse[T any](response T, requestType ClientRequestType, format OutputFormat) {
+func PrintClientResponse[T any](response T, format OutputFormat) {
 	switch format {
 	case OutputFormatJSON:
 		jsonData, err := json.MarshalIndent(response, "", "  ")
@@ -255,7 +247,7 @@ func main() {
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeGetMeRecommendations, OutputFormatJSON)
+		PrintClientResponse(response, OutputFormatJSON)
 
 	case "positive":
 		if len(os.Args) < 3 {
@@ -269,7 +261,7 @@ func main() {
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatJSON)
+		PrintClientResponse(response, OutputFormatJSON)
 
 	case "negative":
 		if len(os.Args) < 3 {
@@ -283,7 +275,7 @@ func main() {
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatJSON)
+		PrintClientResponse(response, OutputFormatJSON)
 
 	// TODO: Support cursors and page limit
 	// https://github.com/akvachan/hirevec-core/issues/40
@@ -294,7 +286,7 @@ func main() {
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeGetMeMatches, OutputFormatJSON)
+		PrintClientResponse(response, OutputFormatJSON)
 
 	case "help":
 		fmt.Println(GeneralCommandsInfo)
