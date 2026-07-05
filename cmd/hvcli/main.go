@@ -127,7 +127,7 @@ func RegisterAndSaveToken(ctx context.Context, client hirevec.Client) error {
 	return nil
 }
 
-func QuickStartAndLogin(ctx context.Context, client hirevec.Client, prompt bool) error {
+func QuickStartAndLogin(ctx context.Context, client hirevec.Client) error {
 	var err error
 	var db *sql.DB
 	if url := os.Getenv("POSTGRESQL_DATABASE_URL"); url != "" {
@@ -146,14 +146,8 @@ func QuickStartAndLogin(ctx context.Context, client hirevec.Client, prompt bool)
 		return err
 	}
 
-	if prompt {
-		if err := LoginAndSaveToken(ctx, client, "", ""); err != nil {
-			return err
-		}
-	} else {
-		if err := LoginAndSaveToken(ctx, client, "alex.chen.demo@example.com", "test"); err != nil {
-			return err
-		}
+	if err := LoginAndSaveToken(ctx, client, "alex.chen.demo@example.com", "test"); err != nil {
+		return err
 	}
 
 	return nil
@@ -215,9 +209,7 @@ func main() {
 
 		switch os.Args[2] {
 		case "quickstart":
-			// TODO: Support login prompt on quickstart
-			// https://github.com/akvachan/hirevec-core/issues/38
-			if err := QuickStartAndLogin(ctx, client, false); err != nil {
+			if err := QuickStartAndLogin(ctx, client); err != nil {
 				fmt.Printf("Failed to quick start: %v\n", err)
 				os.Exit(69)
 			}
