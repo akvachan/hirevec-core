@@ -28,10 +28,10 @@ func NewClient(baseURL string) Client {
 	}
 }
 
-func (c Client) DoRequest(ctx context.Context, method, path string, reqBody any, isJSONAPI bool, res any) error {
+func (c Client) DoRequest(ctx context.Context, method string, path string, requestyBody any, isJSONAPI bool, outResponse any) error {
 	var bodyReader *bytes.Reader
-	if reqBody != nil {
-		b, err := json.Marshal(reqBody)
+	if requestyBody != nil {
+		b, err := json.Marshal(requestyBody)
 		if err != nil {
 			return fmt.Errorf("failed to encode request body: %w", err)
 		}
@@ -45,7 +45,7 @@ func (c Client) DoRequest(ctx context.Context, method, path string, reqBody any,
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	if reqBody != nil {
+	if requestyBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
@@ -65,16 +65,16 @@ func (c Client) DoRequest(ctx context.Context, method, path string, reqBody any,
 	}
 	defer resp.Body.Close()
 
-	if res != nil {
-		if err := json.NewDecoder(resp.Body).Decode(res); err != nil {
+	if outResponse != nil {
+		if err := json.NewDecoder(resp.Body).Decode(outResponse); err != nil {
 			return fmt.Errorf("failed to decode response: %w", err)
 		}
 	}
 
 	if resp.StatusCode >= 400 {
 		errMsg := fmt.Sprintf("http error %d", resp.StatusCode)
-		if isJSONAPI && res != nil {
-			if doc, ok := res.(*JSONAPIDocument); ok && len(doc.Errors) > 0 {
+		if isJSONAPI && outResponse != nil {
+			if doc, ok := outResponse.(*JSONAPIDocument); ok && len(doc.Errors) > 0 {
 				errMsg += fmt.Sprintf(": %s", doc.Errors[0].Detail)
 			}
 		}
@@ -110,7 +110,7 @@ func (c Client) GetAccessToken(ctx context.Context) (AccessToken, error) {
 
 // TODO: Enable SSO Registration
 // https://github.com/akvachan/hirevec-core/issues/37
-func (c Client) Register(ctx context.Context, email, fullName, password string) (TokenPair, error) {
+func (c Client) Register(ctx context.Context, email string, fullName string, password string) (TokenPair, error) {
 	payload := map[string]string{
 		"email":     email,
 		"full_name": fullName,
@@ -127,7 +127,7 @@ func (c Client) Register(ctx context.Context, email, fullName, password string) 
 
 // TODO: Enable SSO Login
 // https://github.com/akvachan/hirevec-core/issues/37
-func (c Client) Login(ctx context.Context, email, password string) (TokenPair, error) {
+func (c Client) Login(ctx context.Context, email string, password string) (TokenPair, error) {
 	payload := map[string]string{
 		"email":    email,
 		"password": password,
@@ -147,7 +147,7 @@ func (c Client) GetMe(ctx context.Context) (JSONAPIDocument, error) {
 	return doc, err
 }
 
-func (c Client) PatchMe(ctx context.Context, userName, fullName *string) (JSONAPIDocument, error) {
+func (c Client) PatchMe(ctx context.Context, userName *string, fullName *string) (JSONAPIDocument, error) {
 	payload := struct {
 		UserName *string `json:"user_name,omitempty"`
 		FullName *string `json:"full_name,omitempty"`
@@ -227,7 +227,7 @@ func (c Client) DeleteMeRecruiterProfile(ctx context.Context) (JSONAPIDocument, 
 Positions management
 */
 
-func (c Client) CreateMePosition(ctx context.Context, title, description, company string) (JSONAPIDocument, error) {
+func (c Client) CreateMePosition(ctx context.Context, title string, description string, company string) (JSONAPIDocument, error) {
 	payload := map[string]string{
 		"title":       title,
 		"description": description,
@@ -256,7 +256,7 @@ func (c Client) GetMePositions(ctx context.Context, cursor string, limit int) (J
 	return doc, err
 }
 
-func (c Client) PatchMePosition(ctx context.Context, id string, title, description, company *string, isActive *bool) (JSONAPIDocument, error) {
+func (c Client) PatchMePosition(ctx context.Context, id string, title *string, description *string, company *string, isActive *bool) (JSONAPIDocument, error) {
 	payload := struct {
 		Title       *string `json:"title,omitempty"`
 		Description *string `json:"description,omitempty"`
@@ -285,9 +285,9 @@ func (c Client) DeleteMePosition(ctx context.Context, id string) (JSONAPIDocumen
 Recommendations management
 */
 
-func (c Client) GetMeRecommendations(ctx context.Context, posCursor string, canCursor string, limit int, excludeReacted bool) (JSONAPIDocument, error) {
+func (c Client) GetMeRecommendations(ctx context.Context, positionsCursor string, candidateCursor string, limit int, excludeReacted bool) (JSONAPIDocument, error) {
 	var doc JSONAPIDocument
-	path := fmt.Sprintf("%s?pos_cursor=%s&can_cursor=%s&exclude_reacted=%t", RouteV1MeRecommendations, posCursor, canCursor, excludeReacted)
+	path := fmt.Sprintf("%s?pos_cursor=%s&can_cursor=%s&exclude_reacted=%t", RouteV1MeRecommendations, positionsCursor, candidateCursor, excludeReacted)
 	if limit > 0 {
 		path += "&limit=" + strconv.Itoa(limit)
 	}
