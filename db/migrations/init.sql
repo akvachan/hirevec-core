@@ -1,3 +1,5 @@
+-- Init migration for SQLite and PostgreSQL. Syntax must stay compliant to both databases.
+
 begin transaction;
 
 create table if not exists users (

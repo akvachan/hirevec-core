@@ -1,3 +1,5 @@
+-- Data ingestion migration for development and testing purposes.
+--
 -- Creates:
 --   - 1 candidate user with a strong profile
 --   - 3 recruiter users
@@ -5,7 +7,7 @@
 --   - 5 recommendations
 --   - 3 positive recruiter reactions (one from each recruiter)
 --
--- Safe to run multiple times because it uses INSERT OR IGNORE.
+-- Safe to run multiple times.
 
 begin transaction;
 

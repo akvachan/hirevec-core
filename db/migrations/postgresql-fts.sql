@@ -1,3 +1,5 @@
+-- Text search setup for PostgreSQL.
+
 begin transaction;
 
 -- Positions FTS

@@ -1,3 +1,5 @@
+-- Text search setup for SQLite.
+
 begin transaction;
 
 -- Positions FTS Setup
