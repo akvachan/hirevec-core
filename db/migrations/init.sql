@@ -1,7 +1,7 @@
 begin transaction;
 
 create table if not exists users (
-  id text primary key not null,
+  id text primary key not null, -- ULID
   provider text not null,
   provider_user_id text,
   email text,
@@ -14,8 +14,8 @@ create table if not exists users (
 );
 
 create table if not exists refresh_tokens (
-  jti text primary key not null,
-  user_id text not null,
+  jti text primary key not null, -- ULID
+  user_id text not null, -- ULID
   created_at timestamp not null, -- UTC, RFC3339
   expires_at timestamp not null, -- UTC, RFC3339
   revoked integer not null default 0,
@@ -27,8 +27,8 @@ create index if not exists idx_refresh_tokens_user_id
 on refresh_tokens(user_id);
 
 create table if not exists candidates (
-  id text primary key not null,
-  user_id text not null,
+  id text primary key not null, -- ULID
+  user_id text not null, -- ULID
   about text not null,
   last_recommended_at timestamp not null, -- UTC, RFC3339
   unique(user_id),
@@ -36,15 +36,15 @@ create table if not exists candidates (
 );
 
 create table if not exists recruiters (
-  id text primary key not null,
-  user_id text not null,
+  id text primary key not null, -- ULID
+  user_id text not null, -- ULID
   unique(user_id),
   foreign key (user_id) references users(id) on delete cascade
 );
 
 create table if not exists positions (
-  id text primary key not null,
-  recruiter_id text not null,
+  id text primary key not null, -- ULID
+  recruiter_id text not null, -- ULID
   title text not null,
   description text not null,
   company text,
@@ -58,9 +58,9 @@ create index if not exists idx_positions_active
 on positions(is_active);
 
 create table if not exists recommendations (
-  id text primary key not null,
-  position_id text not null,
-  candidate_id text not null,
+  id text primary key not null, -- ULID
+  position_id text not null, -- ULID
+  candidate_id text not null, -- ULID
   foreign key (position_id) references positions(id) on delete cascade,
   foreign key (candidate_id) references candidates(id) on delete cascade,
   unique(position_id, candidate_id)
@@ -79,9 +79,9 @@ create index if not exists idx_recommendations_candidate_id
 on recommendations(candidate_id, id);
 
 create table if not exists reactions (
-  recommendation_id text not null,
+  recommendation_id text not null, -- ULID
   reactor_type text not null,
-  reactor_id text not null,
+  reactor_id text not null, -- ULID
   reaction_type text not null,
   created_at timestamp not null, -- UTC, RFC3339
   primary key (recommendation_id, reactor_type, reactor_id),
@@ -94,8 +94,8 @@ create index if not exists idx_reactions_recommendation
 on reactions(recommendation_id);
 
 create table if not exists matches (
-  candidate_id text not null,
-  position_id text not null,
+  candidate_id text not null, -- ULID
+  position_id text not null, -- ULID
   created_at timestamp not null, -- UTC, RFC3339
   primary key (candidate_id, position_id),
   foreign key (candidate_id) references candidates(id) on delete cascade,
