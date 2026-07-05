@@ -127,8 +127,6 @@ func RegisterAndSaveToken(ctx context.Context, client hirevec.Client) error {
 	return nil
 }
 
-// TODO: Save credentials into environment variables
-// https://github.com/akvachan/hirevec-core/issues/32
 func QuickStartAndLogin(ctx context.Context, client hirevec.Client, prompt bool) error {
 	var err error
 	var db *sql.DB
@@ -171,15 +169,23 @@ const (
 
 type OutputFormat string
 
-// TODO: Support JSON output format
-// https://github.com/akvachan/hirevec-core/issues/31
 const (
-	OutputFormatTable OutputFormat = "table"
+	OutputFormatJSON OutputFormat = "json"
 )
 
-// TODO: Implement stdout printer method for the API/Client responses.
-// https://github.com/akvachan/hirevec-core/issues/29
 func PrintClientResponse[T any](response T, requestType ClientRequestType, format OutputFormat) {
+	switch format {
+	case OutputFormatJSON:
+		jsonData, err := json.MarshalIndent(response, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error marshaling response to JSON: %v\n", err)
+			return
+		}
+		fmt.Println(string(jsonData))
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unsupported output format: %s\n", format)
+	}
 }
 
 func main() {
@@ -199,13 +205,13 @@ func main() {
 	switch os.Args[1] {
 	case "login":
 		if err := LoginAndSaveToken(ctx, client, "", ""); err != nil {
-			fmt.Println("Failed to login:", err)
+			fmt.Printf("Failed to login: %v\n", err)
 			os.Exit(69)
 		}
 
 	case "register":
 		if err := RegisterAndSaveToken(ctx, client); err != nil {
-			fmt.Println("Failed to register:", err)
+			fmt.Printf("Failed to register: %v\n", err)
 			os.Exit(69)
 		}
 
@@ -220,7 +226,7 @@ func main() {
 			// TODO: Support login prompt on quickstart
 			// https://github.com/akvachan/hirevec-core/issues/38
 			if err := QuickStartAndLogin(ctx, client, false); err != nil {
-				fmt.Println("Failed to quick start:", err)
+				fmt.Printf("Failed to quick start: %v\n", err)
 				os.Exit(69)
 			}
 
@@ -232,20 +238,24 @@ func main() {
 
 			hash, err := hirevec.HashPassword(os.Args[3])
 			if err != nil {
-				fmt.Println("Failed to hash password:", err)
+				fmt.Printf("Failed to hash password: %v\n", err)
 				os.Exit(69)
 			}
 			fmt.Println(hash)
 		}
 
+	// TODO: Support cursors and page limit
+	// https://github.com/akvachan/hirevec-core/issues/39
 	case "recommendations":
+		// TODO: Implement access token refresh if it is expired
+		// https://github.com/akvachan/hirevec-core/issues/41
 		response, err := client.GetMeRecommendations(ctx, "", "", hirevec.DefaultPageSize, true)
 		if err != nil {
-			fmt.Println("Failed to fetch recommendations:", err)
+			fmt.Printf("Failed to fetch recommendations: %v\n", err)
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeGetMeRecommendations, OutputFormatTable)
+		PrintClientResponse(response, ClientRequestTypeGetMeRecommendations, OutputFormatJSON)
 
 	case "positive":
 		if len(os.Args) < 3 {
@@ -255,11 +265,11 @@ func main() {
 
 		response, err := client.CreateMeReaction(ctx, os.Args[2], hirevec.ReactionTypePositive)
 		if err != nil {
-			fmt.Println("Failed to create reaction:", err)
+			fmt.Printf("Failed to create reaction: %v\n", err)
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatTable)
+		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatJSON)
 
 	case "negative":
 		if len(os.Args) < 3 {
@@ -269,26 +279,28 @@ func main() {
 
 		response, err := client.CreateMeReaction(ctx, os.Args[2], hirevec.ReactionTypeNegative)
 		if err != nil {
-			fmt.Println("Failed to create reaction:", err)
+			fmt.Printf("Failed to create reaction: %v\n", err)
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatTable)
+		PrintClientResponse(response, ClientRequestTypeCreateMeReaction, OutputFormatJSON)
 
+	// TODO: Support cursors and page limit
+	// https://github.com/akvachan/hirevec-core/issues/40
 	case "matches":
 		response, err := client.GetMeMatches(ctx, "", 0)
 		if err != nil {
-			fmt.Println("Failed to fetch matches:", err)
+			fmt.Printf("Failed to fetch matches: %v\n", err)
 			os.Exit(69)
 		}
 
-		PrintClientResponse(response, ClientRequestTypeGetMeMatches, OutputFormatTable)
+		PrintClientResponse(response, ClientRequestTypeGetMeMatches, OutputFormatJSON)
 
 	case "help":
 		fmt.Println(GeneralCommandsInfo)
 
 	default:
-		fmt.Println("Unknown command:", os.Args[1])
+		fmt.Printf("Unknown command: %v\n", os.Args[1])
 		os.Exit(69)
 	}
 }

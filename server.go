@@ -1444,10 +1444,65 @@ type JSONAPIResource struct {
 	Meta map[string]any `json:"meta,omitempty"`
 }
 
+// JSONAPIData encapsulates a single resource or a list of resources.
+type JSONAPIData struct {
+	Single     *JSONAPIResource
+	Collection []JSONAPIResource
+}
+
+func (d JSONAPIData) MarshalJSON() ([]byte, error) {
+	switch {
+	case d.Single != nil && d.Collection != nil:
+		return nil, errors.New("JSONAPIData: both One and Many are set")
+
+	case d.Single != nil:
+		return json.Marshal(d.Single)
+
+	case d.Collection != nil:
+		return json.Marshal(d.Collection)
+
+	default:
+		return []byte("null"), nil
+	}
+}
+
+func (d *JSONAPIData) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+
+	if bytes.Equal(data, []byte("null")) {
+		d.Single = nil
+		d.Collection = nil
+		return nil
+	}
+
+	switch data[0] {
+	case '{':
+		var r JSONAPIResource
+		if err := json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		d.Single = &r
+		d.Collection = nil
+
+	case '[':
+		var rs []JSONAPIResource
+		if err := json.Unmarshal(data, &rs); err != nil {
+			return err
+		}
+		d.Single = nil
+		d.Collection = rs
+
+	default:
+		return fmt.Errorf("invalid JSON:API data")
+	}
+
+	return nil
+}
+
 // JSONAPIDocument is the top-level JSON:API response document.
 type JSONAPIDocument struct {
-	// Data contains the primary resource(s) returned by the request.
-	Data any `json:"data,omitempty"`
+	// DataSingle contains the primary resource returned by the request.
+	Data JSONAPIData `json:"data,omitempty"`
 
 	// Errors contains one or more errors when the request fails.
 	Errors []JSONAPIError `json:"errors,omitempty"`
@@ -1705,7 +1760,7 @@ func (a *API) HandlerV1GetMeRecommendations() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data:  data,
+			Data:  JSONAPIData{Collection: data},
 			Meta:  map[string]any{"page": page},
 			Links: links,
 		}, http.StatusOK)
@@ -1855,17 +1910,19 @@ func (a *API) HandlerV1CreateMeReaction() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data: JSONAPIResource{
-				Type: "reactions",
-				ID:   string(recommendationID),
-				Attributes: map[string]any{
-					"reaction_type": body.ReactionType,
-				},
-				Links: map[string]any{
-					"self":      fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, recommendationID),
-					"up":        string(RouteV1MeRecommendations),
-					"reactions": string(RouteV1MeReactions),
-					"matches":   string(RouteV1MeMatches),
+			Data: JSONAPIData{
+				Single: &JSONAPIResource{
+					Type: "reactions",
+					ID:   string(recommendationID),
+					Attributes: map[string]any{
+						"reaction_type": body.ReactionType,
+					},
+					Links: map[string]any{
+						"self":      fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, recommendationID),
+						"up":        string(RouteV1MeRecommendations),
+						"reactions": string(RouteV1MeReactions),
+						"matches":   string(RouteV1MeMatches),
+					},
 				},
 			},
 		}, http.StatusCreated)
@@ -1954,7 +2011,7 @@ func (a *API) HandlerV1GetMeReactions() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data:  data,
+			Data:  JSONAPIData{Collection: data},
 			Links: links,
 			Meta:  map[string]any{"page": page},
 		}, http.StatusOK)
@@ -2033,7 +2090,7 @@ func (a *API) HandlerV1GetMeMatches() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data:  data,
+			Data:  JSONAPIData{Collection: data},
 			Links: links,
 			Meta:  map[string]any{"page": page},
 		}, http.StatusOK)
@@ -2502,18 +2559,20 @@ func (a *API) HandlerV1GetMe() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data: JSONAPIResource{
-				Type: "users",
-				ID:   string(user.ID),
-				Attributes: map[string]any{
-					"provider":   user.Provider,
-					"email":      user.Email,
-					"full_name":  user.FullName,
-					"user_name":  user.UserName,
-					"updated_at": user.UpdatedAt,
-				},
-				Links: map[string]any{
-					"self": string(RouteV1Me),
+			Data: JSONAPIData{
+				Single: &JSONAPIResource{
+					Type: "users",
+					ID:   string(user.ID),
+					Attributes: map[string]any{
+						"provider":   user.Provider,
+						"email":      user.Email,
+						"full_name":  user.FullName,
+						"user_name":  user.UserName,
+						"updated_at": user.UpdatedAt,
+					},
+					Links: map[string]any{
+						"self": string(RouteV1Me),
+					},
 				},
 			},
 		}, http.StatusOK)
@@ -2890,16 +2949,18 @@ func (a *API) HandlerV1GetMeCandidateProfile() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data: JSONAPIResource{
-				Type: "candidates",
-				ID:   string(candidateID),
-				Attributes: map[string]any{
-					"user_id":             candidate.UserID,
-					"about":               candidate.About,
-					"last_recommended_at": candidate.LastRecommendedAt,
-				},
-				Links: map[string]any{
-					"self": string(RouteV1MeCandidate),
+			Data: JSONAPIData{
+				Single: &JSONAPIResource{
+					Type: "candidates",
+					ID:   string(candidateID),
+					Attributes: map[string]any{
+						"user_id":             candidate.UserID,
+						"about":               candidate.About,
+						"last_recommended_at": candidate.LastRecommendedAt,
+					},
+					Links: map[string]any{
+						"self": string(RouteV1MeCandidate),
+					},
 				},
 			},
 		}, http.StatusOK)
@@ -3149,14 +3210,16 @@ func (a *API) HandlerV1GetMeRecruiterProfile() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data: JSONAPIResource{
-				Type: "recruiters",
-				ID:   string(recruiterID),
-				Attributes: map[string]any{
-					"user_id": recruiter.UserID,
-				},
-				Links: map[string]any{
-					"self": string(RouteV1MeRecruiter),
+			Data: JSONAPIData{
+				Single: &JSONAPIResource{
+					Type: "recruiters",
+					ID:   string(recruiterID),
+					Attributes: map[string]any{
+						"user_id": recruiter.UserID,
+					},
+					Links: map[string]any{
+						"self": string(RouteV1MeRecruiter),
+					},
 				},
 			},
 		}, http.StatusOK)
@@ -3432,14 +3495,16 @@ func (a *API) HandlerV1CreateMePosition() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data: JSONAPIResource{
-				Type: "positions",
-				ID:   string(positionID),
-				Attributes: map[string]any{
-					"is_active": true,
-				},
-				Links: map[string]any{
-					"self": fmt.Sprintf("%s/%s", RouteV1MePositions, positionID),
+			Data: JSONAPIData{
+				Single: &JSONAPIResource{
+					Type: "positions",
+					ID:   string(positionID),
+					Attributes: map[string]any{
+						"is_active": true,
+					},
+					Links: map[string]any{
+						"self": fmt.Sprintf("%s/%s", RouteV1MePositions, positionID),
+					},
 				},
 			},
 		}, http.StatusCreated)
@@ -3512,7 +3577,7 @@ func (a *API) HandlerV1GetMePositions() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data:  data,
+			Data:  JSONAPIData{Collection: data},
 			Links: links,
 		}, http.StatusOK)
 	}
@@ -3606,17 +3671,19 @@ func (a *API) HandlerV1GetMePosition() http.HandlerFunc {
 		}
 
 		JSON(w, JSONAPIDocument{
-			Data: JSONAPIResource{
-				Type: "positions",
-				ID:   string(position.ID),
-				Attributes: map[string]any{
-					"title":       position.Title,
-					"description": position.Description,
-					"company":     position.Company,
-					"is_active":   position.IsActive,
-				},
-				Links: map[string]any{
-					"self": fmt.Sprintf("%s/%s", RouteV1MePositions, position.ID),
+			Data: JSONAPIData{
+				Single: &JSONAPIResource{
+					Type: "positions",
+					ID:   string(position.ID),
+					Attributes: map[string]any{
+						"title":       position.Title,
+						"description": position.Description,
+						"company":     position.Company,
+						"is_active":   position.IsActive,
+					},
+					Links: map[string]any{
+						"self": fmt.Sprintf("%s/%s", RouteV1MePositions, position.ID),
+					},
 				},
 			},
 		}, http.StatusOK)

@@ -27,7 +27,7 @@ go run cmd/hvcli/main.go recommendations
 4. React positively to the first recommendation:
 
 ```sh
-go run cmd/hvcli/main.go positive 1
+go run cmd/hvcli/main.go positive recmd_1
 ```
 
 5. See all your matches:
