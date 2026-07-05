@@ -108,6 +108,8 @@ func (c Client) GetAccessToken(ctx context.Context) (AccessToken, error) {
 	return token, err
 }
 
+// TODO: Enable SSO Registration
+// https://github.com/akvachan/hirevec-core/issues/37
 func (c Client) Register(ctx context.Context, email, fullName, password string) (TokenPair, error) {
 	payload := map[string]string{
 		"email":     email,
@@ -123,6 +125,8 @@ func (c Client) Register(ctx context.Context, email, fullName, password string) 
 	return pair, nil
 }
 
+// TODO: Enable SSO Login
+// https://github.com/akvachan/hirevec-core/issues/37
 func (c Client) Login(ctx context.Context, email, password string) (TokenPair, error) {
 	payload := map[string]string{
 		"email":    email,

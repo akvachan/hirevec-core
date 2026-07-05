@@ -92,10 +92,19 @@ func Prompt(label string) string {
 	return strings.TrimSpace(s)
 }
 
-func LoginAndSaveToken(ctx context.Context, client hirevec.Client) error {
-	tokens, err := client.Login(ctx, Prompt("Email"), Prompt("Password"))
-	if err != nil {
-		return err
+func LoginAndSaveToken(ctx context.Context, client hirevec.Client, email string, password string) error {
+	var tokens hirevec.TokenPair
+	var err error
+	if email == "" || password == "" {
+		tokens, err = client.Login(ctx, Prompt("Email"), Prompt("Password"))
+		if err != nil {
+			return err
+		}
+	} else {
+		tokens, err = client.Login(ctx, email, password)
+		if err != nil {
+			return err
+		}
 	}
 
 	if err = SaveToken(tokens.AccessToken, tokens.RefreshToken); err != nil {
@@ -120,7 +129,7 @@ func RegisterAndSaveToken(ctx context.Context, client hirevec.Client) error {
 
 // TODO: Save credentials into environment variables
 // https://github.com/akvachan/hirevec-core/issues/32
-func QuickStartAndSaveCredentials() error {
+func QuickStartAndLogin(ctx context.Context, client hirevec.Client, prompt bool) error {
 	var err error
 	var db *sql.DB
 	if url := os.Getenv("POSTGRESQL_DATABASE_URL"); url != "" {
@@ -139,6 +148,16 @@ func QuickStartAndSaveCredentials() error {
 		return err
 	}
 
+	if prompt {
+		if err := LoginAndSaveToken(ctx, client, "", ""); err != nil {
+			return err
+		}
+	} else {
+		if err := LoginAndSaveToken(ctx, client, "alex.chen.demo@example.com", "test"); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -147,7 +166,7 @@ type ClientRequestType string
 const (
 	ClientRequestTypeGetMeRecommendations ClientRequestType = "GetMeRecommendations"
 	ClientRequestTypeCreateMeReaction     ClientRequestType = "CreateMeReaction"
-	ClientRequestTypeGetMeMatches         ClientRequestType = "CreateMeReaction"
+	ClientRequestTypeGetMeMatches         ClientRequestType = "GetMeMatches"
 )
 
 type OutputFormat string
@@ -179,7 +198,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "login":
-		if err := LoginAndSaveToken(ctx, client); err != nil {
+		if err := LoginAndSaveToken(ctx, client, "", ""); err != nil {
 			fmt.Println("Failed to login:", err)
 			os.Exit(69)
 		}
@@ -198,7 +217,9 @@ func main() {
 
 		switch os.Args[2] {
 		case "quickstart":
-			if err := QuickStartAndSaveCredentials(); err != nil {
+			// TODO: Support login prompt on quickstart
+			// https://github.com/akvachan/hirevec-core/issues/38
+			if err := QuickStartAndLogin(ctx, client, false); err != nil {
 				fmt.Println("Failed to quick start:", err)
 				os.Exit(69)
 			}
