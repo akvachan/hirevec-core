@@ -1,5 +1,22 @@
 # Security
 
+```mermaid
+flowchart TD
+    A["External Identity Providers or Email"] --> AUTH
+
+    subgraph AUTH["Authentication Layer"]
+        B["POST /sessions"]
+
+        C["GET /oauth2/{provider}/authorize"]
+
+        D["GET /oauth2/{provider}/callback"]
+
+        E["POST /sessions/refresh"]
+    end
+
+    AUTH --> F["/users<br/>/positions<br/>/matches"]
+```
+
 ## Checklist
 
 - [x] User identifiers are [ULIDs](https://github.com/ulid/spec).

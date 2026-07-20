@@ -29,20 +29,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-var (
-	ErrTextForbiddenChars   = errors.New("text contains forbidden characters")
-	ErrTextTooLong          = errors.New("text too long")
-	ErrTextTooShort         = errors.New("text too short")
-	ErrEmailNotVerified     = errors.New("email not verified")
-	ErrExtraDataDecoded     = errors.New("extra data decoded")
-	ErrFailedShutdownServer = errors.New("failed to shutdown server")
-	ErrPasswordHasNoLower   = errors.New("password has no lower letter")
-	ErrPasswordHasNoUpper   = errors.New("password has no upper letter")
-	ErrPasswordHasNoDigit   = errors.New("password has no digit")
-	ErrPasswordHasNoSpecial = errors.New("password has no special character")
-	ErrPositionTitleHasURL  = errors.New("position title must not contain URLs")
-)
-
 type APIConfig struct {
 	ServerBaseURL               string
 	RequestReadTimeout          time.Duration
@@ -79,13 +65,13 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 		Model: aiConfig.EmbeddingsModel,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal embeddings request: %w", err)
 	}
 
 	reader := bytes.NewReader(requestBody)
 	request, err := http.NewRequest(http.MethodPost, aiConfig.TEIBaseURL, reader)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to init new request: %w", err)
 	}
 
 	request.Header.Set("Content-Type", "application/json")
@@ -93,7 +79,7 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 	defer func() {
 		if err := response.Body.Close(); err != nil {
@@ -102,15 +88,12 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 	}()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"embedding endpoint returned %d",
-			response.StatusCode,
-		)
+		return nil, fmt.Errorf("embedding endpoint returned %d", response.StatusCode)
 	}
 
 	var parsed EmbeddingsResponse
 	if err := json.NewDecoder(response.Body).Decode(&parsed); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode response body: %w", err)
 	}
 
 	if len(parsed.Data) != len(input) {
@@ -124,7 +107,7 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 	return parsed.Data, nil
 }
 
-//go:embed db/migrations/*
+//go:embed migrations/*
 var EmbeddedStatic embed.FS
 
 var (
@@ -141,8 +124,12 @@ func (a *API) RunEmbeddingsJob(c AIConfig) error {
 	// TODO: Test this store method, rethink it once more
 	// https://github.com/akvachan/hirevec-core/issues/21
 	ids, texts, err := a.Store.FetchPendingEmbeddingsMetadata(DefaultEmbeddingsBatchSize)
-	if err != nil || len(ids) == 0 {
-		return err
+	if err != nil {
+		return fmt.Errorf("failed to fetch pending emebeddings metadata: %w")
+	}
+	if len(ids) == 0 {
+		slog.Debug("empty pending embeddings metadata, skipping run...")
+		return nil
 	}
 
 	// TODO: Test this store method, rethink it once more
@@ -151,50 +138,36 @@ func (a *API) RunEmbeddingsJob(c AIConfig) error {
 	if err != nil {
 		// TODO: Test this store method, rethink it once more
 		// https://github.com/akvachan/hirevec-core/issues/21
-		return a.Store.MarkEmbeddingsStatus(ids, EmbeddingStatusPending)
+		if err := a.Store.MarkEmbeddingsStatus(ids, EmbeddingStatusPending); err != nil {
+			return fmt.Errorf("failed to mark embeddings status: %w", err)
+		}
 	}
 
 	tx, err := a.Store.DB.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 
 	// TODO: Test this store method, rethink it once more
 	// https://github.com/akvachan/hirevec-core/issues/21
 	if err := a.Store.UpsertEmbeddingsTx(tx, ids, batchOut); err != nil {
 		if err := tx.Rollback(); err != nil {
-			slog.Error(
-				"failed to rollback transaction",
-				"method", "UpsertEmbeddingsTx",
-				"err", err,
-			)
-			return err
+			slog.Error("failed to rollback transaction", "err", err)
+			return fmt.Errorf("failed to rollback transaction: %w", err)
 		}
-		slog.Error(
-			"failed to upsert embeddings",
-			"method", "UpsertEmbeddingsTx",
-			"err", err,
-		)
-		return err
+		slog.Error("failed to upsert embeddings", "err", err)
+		return fmt.Errorf("failed to upsert embeddings: %w", err)
 	}
 
 	// TODO: Test this store method, rethink it once more
 	// https://github.com/akvachan/hirevec-core/issues/21
 	if err := a.Store.MarkEmbeddingsStatusTx(tx, ids, EmbeddingStatusDone); err != nil {
 		if err := tx.Rollback(); err != nil {
-			slog.Error(
-				"failed to rollback transaction",
-				"method", "MarkEmbeddingsStatusTx",
-				"err", err,
-			)
-			return err
+			slog.Error("failed to rollback transaction", "err", err)
+			return fmt.Errorf("failed to rollback transaction: %w", err)
 		}
-		slog.Error(
-			"failed to mark ebeddings status",
-			"method", "MarkEmbeddingsStatusTx",
-			"err", err,
-		)
-		return err
+		slog.Error("failed to mark ebeddings status", "err", err)
+		return fmt.Errorf("failed to mark ebeddings status: %w", err)
 	}
 
 	return tx.Commit()
@@ -227,10 +200,11 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		DefaultRecommendationsJobFrequency,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get candidates: %w", err)
 	}
 	if len(candidateIDs) == 0 {
-		slog.Debug("candidates list is empty")
+		slog.Debug("candidates list is empty, skipping run...")
+		return nil
 	}
 
 	for i := range len(candidateIDs) {
@@ -259,7 +233,7 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		}
 
 		if len(positionIDs) == 0 {
-			slog.Debug("positions list is empty", "candidateID", candidateIDs[i])
+			slog.Debug("positions list is empty, skipping candidate...", "candidateID", candidateIDs[i])
 			continue
 		}
 
@@ -277,11 +251,8 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 
 		limit := min(len(positionIDs), int(DefaultRecommendationsDailyLimit))
 		for i := range limit {
-			if _, err := a.Store.CreateRecommendation(
-				positionIDs[i],
-				candidateIDs[i],
-			); err != nil {
-				return err
+			if _, err := a.Store.CreateRecommendation(positionIDs[i], candidateIDs[i]); err != nil {
+				return fmt.Errorf("failed to create recommendation: %w", err)
 			}
 		}
 
@@ -326,6 +297,8 @@ func NewAPI(ctx context.Context, c APIConfig, s Store, v Vault) *API {
 	return &api
 }
 
+var ErrFailedShutdownServer = errors.New("failed to shutdown server")
+
 func (a *API) WaitAndShutdown(ctx context.Context, errCh chan error, gracePeriod time.Duration) error {
 	select {
 	case <-ctx.Done():
@@ -361,7 +334,7 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 	slog.Debug("creating listener", "addr", api.Server.Addr)
 	listener, err := net.Listen("tcp", api.Server.Addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create listener: %w", err)
 	}
 
 	slog.Debug("starting server", "addr", api.Server.Addr)
@@ -402,7 +375,7 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 
 	if err := api.WaitAndShutdown(ctx, errCh, c.GracePeriod); err != nil {
 		slog.Error("failed to wait and shutdown", "err", err)
-		return err
+		return fmt.Errorf("failed to wait and shutdown: %w", err)
 	}
 
 	return nil
@@ -419,7 +392,81 @@ type ResponseWriter struct {
 
 func (rw *ResponseWriter) WriteHeader(code int) {
 	rw.status = code
-	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Error represents a single error object returned when a request fails.
+type Error struct {
+	// Code is an application-specific error identifier used for programmatic handling.
+	Code string `json:"code,omitempty"`
+
+	// Message provides a detailed explanation of the error.
+	Message string `json:"detail,omitempty"`
+
+	// Source identifies the specific field or parameter that caused the error.
+	Source ErrorSource `json:"source,omitempty"`
+}
+
+// ErrorSource identifies where an error originated in the request.
+type ErrorSource struct {
+	// Pointer is a JSON Pointer to the offending value in the request body.
+	Body string `json:"body,omitempty"`
+
+	// Parameter is the query string parameter that caused the error.
+	Parameter string `json:"parameter,omitempty"`
+
+	// Header is a string indicating the name of a single request header which caused the error.
+	Header string `json:"header,omitempty"`
+
+	// Cookie is a string indicating the name of a cookie which caused the error.
+	Cookie string `json:"cookie,omitempty"`
+}
+
+// Links contains URLs to other related pages.
+type Links struct {
+	// Next is a link to the next page in a paginated response.
+	Next string `json:"next,omitempty"`
+
+	// Previous is a link to the previous page in a paginated response.
+	Previous string `json:"previous,omitempty"`
+}
+
+// Meta contains that contains data that does not belong to Data, Errors, or Links.
+type Meta struct {
+	// Page contains metadata about current page
+	Page Page `json:"page,omitempty"`
+}
+
+// Envelope is a wrapper that contains zero or more fields.
+type Envelope struct {
+	// Data contains any main data to be consumed.
+	Data any `json:"data,omitempty"`
+
+	// Errors contains one or more errors when the request fails.
+	Errors []Error `json:"errors,omitempty"`
+
+	// Links contains top-level navigation or pagination URLs.
+	Links Links `json:"links,omitempty"`
+
+	// Meta contains additional information that is not links or errors or data.
+	Meta Meta `json:"meta,omitempty"`
+}
+
+func JSON(w http.ResponseWriter, responseBody Envelope, status int) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(responseBody); err != nil {
+		slog.Error("failed to encode response", "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		slog.Debug("failed to write response to client", "err", err)
+		w.Header().Del("Content-Type")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 }
 
 type Middleware func(http.HandlerFunc) http.HandlerFunc
@@ -442,13 +489,7 @@ func (a *API) MiddlewarePanicRecovery(next http.HandlerFunc) http.HandlerFunc {
 					"method", r.Method,
 					"path", r.URL.Path,
 				)
-
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 			}
 		}()
 
@@ -466,7 +507,7 @@ const (
 	MaxPageSize     = 128
 )
 
-func GetPagination(r *http.Request) Page {
+func GetPageFromQuery(r *http.Request) Page {
 	p := Page{
 		Cursor: r.URL.Query().Get("cursor"),
 		Limit:  DefaultPageSize,
@@ -479,100 +520,34 @@ func GetPagination(r *http.Request) Page {
 	return p
 }
 
-// OAuth2ErrorCode represents a standardized OAuth 2.0 error code used to identify the reason a request failed.
-// See https://www.rfc-editor.org/info/rfc6749.
-type OAuth2ErrorCode string
-
 const (
-	// OAuth2InvalidRequest indicates that the request is malformed, missing required parameters, or otherwise invalid.
-	OAuth2InvalidRequest OAuth2ErrorCode = "invalid_request"
-
-	// OAuth2InvalidGrant indicates that the provided authorization grant, refresh token, or credentials are invalid or expired.
-	OAuth2InvalidGrant OAuth2ErrorCode = "invalid_grant"
-
-	// OAuth2InvalidClient indicates that client authentication failed or the client credentials are invalid.
-	OAuth2InvalidClient OAuth2ErrorCode = "invalid_client"
-
-	// OAuth2UnauthorizedClient indicates that the authenticated client is not permitted to use the requested grant type.
-	OAuth2UnauthorizedClient OAuth2ErrorCode = "unauthorized_client"
-
-	// OAuth2UnsupportedGrantType indicates that the authorization server does not support the requested grant type.
-	OAuth2UnsupportedGrantType OAuth2ErrorCode = "unsupported_grant_type"
+	ErrorCodeBearerTokenRequired = "bearer_token_required"
+	ErrorCodeInvalidAccessToken  = "invalid_access_token"
+	ErrorCodeUnauthorized        = "unauthorized"
 )
 
-// OAuth2ErrorResponse represents a standard OAuth 2.0 error response returned by the authorization server.
-type OAuth2ErrorResponse struct {
-	// Error contains the OAuth 2.0 error code describing the failure.
-	Error OAuth2ErrorCode `json:"error"`
-
-	// ErrorDescription provides a human-readable explanation of the error.
-	ErrorDescription string `json:"error_description,omitempty"`
-
-	// ErrorURI provides a URL to documentation with additional details about the error.
-	ErrorURI string `json:"error_uri,omitempty"`
-}
-
-func OAuth2AccessToken(w http.ResponseWriter, accessToken AccessToken) {
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(accessToken); err != nil {
-		slog.Error("failed to encode OAuth2 access token", "err", err)
-	}
-}
-
-func OAuth2TokenPair(w http.ResponseWriter, tokenPair TokenPair) {
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(tokenPair); err != nil {
-		slog.Error("failed to encode OAuth2 token pair", "err", err)
-	}
-}
-
-func OAuth2Error(w http.ResponseWriter, code OAuth2ErrorCode, description string) {
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.WriteHeader(http.StatusBadRequest)
-	if err := json.NewEncoder(w).Encode(OAuth2ErrorResponse{
-		Error:            code,
-		ErrorDescription: description,
-	}); err != nil {
-		slog.Error("failed to encode OAuth2 token pair", "err", err)
-	}
-}
-
-func OAuth2Unauthorized(w http.ResponseWriter, code OAuth2ErrorCode, description string) {
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("WWW-Authenticate", "Bearer")
-	w.WriteHeader(http.StatusUnauthorized)
-	if err := json.NewEncoder(w).Encode(OAuth2ErrorResponse{
-		Error:            code,
-		ErrorDescription: description,
-	}); err != nil {
-		slog.Error("failed to encode OAuth2 token pair", "err", err)
-	}
-}
-
-func (a *API) MiddlewareAuthentication(roles map[Role]bool) Middleware {
+func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 
 			bearer, found := strings.CutPrefix(authHeader, "Bearer ")
 			if !found || bearer == "" {
-				OAuth2Unauthorized(w, OAuth2InvalidClient, "Bearer token is required")
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeBearerTokenRequired,
+					Message: "Bearer token is required",
+					Source:  ErrorSource{Header: "Accept"},
+				}}}, http.StatusUnauthorized)
 				return
 			}
 
 			claims, err := a.Vault.ParseAccessToken(bearer)
 			if err != nil {
-				OAuth2Error(w, OAuth2InvalidGrant, "invalid access token")
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidAccessToken,
+					Message: "Invalid access token",
+					Source:  ErrorSource{Header: "Accept"},
+				}}}, http.StatusBadRequest)
 				return
 			}
 
@@ -585,7 +560,10 @@ func (a *API) MiddlewareAuthentication(roles map[Role]bool) Middleware {
 					}
 				}
 				if !authorized {
-					OAuth2Error(w, OAuth2InvalidGrant, "unauthorized")
+					JSON(w, Envelope{Errors: []Error{{
+						Code:   ErrorCodeUnauthorized,
+						Source: ErrorSource{Header: "Accept"},
+					}}}, http.StatusUnauthorized)
 					return
 				}
 			}
@@ -594,6 +572,8 @@ func (a *API) MiddlewareAuthentication(roles map[Role]bool) Middleware {
 		}
 	}
 }
+
+const ErrorCodeUnsupportedMediaType = "unsupported_media_type"
 
 func (a *API) MiddlewareLogging(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -627,10 +607,11 @@ const (
 )
 
 type RouteConfig struct {
-	Method  Method
-	Handler http.HandlerFunc
-	Route   Route
-	Roles   []Role
+	Method      Method
+	Handler     http.HandlerFunc
+	Middlewares []Middleware
+	Route       Route
+	Roles       []Role
 }
 
 func (a *API) PublicRoute(c RouteConfig) {
@@ -640,6 +621,7 @@ func (a *API) PublicRoute(c RouteConfig) {
 		a.MiddlewarePanicRecovery,
 		a.MiddlewareMaxBytesLimit,
 	)
+	handler = MiddlewareChain(handler, c.Middlewares...)
 
 	a.Mux.Handle(
 		fmt.Sprintf("%s %s", c.Method, c.Route),
@@ -647,7 +629,7 @@ func (a *API) PublicRoute(c RouteConfig) {
 	)
 }
 
-func (a *API) ProtectedRoute(c RouteConfig) {
+func (a *API) PrivateRoute(c RouteConfig) {
 	rolesMap := make(map[Role]bool)
 	for _, role := range c.Roles {
 		rolesMap[role] = true
@@ -658,8 +640,9 @@ func (a *API) ProtectedRoute(c RouteConfig) {
 		a.MiddlewareLogging,
 		a.MiddlewarePanicRecovery,
 		a.MiddlewareMaxBytesLimit,
-		a.MiddlewareAuthentication(rolesMap),
+		a.MiddlewareAuth(rolesMap),
 	)
+	handler = MiddlewareChain(handler, c.Middlewares...)
 
 	a.Mux.Handle(
 		fmt.Sprintf("%s %s", c.Method, c.Route),
@@ -669,28 +652,83 @@ func (a *API) ProtectedRoute(c RouteConfig) {
 
 type Route string
 
-// Routes
 const (
-	RouteHealth            Route = "/health"
-	RouteOAuth2AccessToken Route = "/oauth2/token"
-	RouteOAuth2Authorize   Route = "/oauth2/authorize"
-	RouteOAuth2Callback    Route = "/oauth2/callback"
-)
+	// TODO: Docs
+	// RouteOpenAPI Route = "/openapi.json"
+	// RouteDocs    Route = "/docs"
 
-const (
-	RouteV1Me                       Route = "/v1/me"
-	RouteV1MeCandidate              Route = "/v1/me/candidate"
-	RouteV1MeMatches                Route = "/v1/me/matches"
-	RouteV1MePositions              Route = "/v1/me/positions"
-	RouteV1MePosition               Route = "/v1/me/positions/{id}"
-	RouteV1MeReactions              Route = "/v1/me/reactions"
-	RouteV1MeRecommendations        Route = "/v1/me/recommendations"
-	RouteV1MeRecommendationReaction Route = "/v1/me/recommendations/{id}/reaction"
-	RouteV1MeRecruiter              Route = "/v1/me/recruiter"
+	// Misc
+	RouteHealth Route = "/health"
+
+	// Authentication and authorization
+	RouteCallback         Route = "/callback"
+	RouteLoginViaEmail    Route = "/login"
+	RouteLoginViaProvider Route = "/login/{provider}"
+	RouteRefresh          Route = "/refresh"
+
+	// Resources and collections
+	RouteCandidate       Route = "/candidate"
+	RouteCandidates      Route = "/candidates"
+	RouteMatches         Route = "/matches"
+	RoutePosition        Route = "/positions/{id}"
+	RoutePositions       Route = "/positions"
+	RouteReactions       Route = "/reactions"
+	RouteRecommendations Route = "/recommendations"
+	RouteRecruiter       Route = "/recruiter"
+	RouteRecruiters      Route = "/recruiters"
+	RouteUser            Route = "/user"
+	RouteUsers           Route = "/users"
 )
 
 func (a *API) RegisterRoutes() {
 	slog.Debug("registering routes")
+
+	// TODO: Document routes in openapi.json
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	// a.PublicRoute(RouteConfig{
+	// 	Method:  MethodGet,
+	// 	Route:   RouteOpenAPI,
+	// 	Handler: a.HandlerOpenAPI,
+	// })
+	//
+	// a.PublicRoute(RouteConfig{
+	// 	Method:  MethodGet,
+	// 	Route:   RouteDocs,
+	// 	Handler: a.HandlerDocs,
+	// })
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteLoginViaProvider,
+		Handler: a.HandlerLoginViaProvider(),
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteLoginViaProvider,
+		Handler: a.HandlerLoginViaProvider(),
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteCallback,
+		Handler: a.HandlerSSOCallback(),
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteCallback,
+		Handler: a.HandlerSSOCallback(),
+	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
@@ -704,247 +742,251 @@ func (a *API) RegisterRoutes() {
 	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteOAuth2Authorize,
-		Handler: a.HandlerOAuth2Authorize(),
-	})
-
-	// TODO: Document the route in openapi.json
-	// https://github.com/akvachan/hirevec-core/issues/33
-	a.PublicRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteOAuth2Authorize,
-		Handler: a.HandlerOAuth2Authorize(),
+		Route:   RouteLoginViaEmail,
+		Handler: a.HandlerLoginViaEmail(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteOAuth2AccessToken,
-		Handler: a.HandlerOAuth2CreateAccessToken(),
+		Route:   RouteRefresh,
+		Handler: a.HandlerRefresh(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteOAuth2Callback,
-		Handler: a.HandlerOAuth2Callback(),
+		Route:   RouteUsers,
+		Handler: a.HandlerCreateUser(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.PublicRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteOAuth2Callback,
-		Handler: a.HandlerOAuth2Callback(),
+		Route:   RouteUser,
+		Handler: a.HandlerGetUser(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.PublicRoute(RouteConfig{
-		Method:  MethodPost,
-		Route:   RouteV1Me,
-		Handler: a.HandlerV1CreateMe(),
-	})
-
-	// TODO: Document the route in openapi.json
-	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteV1Me,
-		Handler: a.HandlerV1GetMe(),
-	})
-
-	// TODO: Document the route in openapi.json
-	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodPatch,
-		Route:   RouteV1Me,
-		Handler: a.HandlerV1PatchMe(),
+		Route:   RouteUser,
+		Handler: a.HandlerPatchUser(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodDelete,
-		Route:   RouteV1Me,
-		Handler: a.HandlerV1DeleteMe(),
+		Route:   RouteUser,
+		Handler: a.HandlerDeleteUser(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteV1MeCandidate,
-		Handler: a.HandlerV1CreateMeCandidateProfile(),
+		Route:   RouteCandidates,
+		Handler: a.HandlerCreateCandidate(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteV1MeCandidate,
-		Handler: a.HandlerV1GetMeCandidateProfile(),
+		Route:   RouteCandidate,
+		Handler: a.HandlerGetCandidate(),
 		Roles:   []Role{RoleCandidate},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodPatch,
-		Route:   RouteV1MeCandidate,
-		Handler: a.HandlerV1PatchMeCandidateProfile(),
+		Route:   RouteCandidate,
+		Handler: a.HandlerPatchCandidate(),
 		Roles:   []Role{RoleCandidate},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodDelete,
-		Route:   RouteV1MeCandidate,
-		Handler: a.HandlerV1DeleteMeCandidateProfile(),
+		Route:   RouteCandidate,
+		Handler: a.HandlerDeleteCandidate(),
 		Roles:   []Role{RoleCandidate},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteV1MeRecruiter,
-		Handler: a.HandlerV1CreateMeRecruiterProfile(),
+		Route:   RouteRecruiters,
+		Handler: a.HandlerCreateRecruiter(),
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteV1MeRecruiter,
-		Handler: a.HandlerV1GetMeRecruiterProfile(),
+		Route:   RouteRecruiter,
+		Handler: a.HandlerGetRecruiter(),
 		Roles:   []Role{RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodDelete,
-		Route:   RouteV1MeRecruiter,
-		Handler: a.HandlerV1DeleteMeRecruiterProfile(),
+		Route:   RouteRecruiter,
+		Handler: a.HandlerDeleteRecruiter(),
 		Roles:   []Role{RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteV1MePositions,
-		Handler: a.HandlerV1CreateMePosition(),
+		Route:   RoutePositions,
+		Handler: a.HandlerCreatePosition(),
 		Roles:   []Role{RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteV1MePositions,
-		Handler: a.HandlerV1GetMePositions(),
+		Route:   RoutePositions,
+		Handler: a.HandlerGetPositions(),
 		Roles:   []Role{RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteV1MePosition,
-		Handler: a.HandlerV1GetMePosition(),
+		Route:   RoutePosition,
+		Handler: a.HandlerGetPosition(),
 		Roles:   []Role{RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodPatch,
-		Route:   RouteV1MePosition,
-		Handler: a.HandlerV1PatchMePosition(),
+		Route:   RoutePosition,
+		Handler: a.HandlerPatchPosition(),
 		Roles:   []Role{RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodDelete,
-		Route:   RouteV1MePosition,
-		Handler: a.HandlerV1DeleteMePosition(),
+		Route:   RoutePosition,
+		Handler: a.HandlerDeletePosition(),
 		Roles:   []Role{RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteV1MeRecommendations,
-		Handler: a.HandlerV1GetMeRecommendations(),
+		Route:   RouteRecommendations,
+		Handler: a.HandlerGetRecommendations(),
 		Roles:   []Role{RoleCandidate, RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteV1MeReactions,
-		Handler: a.HandlerV1GetMeReactions(),
+		Route:   RouteReactions,
+		Handler: a.HandlerGetReactions(),
 		Roles:   []Role{RoleCandidate, RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodPost,
-		Route:   RouteV1MeRecommendationReaction,
-		Handler: a.HandlerV1CreateMeReaction(),
+		Route:   RouteReactions,
+		Handler: a.HandlerCreateReaction(),
 		Roles:   []Role{RoleCandidate, RoleRecruiter},
 	})
 
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
-	a.ProtectedRoute(RouteConfig{
+	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
-		Route:   RouteV1MeMatches,
-		Handler: a.HandlerV1GetMeMatches(),
+		Route:   RouteMatches,
+		Handler: a.HandlerGetMatches(),
 		Roles:   []Role{RoleCandidate, RoleRecruiter},
 	})
 }
 
-func (a *API) OAuth2CreateAccessToken(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
+func (a *API) CreateAccessToken(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
 	accessToken, err := a.Vault.CreateAccessToken(userID, provider, roles)
 	if err != nil {
 		slog.Error("failed to create access token", "err", err)
-		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	OAuth2AccessToken(w, accessToken)
+
+	w.Header().Set("Cache-Control", "no-store")
+	JSON(w, Envelope{Data: map[string]any{
+		"access_token": accessToken.AccessToken,
+		"token_type":   accessToken.TokenType,
+		"expires_in":   accessToken.ExpiresIn,
+		"scope":        accessToken.Scope,
+		"user_id":      accessToken.UserID,
+	}}, http.StatusOK)
+}
+
+const (
+	ErrorCodeInvalidRequestBody   = "invalid_request_body"
+	ErrorCodeInvalidGrantType     = "invalid_grant_type"
+	ErrorCodeRefreshTokenRequired = "refresh_token_required"
+	ErrorCodeInvalidRefreshToken  = "invalid_refresh_token"
+)
+
+type RequestBodyRefresh struct {
+	GrantType    string `json:"grant_type"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
-	type RequestBody struct {
-		GrantType    string `json:"grant_type"`
-		RefreshToken string `json:"refresh_token"`
-	}
-
+func (a *API) HandlerRefresh() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := DecodeRequestBody[RequestBody](r)
+		body, err := DecodeRequestBody[RequestBodyRefresh](r)
 		if err != nil {
-			OAuth2Error(w, OAuth2InvalidRequest, "invalid request body")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
+
 		if body.GrantType != "refresh_token" {
-			OAuth2Error(w, OAuth2UnsupportedGrantType, "grant_type must be refresh_token")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidGrantType,
+				Message: "grant_type must be refresh_token",
+				Source:  ErrorSource{Body: "/data/grant_type"},
+			}}}, http.StatusBadRequest)
 			return
 		}
+
 		if body.RefreshToken == "" {
-			OAuth2Error(w, OAuth2InvalidGrant, "refresh_token is required")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeRefreshTokenRequired,
+				Message: "refresh_token is required",
+				Source:  ErrorSource{Body: "/data/refresh_token"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
@@ -955,7 +997,11 @@ func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 				"ip", r.RemoteAddr,
 				"err", err,
 			)
-			OAuth2Error(w, OAuth2InvalidGrant, "invalid refresh token")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRefreshToken,
+				Message: "Invalid refresh token",
+				Source:  ErrorSource{Body: "/data/refresh_token"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
@@ -968,7 +1014,11 @@ func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 					"user_id", claims.UserID,
 					"ip", r.RemoteAddr,
 				)
-				OAuth2Error(w, OAuth2InvalidGrant, "invalid refresh token")
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidRefreshToken,
+					Message: "Invalid refresh token",
+					Source:  ErrorSource{Body: "/data/refresh_token"},
+				}}}, http.StatusBadRequest)
 				return
 			}
 			slog.Error(
@@ -978,7 +1028,7 @@ func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 				"user_id", claims.UserID,
 				"ip", r.RemoteAddr,
 			)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		if isRevoked {
@@ -988,7 +1038,11 @@ func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 				"user_id", claims.UserID,
 				"ip", r.RemoteAddr,
 			)
-			OAuth2Error(w, OAuth2InvalidGrant, "invalid refresh token")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRefreshToken,
+				Message: "Invalid refresh token",
+				Source:  ErrorSource{Body: "/data/meta/refresh_token"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
@@ -1003,86 +1057,137 @@ func (a *API) HandlerOAuth2CreateAccessToken() http.HandlerFunc {
 				"ip", r.RemoteAddr,
 				"err", err,
 			)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		a.OAuth2CreateAccessToken(
-			w,
-			claims.UserID,
-			claims.Provider,
-			roles,
-		)
+		a.CreateAccessToken(w, claims.UserID, claims.Provider, roles)
 	}
 }
 
+type RequestBodyLoginViaEmail struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+const (
+	ErrorCodePasswordRequired   = "password_required"
+	ErrorCodeInvalidCredentials = "invalid_credentials"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
-	type RequstBodyEmailAuthorization struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
+func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		providerString := r.URL.Query().Get("provider")
-		provider, err := StringToProvider(providerString, ProviderEmail)
+		body, err := DecodeRequestBody[RequestBodyLoginViaEmail](r)
 		if err != nil {
-			OAuth2Error(
-				w,
-				OAuth2InvalidRequest,
-				"invalid provider; must be one of: google, apple, email",
-			)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
 
-		if provider == ProviderEmail {
-			body, err := DecodeRequestBody[RequstBodyEmailAuthorization](r)
+		missingEmail := body.Email == ""
+		missingPassword := body.Password == ""
+		if missingPassword || missingEmail {
+			errors := make([]Error, 0, 2)
+			if missingEmail {
+				errors = append(errors, Error{
+					Code:    ErrorCodeEmailRequired,
+					Message: "Email is required",
+					Source:  ErrorSource{Body: "/data/email"},
+				})
+			}
+			if missingPassword {
+				errors = append(errors, Error{
+					Code:    ErrorCodePasswordRequired,
+					Message: "Password is required",
+					Source:  ErrorSource{Body: "/data/password"},
+				})
+			}
+			JSON(w, Envelope{Errors: errors}, http.StatusBadRequest)
+			return
+		}
+
+		user, roles, err := a.Store.GetUserAndRolesByEmail(body.Email, ProviderEmail)
+		switch {
+		case errors.Is(err, ErrUserNotFound):
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidCredentials,
+				Message: "Invalid credentials",
+			}}}, http.StatusUnauthorized)
+			return
+
+		case errors.Is(err, ErrUserNoRole):
+			accessToken, err := a.Vault.CreateAccessToken(user.ID, user.Provider, map[Role]ULID{})
 			if err != nil {
-				OAuth2Error(w, OAuth2InvalidRequest, "invalid request body")
+				slog.Error("failed to create access token", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			if body.Email == "" || body.Password == "" {
-				OAuth2Error(w, OAuth2InvalidRequest, "email and password required")
-				return
-			}
+			w.Header().Set("Cache-Control", "no-store")
+			JSON(w, Envelope{Data: accessToken}, http.StatusOK)
 
-			user, roles, err := a.Store.GetUserAndRolesByEmail(body.Email, ProviderEmail)
-			switch {
-			case errors.Is(err, ErrUserNotFound):
-				OAuth2Unauthorized(w, OAuth2InvalidRequest, "invalid credentials")
-				return
+		case err != nil:
+			slog.Error("failed to get user by email", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 
-			case errors.Is(err, ErrUserNoRole):
-				a.OAuth2CreateAccessToken(w, user.ID, user.Provider, map[Role]ULID{})
-				return
+		if !IsValidPassword(user.PasswordHash, body.Password) {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidCredentials,
+				Message: "Invalid credentials",
+			}}}, http.StatusUnauthorized)
+			return
+		}
 
-			case err != nil:
-				slog.Error("failed to get user by email", "err", err)
-				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-				return
-			}
+		jti, err := a.Store.CreateRefreshToken(user.ID)
+		if err != nil {
+			slog.Error("failed to create refresh token", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 
-			if !IsValidPassword(user.PasswordHash, body.Password) {
-				OAuth2Unauthorized(w, OAuth2InvalidRequest, "invalid credentials")
-				return
-			}
+		tokenPair, err := a.Vault.CreateTokenPair(user.ID, user.Provider, jti, roles)
+		if err != nil {
+			slog.Error("failed to create token pair", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 
-			a.OAuth2CreateTokenPair(w, user.ID, user.Provider, roles)
+		JSON(w, Envelope{Data: tokenPair}, http.StatusOK)
+	}
+}
+
+const ErrorCodeInvalidProvider = "invalid_provider"
+
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
+func (a *API) HandlerLoginViaProvider() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		provider := Provider(r.PathValue("provider"))
+		if provider != ProviderGoogle && provider != ProviderApple {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidProvider,
+				Message: "Provider must be google or apple",
+				Source:  ErrorSource{Parameter: "provider"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		state, err := a.Vault.CreateStateToken(provider)
 		if err != nil {
 			slog.Error("failed to generate state token", "err", err)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		parsed, err := a.Vault.ParseStateToken(state)
 		if err != nil {
 			slog.Error("failed to parse state token", "err", err)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
@@ -1110,102 +1215,127 @@ func (a *API) HandlerOAuth2Authorize() http.HandlerFunc {
 		url, err := a.Vault.CreateAuthCodeURL(state, verifier, provider)
 		if err != nil {
 			slog.Error("failed to generate auth code URL", "err", err)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		http.Redirect(
-			w, r,
-			url,
-			http.StatusTemporaryRedirect,
-		)
+		http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 	}
 }
 
+var ErrEmailNotVerified = errors.New("email not verified")
+
+const (
+	ErrorCodeMissingState          = "missing_state"
+	ErrorCodeInvalidState          = "invalid_state"
+	ErrorCodeInvalidCSRF           = "invalid_csrf"
+	ErrorCodeMissingVerifier       = "missing_verifier"
+	ErrorCodeAuthorizationProvider = "authorization_provider_error"
+	ErrorCodeMissingCode           = "missing_code"
+	ErrorCodeIDTokenRequired       = "id_token_required"
+	ErrorCodeInvalidIDToken        = "invalid_id_token"
+	ErrorCodeFailedParseClaims     = "failed_parse_claims"
+	ErrorCodeUnverifiedEmail       = "unverified_email"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
+func (a *API) HandlerSSOCallback() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(
-			r.Context(),
-			a.Vault.StateTokenExpiration,
-		)
+		ctx, cancel := context.WithTimeout(r.Context(), a.Vault.StateTokenExpiration)
 		defer cancel()
 
 		stateString := r.URL.Query().Get("state")
 		if stateString == "" {
-			OAuth2Error(w, OAuth2InvalidRequest, "missing state")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingState,
+				Message: "Missing state",
+				Source:  ErrorSource{Parameter: "state"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		state, err := a.Vault.ParseStateToken(stateString)
 		if err != nil {
-			OAuth2Error(w, OAuth2InvalidRequest, "invalid state token")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidState,
+				Message: "Invalid state",
+				Source:  ErrorSource{Parameter: "state"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		csrfCookie, err := r.Cookie("oauth_csrf")
 		if err != nil || csrfCookie.Value != state.CSRF {
-			OAuth2Error(w, OAuth2InvalidRequest, "invalid CSRF token")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidCSRF,
+				Message: "Invalid CSRF",
+				Source:  ErrorSource{Cookie: "oauth_csrf"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		verifierCookie, err := r.Cookie("oauth_verifier")
 		if err != nil {
-			OAuth2Error(w, OAuth2InvalidRequest, "missing PKCE verifier")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingVerifier,
+				Message: "Missing Verifier",
+				Source:  ErrorSource{Cookie: "oauth_verifier"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		if errParam := r.URL.Query().Get("error"); errParam != "" {
-			OAuth2Error(w, OAuth2InvalidRequest, "authorization provider error")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeAuthorizationProvider,
+				Message: "Authorization provider returned error",
+				Source:  ErrorSource{Parameter: "error"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			OAuth2Error(w, OAuth2InvalidRequest, "missing authorization code")
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingCode,
+				Message: "Missing authorization code",
+				Source:  ErrorSource{Parameter: "code"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
-		DeleteCookies(w, [2]string{"oauth_csrf", "oauth_verifier"})
+		// Delete cookies
+		for _, name := range [2]string{"oauth_csrf", "oauth_verifier"} {
+			http.SetCookie(w, &http.Cookie{
+				Name:     name,
+				Path:     "/",
+				MaxAge:   -1,
+				HttpOnly: true,
+				Secure:   true,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
 
 		var idToken IDToken
-		switch state.Provider {
+		var idTokenErr error
+
+		switch Provider(r.PathValue("provider")) {
 		case ProviderGoogle:
-			rawIDToken, err := a.Vault.ExchangeGoogleCodeForIDToken(
-				ctx,
-				code,
-				verifierCookie,
-			)
+			rawIDToken, err := a.Vault.ExchangeGoogleCodeForIDToken(ctx, code, verifierCookie)
 			if errors.Is(err, ErrIDTokenRequired) {
-				OAuth2Error(w, OAuth2InvalidRequest, "id_token is required")
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeIDTokenRequired,
+					Message: "id_token is required",
+				}}}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
 				slog.Error("failed to exchange Google code", "err", err)
-				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
-			idToken, err = a.Vault.VerifyAndParseGoogleIDToken(ctx, rawIDToken)
-			switch {
-			case errors.Is(err, ErrInvalidIDToken):
-				OAuth2Error(w, OAuth2InvalidRequest, "invalid id_token")
-				return
-
-			case errors.Is(err, ErrFailedParseClaims):
-				OAuth2Error(w, OAuth2InvalidRequest, "failed to parse claims")
-				return
-
-			case errors.Is(err, ErrEmailNotVerified):
-				OAuth2Error(w, OAuth2InvalidRequest, "unverified provider email")
-				return
-
-			case err != nil:
-				slog.Error("failed to verify Google ID token", "err", err)
-				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-				return
-			}
+			idToken, idTokenErr = a.Vault.VerifyAndParseGoogleIDToken(ctx, rawIDToken)
 
 		case ProviderApple:
 			idTokenString, err := a.Vault.ExchangeAppleCodeForIDToken(
@@ -1214,49 +1344,144 @@ func (a *API) HandlerOAuth2Callback() http.HandlerFunc {
 				verifierCookie,
 			)
 			if errors.Is(err, ErrIDTokenRequired) {
-				OAuth2Error(w, OAuth2InvalidRequest, "id_token is required")
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeIDTokenRequired,
+					Message: "id_token is required",
+				}}}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
 				slog.Error("failed to exchange Apple code", "err", err)
-				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
-			idToken, err = a.Vault.VerifyAndParseAppleIDToken(
+			idToken, idTokenErr = a.Vault.VerifyAndParseAppleIDToken(
 				ctx,
 				idTokenString,
 				r.FormValue("user"),
 			)
-			switch {
-			case errors.Is(err, ErrInvalidIDToken):
-				OAuth2Error(w, OAuth2InvalidRequest, "invalid id_token")
-				return
-
-			case errors.Is(err, ErrFailedParseClaims):
-				OAuth2Error(w, OAuth2InvalidRequest, "failed to parse claims")
-				return
-
-			case errors.Is(err, ErrEmailNotVerified):
-				OAuth2Error(w, OAuth2InvalidRequest, "unverified provider email")
-				return
-
-			case err != nil:
-				slog.Error("failed to verify Apple ID token", "err", err)
-				OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-				return
-			}
 
 		default:
-			OAuth2Error(
-				w,
-				OAuth2InvalidRequest,
-				"invalid provider; must be one of: google, apple",
-			)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeIDTokenRequired,
+				Message: "Invalid provider; must be one of: google, apple",
+				Source:  ErrorSource{Parameter: "provider"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
-		a.FinishAuthFlow(w, idToken)
+		switch {
+		case errors.Is(idTokenErr, ErrInvalidIDToken):
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidIDToken,
+				Message: "Invalid id_token",
+			}}}, http.StatusBadRequest)
+			return
+
+		case errors.Is(idTokenErr, ErrFailedParseClaims):
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeFailedParseClaims,
+				Message: "Failed to parse claims",
+			}}}, http.StatusBadRequest)
+			return
+
+		case errors.Is(idTokenErr, ErrEmailNotVerified):
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeUnverifiedEmail,
+				Message: "Unverified email",
+			}}}, http.StatusBadRequest)
+			return
+
+		case idTokenErr != nil:
+			slog.Error("failed to verify Google ID token", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		userID, roles, err := a.Store.GetUserIDAndRolesByProvider(idToken.Provider, idToken.ProviderUserID)
+		switch {
+		case errors.Is(err, ErrUserNotFound):
+			userName, err := GenerateUserName()
+			if err != nil {
+				slog.Error("failed to generate user name", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			fullName, err := NormalizeAndValidateUserFullName(idToken.FullName)
+			switch {
+			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidUserFullNameFormat,
+					Message: ErrorMessageUserFullNameWrongSize,
+				}}}, http.StatusBadRequest)
+				return
+			case errors.Is(err, ErrTextForbiddenChars):
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidUserFullNameFormat,
+					Message: ErrorMessageUserFullNameForbiddenChars,
+				}}}, http.StatusBadRequest)
+				return
+			case err != nil:
+				slog.Error("failed to normalize and validate full name", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			userID, err := a.Store.CreateUser(idToken.Provider, idToken.ProviderUserID, idToken.Email, fullName, userName, "")
+			if err != nil {
+				slog.Error("failed to create user", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ULID{})
+			if err != nil {
+				slog.Error("failed to create access token", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Cache-Control", "no-store")
+			JSON(w, Envelope{Data: accessToken}, http.StatusOK)
+			return
+
+		case errors.Is(err, ErrUserNoRole):
+			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ULID{})
+			if err != nil {
+				slog.Error("failed to create access token", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Cache-Control", "no-store")
+			JSON(w, Envelope{Data: accessToken}, http.StatusOK)
+			return
+
+		case err != nil:
+			slog.Error("failed to get user by provider", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		jti, err := a.Store.CreateRefreshToken(userID)
+		if err != nil {
+			slog.Error("failed to create refresh token", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		tokenPair, err := a.Vault.CreateTokenPair(userID, idToken.Provider, jti, roles)
+		if err != nil {
+			slog.Error("failed to create token pair", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		JSON(w, Envelope{Data: tokenPair}, http.StatusOK)
+		return
 	}
 }
 
@@ -1267,6 +1492,13 @@ const (
 	DefaultUserFullNameMaxLength = 512
 )
 
+var (
+	ErrTextForbiddenChars = errors.New("text contains forbidden characters")
+	ErrTextTooShort       = errors.New("text too short")
+	ErrTextTooLong        = errors.New("text too long")
+)
+
+// TODO: Return an array of errors instead of one by one.
 func NormalizeAndValidateUserFullName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	name = strings.Join(strings.Fields(name), " ")
@@ -1283,248 +1515,11 @@ func NormalizeAndValidateUserFullName(name string) (string, error) {
 }
 
 var (
-	FailMessageUserFullNameWrongSize      = fmt.Sprintf("full_name must be between %v and %v characters", DefaultUserFullNameMinLength, DefaultUserFullNameMaxLength)
-	FailMessageUserFullNameForbiddenChars = "full_name must be a valid 'passport-style' full name. It must start with a letter and can only contain letters, spaces, apostrophes, or hyphens"
+	ErrorMessageUserFullNameWrongSize      = fmt.Sprintf("full_name must be between %v and %v characters", DefaultUserFullNameMinLength, DefaultUserFullNameMaxLength)
+	ErrorMessageUserFullNameForbiddenChars = "full_name must be a valid 'passport-style' full name. It must start with a letter and can only contain letters, spaces, apostrophes, or hyphens"
 )
 
-func (a *API) FinishAuthFlow(w http.ResponseWriter, idToken IDToken) {
-	userID, roles, err := a.Store.GetUserIDAndRolesByProvider(idToken.Provider, idToken.ProviderUserID)
-	switch {
-	case errors.Is(err, ErrUserNotFound):
-		userName, err := GenerateUserName()
-		if err != nil {
-			slog.Error("failed to generate user name", "err", err)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-			return
-		}
-
-		switch {
-		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-			OAuth2Error(w, OAuth2InvalidRequest, FailMessageUserFullNameWrongSize)
-			return
-
-		case errors.Is(err, ErrTextForbiddenChars):
-			OAuth2Error(w, OAuth2InvalidRequest, FailMessageUserFullNameForbiddenChars)
-			return
-
-		case err != nil:
-			slog.Error("failed to validate full name", "err", err)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-			return
-		}
-
-		userID, err := a.Store.CreateUser(
-			idToken.Provider,
-			idToken.ProviderUserID,
-			idToken.Email,
-			idToken.FullName,
-			userName,
-			"",
-		)
-		if err != nil {
-			slog.Error("failed to create user", "err", err)
-			OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-			return
-		}
-		a.OAuth2CreateAccessToken(
-			w,
-			userID,
-			idToken.Provider,
-			map[Role]ULID{},
-		)
-		return
-
-	case errors.Is(err, ErrUserNoRole):
-		a.OAuth2CreateAccessToken(
-			w,
-			userID,
-			idToken.Provider,
-			map[Role]ULID{},
-		)
-		return
-
-	case err != nil:
-		slog.Error("failed to get user by provider", "err", err)
-		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-		return
-	}
-
-	a.OAuth2CreateTokenPair(
-		w,
-		userID,
-		idToken.Provider,
-		roles,
-	)
-}
-
-func (a *API) OAuth2CreateTokenPair(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
-	jti, err := a.Store.CreateRefreshToken(userID)
-	if err != nil {
-		slog.Error("failed to create refresh token", "err", err)
-		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-		return
-	}
-
-	tokenPair, err := a.Vault.CreateTokenPair(userID, provider, jti, roles)
-	if err != nil {
-		slog.Error("failed to create token pair", "err", err)
-		OAuth2Error(w, OAuth2InvalidRequest, "internal server error")
-		return
-	}
-
-	OAuth2TokenPair(w, tokenPair)
-}
-
-func DeleteCookies(w http.ResponseWriter, names [2]string) {
-	for _, name := range names {
-		http.SetCookie(w, &http.Cookie{
-			Name:     name,
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   true,
-			SameSite: http.SameSiteLaxMode,
-		})
-	}
-}
-
-// JSONAPIMediaType is the official media type used for JSON:API request and response payloads.
-// See https://jsonapi.org/format/.
-const JSONAPIMediaType = "application/vnd.api+json"
-
-// JSONAPIError represents a single error object returned when a request fails.
-type JSONAPIError struct {
-	// Status is the HTTP status code associated with the error, represented as a string.
-	Status string `json:"status,omitempty"`
-
-	// Code is an application-specific error identifier used for programmatic handling.
-	Code string `json:"code,omitempty"`
-
-	// Title is a short, human-readable summary of the error.
-	Title string `json:"title,omitempty"`
-
-	// Detail provides a more detailed explanation of the error.
-	Detail string `json:"detail,omitempty"`
-
-	// Source identifies the specific field or parameter that caused the error.
-	Source *JSONAPIErrorSource `json:"source,omitempty"`
-
-	// Meta contains additional custom information about the error.
-	Meta map[string]any `json:"meta,omitempty"`
-}
-
-// JSONAPIErrorSource identifies where an error originated in the request.
-type JSONAPIErrorSource struct {
-	// Pointer is a JSON Pointer to the offending value in the request body.
-	Pointer string `json:"pointer,omitempty"`
-
-	// Parameter is the query string parameter that caused the error.
-	Parameter string `json:"parameter,omitempty"`
-}
-
-// JSONAPIResource represents a JSON:API resource object such as a user,
-// article, order, or any other domain entity.
-type JSONAPIResource struct {
-	// Type is the resource type, typically matching the collection name.
-	Type string `json:"type"`
-
-	// ID is the unique identifier of the resource.
-	ID string `json:"id"`
-
-	// Attributes contains the resource's actual data fields.
-	Attributes map[string]any `json:"attributes,omitempty"`
-
-	// Relationships contains references to related resources.
-	Relationships map[string]any `json:"relationships,omitempty"`
-
-	// Links contains URLs related to this resource.
-	Links map[string]any `json:"links,omitempty"`
-
-	// Meta contains additional resource-specific metadata.
-	Meta map[string]any `json:"meta,omitempty"`
-}
-
-// JSONAPIData encapsulates a single resource or a list of resources.
-type JSONAPIData struct {
-	Single     *JSONAPIResource
-	Collection []JSONAPIResource
-}
-
-func (d JSONAPIData) MarshalJSON() ([]byte, error) {
-	switch {
-	case d.Single != nil && d.Collection != nil:
-		return nil, errors.New("JSONAPIData: both One and Many are set")
-
-	case d.Single != nil:
-		return json.Marshal(d.Single)
-
-	case d.Collection != nil:
-		return json.Marshal(d.Collection)
-
-	default:
-		return []byte("null"), nil
-	}
-}
-
-func (d *JSONAPIData) UnmarshalJSON(data []byte) error {
-	data = bytes.TrimSpace(data)
-
-	if bytes.Equal(data, []byte("null")) {
-		d.Single = nil
-		d.Collection = nil
-		return nil
-	}
-
-	switch data[0] {
-	case '{':
-		var r JSONAPIResource
-		if err := json.Unmarshal(data, &r); err != nil {
-			return err
-		}
-		d.Single = &r
-		d.Collection = nil
-
-	case '[':
-		var rs []JSONAPIResource
-		if err := json.Unmarshal(data, &rs); err != nil {
-			return err
-		}
-		d.Single = nil
-		d.Collection = rs
-
-	default:
-		return fmt.Errorf("invalid JSON:API data")
-	}
-
-	return nil
-}
-
-// JSONAPIDocument is the top-level JSON:API response document.
-type JSONAPIDocument struct {
-	// DataSingle contains the primary resource returned by the request.
-	Data JSONAPIData `json:"data,omitempty"`
-
-	// Errors contains one or more errors when the request fails.
-	Errors []JSONAPIError `json:"errors,omitempty"`
-
-	// Meta contains response-level metadata.
-	Meta map[string]any `json:"meta,omitempty"`
-
-	// Included contains related resources that are side-loaded with the response
-	// to reduce the need for additional API requests.
-	Included []JSONAPIResource `json:"included,omitempty"`
-
-	// Links contains top-level navigation or pagination URLs.
-	Links map[string]any `json:"links,omitempty"`
-}
-
-func JSON(w http.ResponseWriter, document JSONAPIDocument, status int) {
-	w.Header().Set("Content-Type", JSONAPIMediaType)
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(document); err != nil {
-		slog.Error("failed to encode json:api response", "err", err)
-	}
-}
+var ErrExtraDataDecoded = errors.New("extra data decoded")
 
 func DecodeRequestBody[T any](r *http.Request) (T, error) {
 	var data T
@@ -1540,7 +1535,7 @@ func DecodeRequestBody[T any](r *http.Request) (T, error) {
 	}
 
 	if err := r.Body.Close(); err != nil {
-		return data, err
+		return data, fmt.Errorf("failed to close body: %w", err)
 	}
 
 	return data, nil
@@ -1583,7 +1578,7 @@ func GenerateUserName() (string, error) {
 		}
 		b := make([]byte, 1)
 		if _, err := rand.Read(b); err != nil {
-			return 0, err
+			return 0, fmt.Errorf("failed to generate random bytes: %w", err)
 		}
 		return int(b[0]) % n, nil
 	}
@@ -1609,490 +1604,331 @@ func GenerateUserName() (string, error) {
 	return userName, nil
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
+////go:embed openapi.json
+// var OpenAPISchema []byte
+//
+// func (a *API) HandlerOpenAPI(w http.ResponseWriter, r *http.Request) {
+// 	w.Header().Set("Content-Type", "application/json")
+// 	w.Write(OpenAPISchema)
+// }
+//
+// const SwaggerUIHTML = `
+// <!DOCTYPE html>
+// <html lang="en">
+// <head>
+//     <meta charset="utf-8" />
+//     <meta name="viewport" content="width=device-width, initial-scale=1" />
+//     <meta name="description" content="SwaggerUI" />
+//     <title>Docs</title>
+//     <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+// </head>
+// <body>
+//     <div id="swagger-ui"></div>
+//     <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js" crossorigin></script>
+//     <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js" crossorigin></script>
+//     <script>
+//         window.onload = () => {
+//             window.ui = SwaggerUIBundle({
+//                 url: '/openapi.json',
+//                 dom_id: '#swagger-ui',
+//                 deepLinking: true,
+//                 presets: [
+//                     SwaggerUIBundle.presets.apis,
+//                     SwaggerUIStandalonePreset
+//                 ],
+//                 layout: "BaseLayout"
+//             });
+//         };
+//     </script>
+// </body>
+// </html>
+// `
+//
+// func (a *API) HandlerDocs(w http.ResponseWriter, r *http.Request) {
+// 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+// 	fmt.Fprint(w, SwaggerUIHTML)
+// }
+
+type ResponseDataHealth struct {
+	Status string `json:"status"`
+}
+
 func (a *API) HandlerHealth(w http.ResponseWriter, r *http.Request) {
-	JSON(w, JSONAPIDocument{
-		Meta: map[string]any{
-			"status": "ok",
-		},
-	}, http.StatusOK)
+	JSON(w, Envelope{Data: ResponseDataHealth{
+		Status: "ok",
+	}}, http.StatusOK)
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMeRecommendations() http.HandlerFunc {
+func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, isCandidate := claims.Roles[RoleCandidate]
 		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
 		if !isCandidate && !isRecruiter {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing one of required roles: recruiter, candidate",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing one of required roles: recruiter, candidate",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		q := r.URL.Query()
-		page := GetPagination(r)
-		var excludeReacted bool
-		switch q.Get("exclude_reacted") {
-		case "true":
-			excludeReacted = true
-		case "false":
-			excludeReacted = false
-		default:
-			excludeReacted = true
-		}
+		page := GetPageFromQuery(r)
 
 		page.Count = 0
 		positionCursor := q.Get("pos_cursor")
 		positionNextCursor, candidateNextCursor := "done", "done"
-		data := make([]JSONAPIResource, 0)
-		if isCandidate && q.Get("exclude_positions") != "true" && positionCursor != "done" {
+		var data struct {
+			PositionRecommendations  []PositionRecommendation  `json:"position_recommendations"`
+			CandidateRecommendations []CandidateRecommendation `json:"candidate_recommendations"`
+		}
+		if isCandidate && positionCursor != "done" {
 			recommendations, cursor, err := a.Store.GetPositionRecommendations(
 				candidateID,
 				Page{Cursor: positionCursor, Limit: page.Limit},
-				excludeReacted,
+				true,
 			)
 			if err != nil {
 				slog.Error("failed to fetch position recommendations", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
 			positionNextCursor = cmp.Or(string(cursor), "done")
 			page.Count += len(recommendations)
-			for _, rec := range recommendations {
-				data = append(data, JSONAPIResource{
-					Type: "recommendations",
-					ID:   string(rec.RecommendationID),
-					Attributes: map[string]any{
-						"position_id": rec.PositionID,
-						"title":       rec.Title,
-						"company":     rec.Company,
-						"description": rec.Description,
-					},
-					Links: map[string]any{
-						"self":     fmt.Sprintf("%s/%s", RouteV1MeRecommendations, rec.RecommendationID),
-						"reaction": fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, rec.RecommendationID),
-					},
-				})
-			}
+			data.PositionRecommendations = recommendations
 		}
 
 		candidateCursor := q.Get("can_cursor")
-		if isRecruiter && q.Get("exclude_candidates") != "true" && candidateCursor != "done" {
+		if isRecruiter && candidateCursor != "done" {
 			recommendations, cursor, err := a.Store.GetCandidateRecommendations(
 				recruiterID,
 				Page{Cursor: candidateCursor, Limit: page.Limit},
-				excludeReacted,
+				true,
 			)
 			if err != nil {
 				slog.Error("failed to fetch candidate recommendations", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
 			candidateNextCursor = cmp.Or(string(cursor), "done")
 			page.Count += len(recommendations)
-			for _, rec := range recommendations {
-				data = append(data, JSONAPIResource{
-					Type: "recommendations",
-					ID:   string(rec.RecommendationID),
-					Attributes: map[string]any{
-						"candidate_id": rec.CandidateID,
-						"full_name":    rec.FullName,
-						"about":        rec.About,
-					},
-					Links: map[string]any{
-						"self":     fmt.Sprintf("%s/%s", RouteV1MeRecommendations, rec.RecommendationID),
-						"reaction": fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, rec.RecommendationID),
-					},
-				})
-			}
+			data.CandidateRecommendations = recommendations
 		}
 
-		page.HasNext = positionNextCursor != "done" || candidateNextCursor != "done"
-		selfHref := string(RouteV1MeRecommendations)
-		if excludeReacted {
-			selfHref += "?exclude_reacted=true"
-		}
-
-		links := map[string]any{
-			"self":      selfHref,
-			"reactions": string(RouteV1MeReactions),
-		}
-		if page.HasNext {
+		var links Links
+		if positionNextCursor != "done" || candidateNextCursor != "done" {
 			nextHref := fmt.Sprintf(
 				"%s?pos_cursor=%s&can_cursor=%s&limit=%d",
-				RouteV1MeRecommendations, positionNextCursor, candidateNextCursor, page.Limit,
+				RouteRecommendations, positionNextCursor, candidateNextCursor, page.Limit,
 			)
-			if excludeReacted {
-				nextHref += "&exclude_reacted=true"
-			}
-			links["next"] = nextHref
+			links.Next = nextHref
 		}
 
-		JSON(w, JSONAPIDocument{
-			Data:  JSONAPIData{Collection: data},
-			Meta:  map[string]any{"page": page},
+		JSON(w, Envelope{
+			Data:  data,
+			Meta:  Meta{Page: page},
 			Links: links,
 		}, http.StatusOK)
 	}
 }
 
+type RequestCreateReaction struct {
+	RecommendationID ULID         `json:"recommendation_id"`
+	ReactionType     ReactionType `json:"reaction_type"`
+}
+
+const (
+	ErrorCodeRecommendationIDRequired = "recommendation_id_required"
+	ErrorCodeRecommendationNotFound   = "recommendation_not_found"
+	ErrorCodeReactionExists           = "reaction_exists"
+	ErrorCodeInvalidReactionType      = "invalid_reaction_type"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1CreateMeReaction() http.HandlerFunc {
-	type RequestBody struct {
-		ReactionType ReactionType `json:"reaction_type"`
-	}
-
+func (a *API) HandlerCreateReaction() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := DecodeRequestBody[RequestCreateReaction](r)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		if !body.ReactionType.IsValid() {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidReactionType,
+				Message: "Must be one of: positive, negative, neutral",
+				Source:  ErrorSource{Body: "/data/reaction_type"},
+			}}}, http.StatusBadRequest)
+			return
+		}
+
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: candidate",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: candidate",
+			}}}, http.StatusForbidden)
 			return
 		}
 
-		recommendationIDStr := r.PathValue("id")
-		recommendationID := ULID(recommendationIDStr)
-		if recommendationID == "" {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "recommendation id is required",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
-			return
-		}
-		if !strings.HasPrefix(recommendationIDStr, ULIDPrefixRecommendation) {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid recommendation id",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
+		if body.RecommendationID == "" {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeRecommendationIDRequired,
+				Message: "Recommendation ID is required",
+				Source:  ErrorSource{Parameter: "id"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
-		recommendation, err := a.Store.GetRecommendation(recommendationID)
+		recommendation, err := a.Store.GetRecommendation(body.RecommendationID)
 		if err != nil {
 			if errors.Is(err, ErrRecommendationNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "recommendation not found",
-						Source: &JSONAPIErrorSource{Parameter: "id"},
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeRecommendationNotFound,
+					Message: "Recommendation not found",
+					Source:  ErrorSource{Parameter: "id"},
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to fetch recommendation", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if recommendation.CandidateID != candidateID {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "you do not have access to this resource",
-				}},
-			}, http.StatusForbidden)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		body, err := DecodeRequestBody[RequestBody](r)
-		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid request body",
-				}},
-			}, http.StatusBadRequest)
-			return
-		}
-
-		if !body.ReactionType.IsValid() {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "must be one of: positive, negative, neutral",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/reaction_type"},
-				}},
-			}, http.StatusBadRequest)
-			return
-		}
-
-		if err := a.Store.CreateReaction(
-			recommendationID,
-			ReactorTypeCandidate,
-			candidateID,
-			body.ReactionType,
-		); err != nil {
+		if err := a.Store.CreateReaction(body.RecommendationID, ReactorTypeCandidate, candidateID, body.ReactionType); err != nil {
 			if errors.Is(err, ErrReactionAlreadyExists) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "409",
-						Title:  "Conflict",
-						Detail: "reaction already exists; reactions are immutable",
-						Source: &JSONAPIErrorSource{Parameter: "id"},
-					}},
-				}, http.StatusConflict)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeReactionExists,
+					Message: "Reaction already exists; reactions are immutable",
+					Source:  ErrorSource{Parameter: "id"},
+				}}}, http.StatusConflict)
 				return
 			}
 			slog.Error("failed to record reaction", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Data: JSONAPIData{
-				Single: &JSONAPIResource{
-					Type: "reactions",
-					ID:   string(recommendationID),
-					Attributes: map[string]any{
-						"reaction_type": body.ReactionType,
-					},
-					Links: map[string]any{
-						"self":      fmt.Sprintf("%s/%s/reaction", RouteV1MeRecommendations, recommendationID),
-						"up":        string(RouteV1MeRecommendations),
-						"reactions": string(RouteV1MeReactions),
-						"matches":   string(RouteV1MeMatches),
-					},
-				},
-			},
-		}, http.StatusCreated)
+		w.WriteHeader(http.StatusCreated)
 	}
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMeReactions() http.HandlerFunc {
+func (a *API) HandlerGetReactions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: candidate",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: candidate",
+			}}}, http.StatusForbidden)
 			return
 		}
 
-		page := GetPagination(r)
+		page := GetPageFromQuery(r)
 
-		reactions, nextCursor, err := a.Store.GetReactionsByCandidateID(
-			candidateID,
-			page,
-		)
+		reactions, nextCursor, err := a.Store.GetReactionsByCandidateID(candidateID, page)
 		if err != nil {
 			slog.Error("failed to fetch reactions", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		page.Count = len(reactions)
 		page.HasNext = nextCursor != ""
 
-		links := map[string]any{
-			"self": string(RouteV1MeReactions),
-		}
+		var links Links
 		if nextCursor != "" {
-			links["next"] = fmt.Sprintf(
+			links.Next = fmt.Sprintf(
 				"%s?cursor=%s",
-				RouteV1MeReactions,
+				RouteReactions,
 				nextCursor,
 			)
 		}
 
-		data := make([]JSONAPIResource, len(reactions))
-		for i, reaction := range reactions {
-			data[i] = JSONAPIResource{
-				Type: "reactions",
-				ID:   string(reaction.RecommendationID),
-				Attributes: map[string]any{
-					"recommendation_id": reaction.RecommendationID,
-					"reactor_type":      reaction.ReactorType,
-					"reactor_id":        reaction.ReactorID,
-					"reaction_type":     reaction.ReactionType,
-					"reacted_at":        reaction.ReactedAt,
-				},
-				Links: map[string]any{
-					"self": fmt.Sprintf(
-						"%s/%s/reaction",
-						RouteV1MeRecommendations,
-						reaction.RecommendationID,
-					),
-				},
-			}
-		}
-
-		JSON(w, JSONAPIDocument{
-			Data:  JSONAPIData{Collection: data},
+		JSON(w, Envelope{
+			Data:  reactions,
 			Links: links,
-			Meta:  map[string]any{"page": page},
+			Meta:  Meta{Page: page},
 		}, http.StatusOK)
 	}
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMeMatches() http.HandlerFunc {
+func (a *API) HandlerGetMatches() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: candidate",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: candidate",
+			}}}, http.StatusForbidden)
 			return
 		}
 
-		page := GetPagination(r)
-
+		page := GetPageFromQuery(r)
 		matches, nextCursor, err := a.Store.GetMatchesByCandidateID(candidateID, page)
 		if err != nil {
 			slog.Error("failed to fetch matches", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-
 		page.Count = len(matches)
 		page.HasNext = nextCursor != ""
 
-		links := map[string]any{
-			"self": string(RouteV1MeMatches),
-		}
+		var links Links
 		if nextCursor != "" {
-			links["next"] = fmt.Sprintf(
+			links.Next = fmt.Sprintf(
 				"%s?cursor=%s&limit=%d",
-				RouteV1MeMatches,
+				RouteMatches,
 				nextCursor,
 				page.Limit,
 			)
 		}
 
-		data := make([]JSONAPIResource, len(matches))
-		for i, m := range matches {
-			data[i] = JSONAPIResource{
-				Type: "matches",
-				ID:   string(m.PositionID),
-				Attributes: map[string]any{
-					"title":       m.Title,
-					"description": m.Description,
-					"company":     m.Company,
-					"created_at":  m.CreatedAt,
-				},
-			}
-		}
-
-		JSON(w, JSONAPIDocument{
-			Data:  JSONAPIData{Collection: data},
+		JSON(w, Envelope{
+			Data:  matches,
 			Links: links,
-			Meta:  map[string]any{"page": page},
+			Meta:  Meta{Page: page},
 		}, http.StatusOK)
 	}
 }
@@ -2107,6 +1943,13 @@ var (
 const (
 	DefaultUserPasswordMinLength = 8
 	DefaultUserPasswordMaxLength = 128
+)
+
+var (
+	ErrPasswordHasNoUpper   = errors.New("password has no upper letter")
+	ErrPasswordHasNoDigit   = errors.New("password has no digit")
+	ErrPasswordHasNoSpecial = errors.New("password has no special character")
+	ErrPasswordHasNoLower   = errors.New("password has no lower letter")
 )
 
 func ValidateUserPassword(password string) error {
@@ -2131,279 +1974,221 @@ func ValidateUserPassword(password string) error {
 	return nil
 }
 
+type RequestBodyCreateUser struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	FullName string `json:"full_name"`
+}
+
+const (
+	ErrorCodeEmailRequired             = "email_required"
+	ErrorCodeInvalidUserEmailFormat    = "invalid_user_email_format"
+	ErrorCodeInvalidUserPasswordFormat = "invalid_user_password_format"
+	ErrorCodeInvalidUserFullNameFormat = "invalid_user_full_name_format"
+	ErrorCodeUserAlreadyExists         = "user_exists"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1CreateMe() http.HandlerFunc {
-	type RequestBody struct {
-		Email    string `json:"email"`
-		FullName string `json:"full_name"`
-		Password string `json:"password"`
-	}
-
+func (a *API) HandlerCreateUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := DecodeRequestBody[RequestBody](r)
+		body, err := DecodeRequestBody[RequestBodyCreateUser](r)
 		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid request body",
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		if body.Email == "" {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "email is required",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/email"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeEmailRequired,
+				Message: "Email is required",
+				Source:  ErrorSource{Body: "/data/email"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		email, err := mail.ParseAddress(body.Email)
 		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid email",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/email"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserEmailFormat,
+				Message: "Invalid email",
+				Source:  ErrorSource{Body: "/data/email"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		switch err = ValidateUserPassword(body.Password); {
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "password must be between 8 and 128 characters",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserPasswordFormat,
+				Message: "Password must be between 8 and 128 characters",
+				Source:  ErrorSource{Body: "/data/password"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case errors.Is(err, ErrPasswordHasNoLower):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "password must contain at least one lowercase letter",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserPasswordFormat,
+				Message: "Password must contain at least one lowercase letter",
+				Source:  ErrorSource{Body: "/data/password"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case errors.Is(err, ErrPasswordHasNoUpper):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "password must contain at least one uppercase letter",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserPasswordFormat,
+				Message: "Password must contain at least one uppercase letter",
+				Source:  ErrorSource{Body: "/data/password"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case errors.Is(err, ErrPasswordHasNoDigit):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "password must contain at least one digit",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserPasswordFormat,
+				Message: "Password must contain at least one digit",
+				Source:  ErrorSource{Body: "/data/password"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case errors.Is(err, ErrPasswordHasNoSpecial):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "password must contain at least one special character",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserPasswordFormat,
+				Message: "Password must contain at least one special character",
+				Source:  ErrorSource{Body: "/data/password"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case err != nil:
 			slog.Error("failed to validate password", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		fullName, err := NormalizeAndValidateUserFullName(body.FullName)
 		switch {
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: FailMessageUserFullNameWrongSize,
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserFullNameFormat,
+				Message: ErrorMessageUserFullNameWrongSize,
+				Source:  ErrorSource{Body: "/data/full_name"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case errors.Is(err, ErrTextForbiddenChars):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: FailMessageUserFullNameForbiddenChars,
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidUserFullNameFormat,
+				Message: ErrorMessageUserFullNameForbiddenChars,
+				Source:  ErrorSource{Body: "/data/full_name"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case err != nil:
 			slog.Error("failed to validate full name", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		exists, err := a.Store.UserExistsByEmail(email.Address, ProviderEmail)
 		if err != nil {
 			slog.Error("failed to check user existance", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 		if exists {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "409",
-					Title:  "Conflict",
-					Detail: "user already exists",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/email"},
-				}},
-			}, http.StatusConflict)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeUserAlreadyExists,
+				Message: "User with the provided email already exists",
+				Source:  ErrorSource{Body: "data/email"},
+			}}}, http.StatusConflict)
 			return
 		}
 
 		userName, err := GenerateUserName()
 		if err != nil {
 			slog.Error("failed to generate a user name", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		passwordHash, err := HashPassword(body.Password)
 		if err != nil {
 			slog.Error("failed to hash password", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		id, err := a.Store.CreateUser(
-			ProviderEmail,
-			"",
-			email.Address,
-			fullName,
-			userName,
-			passwordHash,
-		)
+		userID, err := a.Store.CreateUser(ProviderEmail, "", email.Address, fullName, userName, passwordHash)
 		if err != nil {
 			slog.Error("failed to create user", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		a.OAuth2CreateTokenPair(
-			w,
-			id,
-			ProviderEmail,
-			map[Role]ULID{},
-		)
+		jti, err := a.Store.CreateRefreshToken(userID)
+		if err != nil {
+			slog.Error("failed to create refresh token", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		tokenPair, err := a.Vault.CreateTokenPair(userID, ProviderEmail, jti, map[Role]ULID{})
+		if err != nil {
+			slog.Error("failed to create token pair", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		JSON(w, Envelope{Data: tokenPair}, http.StatusCreated)
 	}
 }
 
+const ErrorCodeRecruiterExists = "recruiter_exists"
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1CreateMeRecruiterProfile() http.HandlerFunc {
+func (a *API) HandlerCreateRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if _, err := a.Store.CreateRecruiter(claims.UserID); err != nil {
 			if errors.Is(err, ErrRecruiterAlreadyExists) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "409",
-						Title:  "Conflict",
-						Detail: "recruiter already exists",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_id"},
-					}},
-				}, http.StatusConflict)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeRecruiterExists,
+					Message: "Recruiter already exists",
+					Source:  ErrorSource{Body: "data/user_id"},
+				}}}, http.StatusConflict)
 				return
 			}
 			slog.Error("failed to create recruiter", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		roles, err := a.Store.GetUserRoles(claims.UserID, claims.Provider)
 		if err != nil {
 			slog.Error("failed to get user roles", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		a.OAuth2CreateAccessToken(
-			w,
-			claims.UserID,
-			claims.Provider,
-			roles,
-		)
+		accessToken, err := a.Vault.CreateAccessToken(claims.UserID, claims.Provider, roles)
+		if err != nil {
+			slog.Error("failed to create access token", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		JSON(w, Envelope{Data: accessToken}, http.StatusCreated)
 	}
 }
 
@@ -2422,160 +2207,115 @@ func NormalizeAndValidateCandidateAbout(about string) (string, error) {
 	return html.EscapeString(about), nil
 }
 
+type RequestBodyCreateCandidate struct {
+	About string `json:"about"`
+}
+
+const (
+	ErrorCodeCandidateAlreadyExists      = "candiate_already_exists"
+	ErrorCodeInvalidCandidateAboutFormat = "invalid_candidate_about_format"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1CreateMeCandidateProfile() http.HandlerFunc {
-	type RequestBody struct {
-		About string `json:"about"`
-	}
-
+func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := DecodeRequestBody[RequestBody](r)
+		claims, ok := GetClaims(r)
+		if !ok {
+			slog.Error("failed to access claims")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		body, err := DecodeRequestBody[RequestBodyCreateCandidate](r)
 		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid request body",
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		about, err := NormalizeAndValidateCandidateAbout(body.About)
 		if errors.Is(err, ErrTextTooLong) {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "about must be up to 1024 characters",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/about"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidCandidateAboutFormat,
+				Message: "About must be up to 1024 characters",
+				Source:  ErrorSource{Body: "data/about"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 		if err != nil {
 			slog.Error("failed to validate about", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
-			return
-		}
-
-		claims, ok := GetClaims(r)
-		if !ok {
-			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if _, err = a.Store.CreateCandidate(claims.UserID, about); err != nil {
 			if errors.Is(err, ErrCandidateAlreadyExists) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "409",
-						Title:  "Conflict",
-						Detail: "candidate already exists",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_id"},
-					}},
-				}, http.StatusConflict)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeCandidateAlreadyExists,
+					Message: "Candidate already exists",
+					Source:  ErrorSource{Body: "data/user_id"},
+				}}}, http.StatusConflict)
 				return
 			}
 			slog.Error("failed to create candidate", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		roles, err := a.Store.GetUserRoles(claims.UserID, claims.Provider)
 		if err != nil {
 			slog.Error("failed to get user roles", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		a.OAuth2CreateAccessToken(
-			w,
-			claims.UserID,
-			claims.Provider,
-			roles,
-		)
+		accessToken, err := a.Vault.CreateAccessToken(claims.UserID, claims.Provider, roles)
+		if err != nil {
+			slog.Error("failed to create access token", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Cache-Control", "no-store")
+		JSON(w, Envelope{Data: accessToken}, http.StatusCreated)
 	}
 }
 
+const (
+	ErrorCodeInternalServerError = "internal_server_error"
+	ErrorCodeUserNotFound        = "user_not_found"
+	ErrorCodeForbidden           = "forbidden"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMe() http.HandlerFunc {
+func (a *API) HandlerGetUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		user, err := a.Store.GetUser(claims.UserID)
+		if errors.Is(err, ErrUserNotFound) {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeUserNotFound,
+				Message: "User not found",
+			}}}, http.StatusNotFound)
+			return
+		}
 		if err != nil {
-			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "user not found",
-					}},
-				}, http.StatusNotFound)
-				return
-			}
 			slog.Error("failed to get user", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Data: JSONAPIData{
-				Single: &JSONAPIResource{
-					Type: "users",
-					ID:   string(user.ID),
-					Attributes: map[string]any{
-						"provider":   user.Provider,
-						"email":      user.Email,
-						"full_name":  user.FullName,
-						"user_name":  user.UserName,
-						"updated_at": user.UpdatedAt,
-					},
-					Links: map[string]any{
-						"self": string(RouteV1Me),
-					},
-				},
-			},
-		}, http.StatusOK)
+		JSON(w, Envelope{Data: user}, http.StatusOK)
 	}
 }
 
@@ -2601,62 +2341,52 @@ func NormalizeAndValidateUserName(userName string) (string, error) {
 }
 
 const (
-	FailMessageUserNameWrongSize      = "user_name must be between 4 and 32 characters"
-	FailMessageUserNameForbiddenChars = "user_name can only contain underscores, latin characters and numbers"
+	ErrorMessageUserNameWrongSize      = "user_name must be between 4 and 32 characters"
+	ErrorMessageUserNameForbiddenChars = "user_name can only contain underscores, latin characters and numbers"
+)
+
+type RequestBodyPatchUser struct {
+	FullName *string `json:"full_name"`
+	UserName *string `json:"user_name"`
+}
+
+const (
+	ErrorCodeResourceTypeMismatch      = "resource_type_mismatch"
+	ErrorCodeResourceIDMismatch        = "resource_id_mismatch"
+	ErrorCodeInvalidUserUserNameFormat = "invalid_user_user_name_format"
 )
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1PatchMe() http.HandlerFunc {
-	type RequestBody struct {
-		UserName *string `json:"user_name,omitempty"`
-		FullName *string `json:"full_name,omitempty"`
-	}
-
+func (a *API) HandlerPatchUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		body, err := DecodeRequestBody[RequestBody](r)
+		body, err := DecodeRequestBody[RequestBodyPatchUser](r)
 		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid request body",
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		user, err := a.Store.GetUser(claims.UserID)
 		if err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "user not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeUserNotFound,
+					Message: "User not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get user", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
@@ -2665,33 +2395,24 @@ func (a *API) HandlerV1PatchMe() http.HandlerFunc {
 			fullName, err := NormalizeAndValidateUserFullName(*body.FullName)
 			switch {
 			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: FailMessageUserFullNameWrongSize,
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidUserFullNameFormat,
+					Message: ErrorMessageUserFullNameWrongSize,
+					Source:  ErrorSource{Body: "data/full_name"},
+				}}}, http.StatusBadRequest)
 				return
+
 			case errors.Is(err, ErrTextForbiddenChars):
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: FailMessageUserFullNameForbiddenChars,
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/full_name"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidUserFullNameFormat,
+					Message: ErrorMessageUserFullNameForbiddenChars,
+					Source:  ErrorSource{Body: "data/full_name"},
+				}}}, http.StatusBadRequest)
 				return
+
 			case err != nil:
 				slog.Error("failed to validate full name", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
@@ -2705,33 +2426,24 @@ func (a *API) HandlerV1PatchMe() http.HandlerFunc {
 			userName, err := NormalizeAndValidateUserName(*body.UserName)
 			switch {
 			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: FailMessageUserNameWrongSize,
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_name"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidUserUserNameFormat,
+					Message: ErrorMessageUserNameWrongSize,
+					Source:  ErrorSource{Body: "data/user_name"},
+				}}}, http.StatusBadRequest)
 				return
+
 			case errors.Is(err, ErrTextForbiddenChars):
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: FailMessageUserNameForbiddenChars,
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/user_name"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidUserUserNameFormat,
+					Message: ErrorMessageUserNameForbiddenChars,
+					Source:  ErrorSource{Body: "data/user_name"},
+				}}}, http.StatusBadRequest)
 				return
+
 			case err != nil:
 				slog.Error("failed to validate user name", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
@@ -2742,294 +2454,185 @@ func (a *API) HandlerV1PatchMe() http.HandlerFunc {
 		}
 
 		if !changed {
-			JSON(w, JSONAPIDocument{
-				Meta: map[string]any{
-					"status": "success",
-				},
-			}, http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
 		if err = a.Store.UpdateUser(user.ID, user.FullName, user.UserName); err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "user not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeUserNotFound,
+					Message: "User not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to update user", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Meta: map[string]any{
-				"status": "success",
-			},
-		}, http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1DeleteMe() http.HandlerFunc {
-	type RequestBodyPassword struct {
-		Password string `json:"password"`
-	}
-
+func (a *API) HandlerDeleteUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		userIDStr := r.PathValue(("id"))
+		userID := ULID(userIDStr)
+		if userID != claims.UserID {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeForbidden,
+				Message: "You do not have permission to access or modify the requested resource",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		user, err := a.Store.GetUser(claims.UserID)
 		if err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "user not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeUserNotFound,
+					Message: "User not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get user", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
-			return
-		}
-
-		if user.Provider == ProviderEmail {
-			body, err := DecodeRequestBody[RequestBodyPassword](r)
-			if err != nil {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: "invalid request body",
-					}},
-				}, http.StatusBadRequest)
-				return
-			}
-			if body.Password == "" {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: "password is required",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
-					}},
-				}, http.StatusBadRequest)
-				return
-			}
-			if IsValidPassword(user.PasswordHash, body.Password) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "401",
-						Title:  "Unauthorized",
-						Detail: "incorrect password",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/password"},
-					}},
-				}, http.StatusUnauthorized)
-				return
-			}
-		} else {
-			// TODO: Add user deletion support for SSO
-			// https://github.com/akvachan/hirevec-core/issues/35
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "account deletion is not supported for this provider",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/provider"},
-				}},
-			}, http.StatusForbidden)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if err = a.Store.DeleteUser(user.ID); err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "user not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeUserNotFound,
+					Message: "User not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete user", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Meta: map[string]any{
-				"status": "success",
-			},
-		}, http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
+const (
+	ErrorCodeMissingRequiredRole = "missing_required_role"
+	ErrorCodeCandidateNotFound   = "candidate_not_found"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMeCandidateProfile() http.HandlerFunc {
+func (a *API) HandlerGetCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: candidate",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: candidate",
+			}}}, http.StatusForbidden)
+			return
+		}
+
+		urlCandidateID := ULID(r.PathValue("id"))
+		if urlCandidateID != candidateID {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeForbidden,
+				Message: "You do not have permission to access or modify the requested resource",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		candidate, err := a.Store.GetCandidate(candidateID)
 		if err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "candidate not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeCandidateNotFound,
+					Message: "Candidate not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get candidate", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Data: JSONAPIData{
-				Single: &JSONAPIResource{
-					Type: "candidates",
-					ID:   string(candidateID),
-					Attributes: map[string]any{
-						"user_id":             candidate.UserID,
-						"about":               candidate.About,
-						"last_recommended_at": candidate.LastRecommendedAt,
-					},
-					Links: map[string]any{
-						"self": string(RouteV1MeCandidate),
-					},
-				},
-			},
-		}, http.StatusOK)
+		JSON(w, Envelope{Data: candidate}, http.StatusOK)
 	}
+}
+
+type RequestBodyPatchCandidate struct {
+	About *string `json:"about"`
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1PatchMeCandidateProfile() http.HandlerFunc {
-	type RequestBody struct {
-		About *string `json:"about,omitempty"`
-	}
-
+func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: candidate",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: candidate",
+			}}}, http.StatusForbidden)
 			return
 		}
 
-		body, err := DecodeRequestBody[RequestBody](r)
+		urlCandidateIDStr := r.PathValue("id")
+		urlCandidateID := ULID(urlCandidateIDStr)
+		if urlCandidateID != candidateID {
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeForbidden,
+				Message: "You do not have permission to access or modify the requested resource",
+			}}}, http.StatusForbidden)
+			return
+		}
+
+		body, err := DecodeRequestBody[RequestBodyPatchCandidate](r)
 		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid request body",
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		candidate, err := a.Store.GetCandidate(candidateID)
 		if err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "candidate not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeCandidateNotFound,
+					Message: "Candidate not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get candidate", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
@@ -3037,24 +2640,16 @@ func (a *API) HandlerV1PatchMeCandidateProfile() http.HandlerFunc {
 		if body.About != nil {
 			about, err := NormalizeAndValidateCandidateAbout(*body.About)
 			if errors.Is(err, ErrTextTooLong) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: "about must be up to 1024 characters",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/about"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidCandidateAboutFormat,
+					Message: "About must be up to 1024 characters",
+					Source:  ErrorSource{Body: "data/about"},
+				}}}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
 				slog.Error("failed to validate about", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
@@ -3065,221 +2660,138 @@ func (a *API) HandlerV1PatchMeCandidateProfile() http.HandlerFunc {
 		}
 
 		if !changed {
-			JSON(w, JSONAPIDocument{
-				Meta: map[string]any{
-					"status": "success",
-				},
-			}, http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
 		if err = a.Store.UpdateCandidate(candidate.ID, candidate.About); err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "candidate not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeCandidateNotFound,
+					Message: "Candidate not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to update candidate", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Meta: map[string]any{
-				"status": "success",
-			},
-		}, http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1DeleteMeCandidateProfile() http.HandlerFunc {
+func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: candidate",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: candidate",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		if err := a.Store.DeleteCandidate(candidateID); err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "candidate not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeCandidateNotFound,
+					Message: "Candidate not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete candidate", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Meta: map[string]any{
-				"status": "success",
-			},
-		}, http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
+const ErrorCodeRecruiterNotFound = "recruiter_not_found"
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMeRecruiterProfile() http.HandlerFunc {
+func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: recruiter",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: recruiter",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		recruiter, err := a.Store.GetRecruiter(recruiterID)
 		if err != nil {
 			if errors.Is(err, ErrRecruiterNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "recruiter not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeRecruiterNotFound,
+					Message: "Recruiter not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get recruiter", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Data: JSONAPIData{
-				Single: &JSONAPIResource{
-					Type: "recruiters",
-					ID:   string(recruiterID),
-					Attributes: map[string]any{
-						"user_id": recruiter.UserID,
-					},
-					Links: map[string]any{
-						"self": string(RouteV1MeRecruiter),
-					},
-				},
-			},
-		}, http.StatusOK)
+		JSON(w, Envelope{Data: recruiter}, http.StatusOK)
 	}
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1DeleteMeRecruiterProfile() http.HandlerFunc {
+func (a *API) HandlerDeleteRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: recruiter",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: recruiter",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		if err := a.Store.DeleteRecruiter(recruiterID); err != nil {
 			if errors.Is(err, ErrRecruiterNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "recruiter not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeRecruiterNotFound,
+					Message: "Recruiter not found",
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete recruiter", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Meta: map[string]any{
-				"status": "success",
-			},
-		}, http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -3289,6 +2801,8 @@ const (
 	DefaultPositionTitleMinLength = 4
 	DefaultPositionTitleMaxLength = 64
 )
+
+var ErrPositionTitleHasURL = errors.New("position title must not contain URLs")
 
 func NormalizeAndValidatePositionTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)
@@ -3336,499 +2850,316 @@ func NormalizeAndValidatePositionCompanyName(company string) (string, error) {
 	return company, nil
 }
 
+type RequestBodyCreatePosition struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Company     string `json:"company"`
+}
+
+const (
+	ErrorCodeInvalidPositionTitleFormat       = "invalid_position_title_format"
+	ErrorCodeInvalidPositionDescriptionFormat = "invalid_position_description_format"
+	ErrorCodeInvalidPositionCompanyFormat     = "invalid_position_company_format"
+	ErrorCodePositionExists                   = "position_exists"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1CreateMePosition() http.HandlerFunc {
-	type RequestBody struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Company     string `json:"company"`
-	}
-
+func (a *API) HandlerCreatePosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: recruiter",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: recruiter",
+			}}}, http.StatusForbidden)
 			return
 		}
 
-		body, err := DecodeRequestBody[RequestBody](r)
+		body, err := DecodeRequestBody[RequestBodyCreatePosition](r)
 		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid request body",
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		title, err := NormalizeAndValidatePositionTitle(body.Title)
 		switch {
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "title must be between 4 and 64 characters",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidPositionTitleFormat,
+				Message: "Title must be between 4 and 64 characters",
+				Source:  ErrorSource{Body: "data/title"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case errors.Is(err, ErrPositionTitleHasURL):
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "title cannot contain a URL",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidPositionTitleFormat,
+				Message: "Title cannot contain a URL",
+				Source:  ErrorSource{Body: "data/title"},
+			}}}, http.StatusBadRequest)
 			return
+
 		case err != nil:
 			slog.Error("failed to validate position title", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		description, err := NormalizeAndValidatePositionDescription(body.Description)
 		if errors.Is(err, ErrTextTooLong) {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "description must be up to 2048 characters",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/description"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidPositionDescriptionFormat,
+				Message: "Description must be up to 2048 characters",
+				Source:  ErrorSource{Body: "data/description"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 		if err != nil {
 			slog.Error("failed to validate description", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		company, err := NormalizeAndValidatePositionCompanyName(body.Company)
 		if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "company name must be between 2 and 512 characters",
-					Source: &JSONAPIErrorSource{Pointer: "/data/attributes/company"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidPositionCompanyFormat,
+				Message: "Company name must be between 2 and 512 characters",
+				Source:  ErrorSource{Body: "data/company"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 		if err != nil {
 			slog.Error("failed to validate company name", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
-			return
-		}
-
-		positionID, err := NewPositionULID()
-		if err != nil {
-			slog.Error("failed to generate position ULID", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if _, err = a.Store.CreatePosition(recruiterID, title, description, company, true); err != nil {
 			if errors.Is(err, ErrPositionAlreadyExists) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "409",
-						Title:  "Conflict",
-						Detail: "position with the same title, description and company already exists",
-					}},
-				}, http.StatusConflict)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodePositionExists,
+					Message: "Position with the same title, description and company already exists",
+				}}}, http.StatusConflict)
 				return
 			}
 			slog.Error("failed to create position", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Data: JSONAPIData{
-				Single: &JSONAPIResource{
-					Type: "positions",
-					ID:   string(positionID),
-					Attributes: map[string]any{
-						"is_active": true,
-					},
-					Links: map[string]any{
-						"self": fmt.Sprintf("%s/%s", RouteV1MePositions, positionID),
-					},
-				},
-			},
-		}, http.StatusCreated)
+		w.WriteHeader(http.StatusCreated)
 	}
 }
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMePositions() http.HandlerFunc {
+func (a *API) HandlerGetPositions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: recruiter",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: recruiter",
+			}}}, http.StatusForbidden)
 			return
 		}
 
-		page := GetPagination(r)
+		page := GetPageFromQuery(r)
 		positions, nextCursor, err := a.Store.GetPositions(recruiterID, page)
 		if err != nil {
 			slog.Error("failed to fetch positions", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		links := map[string]any{
-			"self": string(RouteV1MePositions),
-		}
+		var links Links
 		if nextCursor != "" {
-			links["next"] = fmt.Sprintf("%s?cursor=%s", RouteV1MePositions, nextCursor)
+			links.Next = fmt.Sprintf("%s?cursor=%s", RoutePositions, nextCursor)
 		}
 
-		data := make([]JSONAPIResource, len(positions))
-		for i, pos := range positions {
-			data[i] = JSONAPIResource{
-				Type: "positions",
-				ID:   string(pos.ID),
-				Attributes: map[string]any{
-					"title":       pos.Title,
-					"description": pos.Description,
-					"company":     pos.Company,
-					"is_active":   pos.IsActive,
-				},
-				Links: map[string]any{
-					"self": fmt.Sprintf("%s/%s", RouteV1MePositions, pos.ID),
-				},
-			}
-		}
-
-		JSON(w, JSONAPIDocument{
-			Data:  JSONAPIData{Collection: data},
+		JSON(w, Envelope{
+			Data:  positions,
 			Links: links,
 		}, http.StatusOK)
 	}
 }
 
+const (
+	ErrorCodePositionIDRequired = "position_id_required"
+	ErrorCodePositionNotFound   = "position_not_found"
+)
+
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
-func (a *API) HandlerV1GetMePosition() http.HandlerFunc {
+func (a *API) HandlerGetPosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: recruiter",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: recruiter",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		positionIDStr := r.PathValue("id")
 		positionID := ULID(positionIDStr)
 		if positionID == "" {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "position id is required",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
-			return
-		}
-		if !strings.HasPrefix(positionIDStr, ULIDPrefixPosition) {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid position id",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodePositionIDRequired,
+				Message: "Position ID is required",
+				Source:  ErrorSource{Parameter: "id"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		position, err := a.Store.GetPosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "position not found",
-						Source: &JSONAPIErrorSource{Parameter: "id"},
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodePositionNotFound,
+					Message: "Position not found",
+					Source:  ErrorSource{Parameter: "id"},
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to fetch position", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if position.RecruiterID != recruiterID {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "you do not have access to this resource",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeForbidden,
+				Message: "You do not have access to this resource",
+			}}}, http.StatusForbidden)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Data: JSONAPIData{
-				Single: &JSONAPIResource{
-					Type: "positions",
-					ID:   string(position.ID),
-					Attributes: map[string]any{
-						"title":       position.Title,
-						"description": position.Description,
-						"company":     position.Company,
-						"is_active":   position.IsActive,
-					},
-					Links: map[string]any{
-						"self": fmt.Sprintf("%s/%s", RouteV1MePositions, position.ID),
-					},
-				},
-			},
-		}, http.StatusOK)
+		JSON(w, Envelope{Data: position}, http.StatusOK)
 	}
 }
 
-func (a *API) HandlerV1PatchMePosition() http.HandlerFunc {
-	type RequestBody struct {
-		Title       *string `json:"title,omitempty"`
-		Description *string `json:"description,omitempty"`
-		Company     *string `json:"company,omitempty"`
-		IsActive    *bool   `json:"is_active,omitempty"`
-	}
+type RequestBodyPatchPosition struct {
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+	Company     *string `json:"company"`
+	IsActive    *bool   `json:"is_active"`
+}
 
+func (a *API) HandlerPatchPosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: recruiter",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeForbidden,
+				Message: "Missing required role: recruiter",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		positionIDStr := r.PathValue("id")
 		positionID := ULID(positionIDStr)
 		if positionID == "" {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "position id is required",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
-			return
-		}
-		if !strings.HasPrefix(positionIDStr, ULIDPrefixPosition) {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid position id",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodePositionIDRequired,
+				Message: "Position ID is required",
+				Source:  ErrorSource{Parameter: "id"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
-		body, err := DecodeRequestBody[RequestBody](r)
+		body, err := DecodeRequestBody[RequestBodyPatchPosition](r)
 		if err != nil {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid request body",
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeInvalidRequestBody,
+				Message: "Invalid request body",
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		position, err := a.Store.GetPosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "position not found",
-						Source: &JSONAPIErrorSource{Parameter: "id"},
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodePositionNotFound,
+					Message: "Position not found",
+					Source:  ErrorSource{Parameter: "id"},
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to fetch position", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if position.RecruiterID != recruiterID {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "you do not have access to this resource",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeForbidden,
+				Message: "You do not have access to this resource",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		changed := false
-
 		if body.Title != nil {
 			title, err := NormalizeAndValidatePositionTitle(*body.Title)
 			switch {
 			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: "title must be between 4 and 64 characters",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidPositionTitleFormat,
+					Message: "Title must be between 4 and 64 characters",
+					Source:  ErrorSource{Body: "data/title"},
+				}}}, http.StatusBadRequest)
 				return
+
 			case errors.Is(err, ErrPositionTitleHasURL):
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: "title cannot contain a URL",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/title"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidPositionTitleFormat,
+					Message: "Title cannot contain a URL",
+					Source:  ErrorSource{Body: "data/title"},
+				}}}, http.StatusBadRequest)
 				return
+
 			case err != nil:
 				slog.Error("failed to validate position title", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+
 			if position.Title != title {
 				position.Title = title
 				changed = true
@@ -3838,24 +3169,16 @@ func (a *API) HandlerV1PatchMePosition() http.HandlerFunc {
 		if body.Description != nil {
 			description, err := NormalizeAndValidatePositionDescription(*body.Description)
 			if errors.Is(err, ErrTextTooLong) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: "description must be up to 2048 characters",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/description"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidPositionDescriptionFormat,
+					Message: "Description must be up to 2048 characters",
+					Source:  ErrorSource{Body: "data/description"},
+				}}}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
 				slog.Error("failed to validate description", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			if position.Description != description {
@@ -3867,24 +3190,16 @@ func (a *API) HandlerV1PatchMePosition() http.HandlerFunc {
 		if body.Company != nil {
 			company, err := NormalizeAndValidatePositionCompanyName(*body.Company)
 			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "400",
-						Title:  "Bad Request",
-						Detail: "company name must be between 2 and 512 characters",
-						Source: &JSONAPIErrorSource{Pointer: "/data/attributes/company"},
-					}},
-				}, http.StatusBadRequest)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodeInvalidPositionCompanyFormat,
+					Message: "Company name must be between 2 and 512 characters",
+					Source:  ErrorSource{Body: "data/company"},
+				}}}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
 				slog.Error("failed to validate company name", "err", err)
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "500",
-						Title:  "Internal Server Error",
-					}},
-				}, http.StatusInternalServerError)
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			if position.Company != company {
@@ -3901,11 +3216,7 @@ func (a *API) HandlerV1PatchMePosition() http.HandlerFunc {
 		}
 
 		if !changed {
-			JSON(w, JSONAPIDocument{
-				Meta: map[string]any{
-					"status": "success",
-				},
-			}, http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -3917,144 +3228,89 @@ func (a *API) HandlerV1PatchMePosition() http.HandlerFunc {
 			position.IsActive,
 		); err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "position not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodePositionNotFound,
+					Message: "Position not found",
+					Source:  ErrorSource{Parameter: "id"},
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to update position", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Meta: map[string]any{
-				"status": "success",
-			},
-		}, http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
-func (a *API) HandlerV1DeleteMePosition() http.HandlerFunc {
+func (a *API) HandlerDeletePosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "missing required role: recruiter",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeMissingRequiredRole,
+				Message: "Missing required role: recruiter",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		positionIDStr := r.PathValue("id")
 		positionID := ULID(positionIDStr)
 		if positionID == "" {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "position id is required",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
-			return
-		}
-		if !strings.HasPrefix(positionIDStr, ULIDPrefixPosition) {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "400",
-					Title:  "Bad Request",
-					Detail: "invalid position id",
-					Source: &JSONAPIErrorSource{Parameter: "id"},
-				}},
-			}, http.StatusBadRequest)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodePositionIDRequired,
+				Message: "Position ID is required",
+				Source:  ErrorSource{Parameter: "id"},
+			}}}, http.StatusBadRequest)
 			return
 		}
 
 		position, err := a.Store.GetPosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "position not found",
-						Source: &JSONAPIErrorSource{Parameter: "id"},
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodePositionNotFound,
+					Message: "Position not found",
+					Source:  ErrorSource{Parameter: "id"},
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to fetch position", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
 		if position.RecruiterID != recruiterID {
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "403",
-					Title:  "Forbidden",
-					Detail: "you do not have access to this resource",
-				}},
-			}, http.StatusForbidden)
+			JSON(w, Envelope{Errors: []Error{{
+				Code:    ErrorCodeForbidden,
+				Message: "You do not have access to this resource",
+			}}}, http.StatusForbidden)
 			return
 		}
 
 		err = a.Store.DeletePosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, JSONAPIDocument{
-					Errors: []JSONAPIError{{
-						Status: "404",
-						Title:  "Not Found",
-						Detail: "position not found",
-					}},
-				}, http.StatusNotFound)
+				JSON(w, Envelope{Errors: []Error{{
+					Code:    ErrorCodePositionNotFound,
+					Message: "Position not found",
+					Source:  ErrorSource{Parameter: "id"},
+				}}}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete position", "err", err)
-			JSON(w, JSONAPIDocument{
-				Errors: []JSONAPIError{{
-					Status: "500",
-					Title:  "Internal Server Error",
-				}},
-			}, http.StatusInternalServerError)
+			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		JSON(w, JSONAPIDocument{
-			Meta: map[string]any{
-				"status": "success",
-			},
-		}, http.StatusOK)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }

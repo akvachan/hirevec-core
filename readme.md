@@ -12,28 +12,36 @@
 go run cmd/hvserver/main.go
 ```
 
-2. Ingest some test data and auto-login as a test user:
+2. Ingest some test data:
 
 ```sh
-go run cmd/hvcli/main.go dev quickstart
+go run cmd/hvcli/main.go dev ingest
 ```
 
-3. List recommendations:
+3. Login as test candidate:
 
 ```sh
-go run cmd/hvcli/main.go recommendations
+curl -X POST localhost:8888/sessions \
+  -H "Content-Type: application/vnd.api+json" \
+  -d '{"data":{"type":"sessions"},"meta":{"email":"alex.chan.demo@example.com","password":"test"}}'
 ```
 
-4. React positively to the first recommendation:
+4. List recommendations:
 
 ```sh
-go run cmd/hvcli/main.go positive recmd_1
+curl GET
 ```
 
-5. See all your matches:
+5. React positively to the first recommendation:
 
 ```sh
-go run cmd/hvcli/main.go matches
+curl POST
+```
+
+6. See all your matches:
+
+```sh
+curl GET
 ```
 
 A match occurs when a candidate applies for a position
@@ -89,7 +97,7 @@ You can define them in a `.env` file of a current working directory or via envir
 air \
   --build.cmd "go build -o bin/app cmd/hvserver/main.go" \
   --build.entrypoint "./bin/app" \
-  --build.include_ext "go,sql,env" \
+  --build.include_ext "go,sql,env,json" \
   --misc.clean_on_exit true \
   --log.main_only true \
   --tmp_dir "bin" \

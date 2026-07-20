@@ -27,7 +27,7 @@ insert or ignore into users (
     'alex.chen.demo@example.com',
     'Alex Chen',
     'alexchen',
-    '$2a$10$frI8RQRhw9ec7lS8QVd/VeeHHJA.fzyCrHuOXrtiPOzsaXOhE3/T2',
+    '$2a$10$t9LpVDfHKqaB1RtcpPBHmOvgghnlMEs9tKCFu0TKm8TkyQJt51pXu',
     '2026-07-01T10:00:00Z'
 );
 
@@ -37,7 +37,7 @@ insert or ignore into candidates (
     about,
     last_recommended_at
 ) values (
-    'cand_demo',
+    'can_demo',
     'usr_demo_candidate',
     'Senior Full-Stack Engineer with 8+ years building scalable SaaS platforms. Expert in TypeScript, React, Node.js, Go and AWS. Led teams of up to 10 engineers, shipped products used by millions of users, and enjoys mentoring, system design and developer experience.',
     '2026-07-01T10:00:00Z'
@@ -50,7 +50,7 @@ insert or ignore into users values (
     'sarah@nova.io',
     'Sarah Williams',
     'sarahrecruits',
-    '$2a$10$frI8RQRhw9ec7lS8QVd/VeeHHJA.fzyCrHuOXrtiPOzsaXOhE3/T2',
+    '$2a$10$t9LpVDfHKqaB1RtcpPBHmOvgghnlMEs9tKCFu0TKm8TkyQJt51pXu',
     '2026-07-01T10:00:00Z'
 );
 
@@ -66,7 +66,7 @@ insert or ignore into users values (
     'michael@brightlabs.io',
     'Michael Rodriguez',
     'michaeltalent',
-    '$2a$10$frI8RQRhw9ec7lS8QVd/VeeHHJA.fzyCrHuOXrtiPOzsaXOhE3/T2',
+    '$2a$10$t9LpVDfHKqaB1RtcpPBHmOvgghnlMEs9tKCFu0TKm8TkyQJt51pXu',
     '2026-07-01T10:00:00Z'
 );
 
@@ -82,7 +82,7 @@ insert or ignore into users values (
     'emily@cloudforge.io',
     'Emily Johnson',
     'emilyhires',
-    '$2a$10$frI8RQRhw9ec7lS8QVd/VeeHHJA.fzyCrHuOXrtiPOzsaXOhE3/T2',
+    '$2a$10$t9LpVDfHKqaB1RtcpPBHmOvgghnlMEs9tKCFu0TKm8TkyQJt51pXu',
     '2026-07-01T10:00:00Z'
 );
 
@@ -137,37 +137,37 @@ insert or ignore into positions values (
 );
 
 insert or ignore into recommendations values (
-    'recmd_1',
+    'rcm_1',
     'pos_1',
-    'cand_demo'
+    'can_demo'
 );
 
 insert or ignore into recommendations values (
-    'recmd_2',
+    'rcm_2',
     'pos_2',
-    'cand_demo'
+    'can_demo'
 );
 
 insert or ignore into recommendations values (
-    'recmd_3',
+    'rcm_3',
     'pos_3',
-    'cand_demo'
+    'can_demo'
 );
 
 insert or ignore into recommendations values (
-    'recmd_4',
+    'rcm_4',
     'pos_4',
-    'cand_demo'
+    'can_demo'
 );
 
 insert or ignore into recommendations values (
-    'recmd_5',
+    'rcm_5',
     'pos_5',
-    'cand_demo'
+    'can_demo'
 );
 
 insert or ignore into reactions values (
-    'recmd_1',
+    'rcm_1',
     'recruiter',
     'rec_1',
     'positive',
@@ -175,7 +175,7 @@ insert or ignore into reactions values (
 );
 
 insert or ignore into reactions values (
-    'recmd_2',
+    'rcm_2',
     'recruiter',
     'rec_2',
     'positive',
@@ -183,7 +183,7 @@ insert or ignore into reactions values (
 );
 
 insert or ignore into reactions values (
-    'recmd_3',
+    'rcm_3',
     'recruiter',
     'rec_3',
     'positive',

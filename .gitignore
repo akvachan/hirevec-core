@@ -57,6 +57,7 @@ __pycache__
 bm25_cache.json
 *.db
 db/.db
+.db-journal
 
 # Binaries
 bin

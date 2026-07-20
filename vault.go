@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/mail"
@@ -27,15 +28,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-var (
-	ErrFailedParseClaims = errors.New("failed to parse claims")
-	ErrIDTokenRequired   = errors.New("id_token is required")
-	ErrInvalidIDToken    = errors.New("invalid id_token")
-	ErrInvalidProvider   = errors.New("invalid provider")
-	ErrInvalidRole       = errors.New("invalid role")
-	ErrInvalidTokenType  = errors.New("invalid token type")
-)
-
 type Provider string
 
 const (
@@ -44,9 +36,11 @@ const (
 	ProviderEmail  Provider = "email"
 )
 
-const DefaultProvider = ProviderEmail
+const DefaultProvider = ProviderGoogle
 
-func StringToProvider(str string, def Provider) (Provider, error) {
+var ErrInvalidProvider = errors.New("invalid provider")
+
+func StringToProvider(str string) (Provider, error) {
 	switch str {
 	case "apple":
 		return ProviderApple, nil
@@ -54,8 +48,6 @@ func StringToProvider(str string, def Provider) (Provider, error) {
 		return ProviderGoogle, nil
 	case "email":
 		return ProviderEmail, nil
-	case "":
-		return DefaultProvider, nil
 	default:
 		return "", ErrInvalidProvider
 	}
@@ -70,13 +62,46 @@ type Role string
 const (
 	RoleCandidate Role = "candidate"
 	RoleRecruiter Role = "recruiter"
+
+	// TODO: Create admin role with access of editing all resources
+	// RoleAdmin Role = "admin"
 )
 
+// TODO: Extend RBAC with a notion of role:mode:resource instead of plain role
+// type Mode string
+//
+// const (
+// 	ModeSelfRead   Mode = "self-read"
+// 	ModeSelfWrite  Mode = "self-write"
+// 	ModeSelfDelete Mode = "self-delete"
+// 	ModeRead       Mode = "read"
+// 	ModeWrite      Mode = "write"
+// 	ModeDelete     Mode = "delete"
+// )
+//
+// type Resource string
+//
+// const (
+// 	ResourceUsers           Resource = "users"
+// 	ResourceCandidates      Resource = "candidates"
+// 	ResourceRecruiters      Resource = "recruiters"
+// 	ResourcePositions       Resource = "positions"
+// 	ResourceRecommendations Resource = "recommendations"
+// 	ResourceReaction        Resource = "reactions"
+// 	ResourceMatches         Resource = "matches"
+// )
+//
+// type Permission string
+//
+// func NewPermission(role Role, mode Mode, resource Resource) Permission {
+// 	return Permission(fmt.Sprintf("%s:%s:%s", role, mode, resource))
+// }
+
 const (
-	DefaultRefreshTokenExpiration = 30 * 24 * time.Hour
-	DefaultAccessTokenExpiration  = 30 * time.Minute
-	DefaultStateTokenExpiration   = 10 * time.Minute
-	DefaultVerifierExpiration     = 10 * time.Minute
+	DefaultRefreshTokenExpiration = 90 * 24 * time.Hour // 90 days
+	DefaultAccessTokenExpiration  = 30 * time.Minute    // 30 minutes
+	DefaultStateTokenExpiration   = 10 * time.Minute    // 10 minutes
+	DefaultVerifierExpiration     = 10 * time.Minute    // 10 minutes
 )
 
 const (
@@ -144,20 +169,14 @@ func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 
 	sk, err := LoadOrCreateSymmetricKey(c.SymmetricKey)
 	if err != nil {
-		slog.Error(
-			"failed to init symmetric key",
-			"err", err,
-		)
-		return Vault{}, err
+		slog.Error("failed to init symmetric key", "err", err)
+		return Vault{}, fmt.Errorf("failed to init symmetric key: %w", err)
 	}
 
 	ak, err := LoadOrCreateAsymmetricKey(c.AsymmetricKey)
 	if err != nil {
-		slog.Error(
-			"failed to init asymmetric key",
-			"err", err,
-		)
-		return Vault{}, err
+		slog.Error("failed to init asymmetric key", "err", err)
+		return Vault{}, fmt.Errorf("failed to init asymmetric key: %w", err)
 	}
 
 	var googleOIDCConfig *OIDCConfig
@@ -165,13 +184,14 @@ func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 		slog.Debug("connecting to SSO provider", "provider", "google")
 		googleProvider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
 		if err != nil {
-			return Vault{}, err
+			return Vault{}, fmt.Errorf("failed to initialize Google provider: %w", err)
 		}
+		callbackURL := strings.Replace(string(RouteCallback), "{provider}", "google", 1)
 		googleOIDCConfig = &OIDCConfig{
 			OAuth2Config: &oauth2.Config{
 				ClientID:     c.GoogleClientID,
 				ClientSecret: c.GoogleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, RouteOAuth2Callback),
+				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, callbackURL),
 				Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 				Endpoint:     googleProvider.Endpoint(),
 			},
@@ -186,13 +206,14 @@ func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 		slog.Debug("connecting to SSO provider", "provider", "apple")
 		appleProvider, err := oidc.NewProvider(ctx, "https://appleid.apple.com")
 		if err != nil {
-			return Vault{}, err
+			return Vault{}, fmt.Errorf("failed to initialize Apple provider: %w", err)
 		}
+		callbackURL := strings.Replace(string(RouteCallback), "{provider}", "apple", 1)
 		appleOIDCConfig = &OIDCConfig{
 			OAuth2Config: &oauth2.Config{
 				ClientID:     c.AppleClientID,
 				ClientSecret: c.AppleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, RouteOAuth2Callback),
+				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, callbackURL),
 				Scopes:       []string{oidc.ScopeOpenID, "name", "email"},
 				Endpoint:     appleProvider.Endpoint(),
 			},
@@ -241,12 +262,12 @@ func (v Vault) CreateStateToken(provider Provider) (string, error) {
 	token.SetExpiration(now.Add(v.StateTokenExpiration))
 
 	if err := token.Set("provider", provider); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to set provider: %w", err)
 	}
 
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read random bytes: %w", err)
 	}
 
 	state := base64.URLEncoding.EncodeToString(b)
@@ -258,48 +279,52 @@ func (v Vault) CreateStateToken(provider Provider) (string, error) {
 }
 
 type StateTokenClaims struct {
-	Provider Provider `json:"provider"`
-	CSRF     string   `json:"csrf"`
+	CSRF string `json:"csrf"`
 }
 
 func (v Vault) ParseStateToken(raw string) (StateTokenClaims, error) {
 	token, err := v.StateTokenParser.ParseV4Local(v.V4SymmetricKey, raw, nil)
 	if err != nil {
-		return StateTokenClaims{}, err
-	}
-
-	provider, err := token.GetString("provider")
-	if err != nil {
-		return StateTokenClaims{}, err
-	}
-	validProvider, err := StringToProvider(provider, DefaultProvider)
-	if err != nil {
-		return StateTokenClaims{}, ErrInvalidProvider
+		return StateTokenClaims{}, fmt.Errorf("failed to parse token: %w", err)
 	}
 
 	csrf, err := token.GetString("csrf")
 	if err != nil {
-		return StateTokenClaims{}, err
+		return StateTokenClaims{}, fmt.Errorf("failed to get CSRF: %w", err)
 	}
 
 	return StateTokenClaims{
-		Provider: validProvider,
-		CSRF:     csrf,
+		CSRF: csrf,
 	}, nil
 }
+
+var (
+	ErrGoogleOIDCConfigNotInitialized = errors.New("Google OIDC configuration is not initialized")
+	ErrAppleOIDCConfigNotInitialized  = errors.New("Apple OIDC configuration is not initialized")
+)
 
 func (v Vault) CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error) {
 	var config *oauth2.Config
 	switch provider {
 	case ProviderGoogle:
-		config = v.GoogleOIDCConfig.OAuth2Config
+		if v.GoogleOIDCConfig != nil {
+			config = v.GoogleOIDCConfig.OAuth2Config
+		} else {
+			return "", ErrGoogleOIDCConfigNotInitialized
+		}
 	case ProviderApple:
-		config = v.AppleOIDCConfig.OAuth2Config
+		if v.AppleOIDCConfig != nil {
+			config = v.AppleOIDCConfig.OAuth2Config
+		} else {
+			return "", ErrAppleOIDCConfigNotInitialized
+		}
 	default:
 		return "", ErrInvalidProvider
 	}
 	return config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), nil
 }
+
+var ErrIDTokenRequired = errors.New("id_token is required")
 
 func (v Vault) ExchangeGoogleCodeForIDToken(ctx context.Context, code string, verifierCookie *http.Cookie) (string, error) {
 	tok, err := v.GoogleOIDCConfig.OAuth2Config.Exchange(
@@ -308,7 +333,7 @@ func (v Vault) ExchangeGoogleCodeForIDToken(ctx context.Context, code string, ve
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to exchange code for token: %w", err)
 	}
 
 	rawIDToken, ok := tok.Extra("id_token").(string)
@@ -326,7 +351,7 @@ func (v Vault) ExchangeAppleCodeForIDToken(ctx context.Context, code string, ver
 		oauth2.VerifierOption(verifierCookie.Value),
 	)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to exchange code for token: %w", err)
 	}
 
 	rawIDToken, ok := tok.Extra("id_token").(string)
@@ -354,6 +379,11 @@ type IDToken struct {
 	FullName       string
 }
 
+var (
+	ErrFailedParseClaims = errors.New("failed to parse claims")
+	ErrInvalidIDToken    = errors.New("invalid id_token")
+)
+
 func (v Vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken string) (IDToken, error) {
 	idToken, err := v.GoogleOIDCConfig.Verifier.Verify(ctx, rawIDToken)
 	if err != nil {
@@ -364,6 +394,7 @@ func (v Vault) VerifyAndParseGoogleIDToken(ctx context.Context, rawIDToken strin
 	if err := idToken.Claims(&claims); err != nil {
 		return IDToken{}, ErrFailedParseClaims
 	}
+
 	if !claims.EmailVerified {
 		return IDToken{}, ErrEmailNotVerified
 	}
@@ -406,7 +437,11 @@ func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string
 	if !verified {
 		return IDToken{}, ErrEmailNotVerified
 	}
+
 	email, err := mail.ParseAddress(claims.Email)
+	if err != nil {
+		return IDToken{}, fmt.Errorf("failed to parse address: %w", err)
+	}
 
 	var fullName string
 	if userJSON != "" {
@@ -442,19 +477,19 @@ func (v Vault) ParseAccessToken(tokenString string) (AccessTokenClaims, error) {
 		nil,
 	)
 	if err != nil {
-		return AccessTokenClaims{}, err
+		return AccessTokenClaims{}, fmt.Errorf("failed to parse token: %w", err)
 	}
 
 	userID, err := parsedToken.GetSubject()
 	if err != nil {
-		return AccessTokenClaims{}, err
+		return AccessTokenClaims{}, fmt.Errorf("failed to get subject: %w", err)
 	}
 
 	stringProvider, err := parsedToken.GetString("provider")
 	if err != nil {
-		return AccessTokenClaims{}, err
+		return AccessTokenClaims{}, fmt.Errorf("failed to get provider: %w", err)
 	}
-	provider, err := StringToProvider(stringProvider, DefaultProvider)
+	provider, err := StringToProvider(stringProvider)
 	if err != nil {
 		return AccessTokenClaims{}, ErrInvalidProvider
 	}
@@ -489,30 +524,27 @@ func (v Vault) ParseRefreshToken(tokenString string) (RefreshTokenClaims, error)
 		nil,
 	)
 	if err != nil {
-		slog.Error(
-			"failed to parse refresh token",
-			"err", err,
-		)
-		return RefreshTokenClaims{}, err
+		slog.Error("failed to parse refresh token", "err", err)
+		return RefreshTokenClaims{}, fmt.Errorf("failed to parse token: %w", err)
 	}
 
 	userID, err := parsedToken.GetSubject()
 	if err != nil || userID == "" {
-		return RefreshTokenClaims{}, err
+		return RefreshTokenClaims{}, fmt.Errorf("failed to get subject: %w", err)
 	}
 
 	stringProvider, err := parsedToken.GetString("provider")
 	if err != nil {
-		return RefreshTokenClaims{}, err
+		return RefreshTokenClaims{}, fmt.Errorf("failed to get provider: %w", err)
 	}
-	provider, err := StringToProvider(stringProvider, DefaultProvider)
+	provider, err := StringToProvider(stringProvider)
 	if err != nil {
 		return RefreshTokenClaims{}, ErrInvalidProvider
 	}
 
 	jti, err := parsedToken.GetJti()
 	if err != nil || jti == "" {
-		return RefreshTokenClaims{}, err
+		return RefreshTokenClaims{}, fmt.Errorf("failed to get JTI: %w", err)
 	}
 
 	return RefreshTokenClaims{
@@ -549,21 +581,21 @@ func (v Vault) CreateAccessToken(userID ULID, provider Provider, roles map[Role]
 	token.SetIssuedAt(now)
 
 	if err := token.Set("provider", provider); err != nil {
-		return AccessToken{}, err
+		return AccessToken{}, fmt.Errorf("failed to set provider: %w", err)
 	}
 
 	var scopes []string
 
 	if _, ok := roles[RoleCandidate]; ok {
 		if err := token.Set("candidate_id", roles[RoleCandidate]); err != nil {
-			return AccessToken{}, err
+			return AccessToken{}, fmt.Errorf("failed to set candidate_id: %w", err)
 		}
 		scopes = append(scopes, string(ScopeRoleCandidate))
 	}
 
 	if _, ok := roles[RoleRecruiter]; ok {
 		if err := token.Set("recruiter_id", roles[RoleRecruiter]); err != nil {
-			return AccessToken{}, err
+			return AccessToken{}, fmt.Errorf("failed to set recruiter_id: %w", err)
 		}
 		scopes = append(scopes, string(ScopeRoleRecruiter))
 	}
@@ -599,7 +631,7 @@ func (v Vault) CreateRefreshToken(userID ULID, provider Provider, jti ULID) (Ref
 	token.SetJti(string(jti))
 
 	if err := token.Set("provider", provider); err != nil {
-		return RefreshToken{}, err
+		return RefreshToken{}, fmt.Errorf("failed to set provider: %w", err)
 	}
 
 	return RefreshToken{
@@ -621,12 +653,12 @@ type TokenPair struct {
 func (v Vault) CreateTokenPair(userID ULID, provider Provider, jti ULID, roles map[Role]ULID) (TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, roles)
 	if err != nil {
-		return TokenPair{}, err
+		return TokenPair{}, fmt.Errorf("failed to create access token: %w", err)
 	}
 
 	refreshToken, err := v.CreateRefreshToken(userID, provider, jti)
 	if err != nil {
-		return TokenPair{}, err
+		return TokenPair{}, fmt.Errorf("failed to create refresh token: %w", err)
 	}
 
 	return TokenPair{
@@ -649,10 +681,12 @@ func UpsertEnvKey(filename string, key string, value string) error {
 
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return err
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("failed to read file: %w", err)
 		}
-		return os.WriteFile(filename, []byte(key+"="+value+"\n"), 0o600)
+		if err := os.WriteFile(filename, []byte(key+"="+value+"\n"), 0o600); err != nil {
+			return fmt.Errorf("failed to write file: %w", err)
+		}
 	}
 
 	found := false
@@ -683,7 +717,7 @@ func LoadOrCreateSymmetricKey(val string) (paseto.V4SymmetricKey, error) {
 	if val != "" {
 		decoded, err := hex.DecodeString(val)
 		if err != nil {
-			return paseto.V4SymmetricKey{}, err
+			return paseto.V4SymmetricKey{}, fmt.Errorf("failed to decode string: %w", err)
 		}
 		return paseto.V4SymmetricKeyFromBytes(decoded)
 	}
@@ -694,7 +728,7 @@ func LoadOrCreateSymmetricKey(val string) (paseto.V4SymmetricKey, error) {
 		"HIREVEC_SYMMETRIC_KEY",
 		key.ExportHex(),
 	); err != nil {
-		return key, err
+		return key, fmt.Errorf("failed to upsert environment variable: %w", err)
 	}
 
 	return key, nil
@@ -704,7 +738,7 @@ func LoadOrCreateAsymmetricKey(val string) (paseto.V4AsymmetricSecretKey, error)
 	if val != "" {
 		decoded, err := hex.DecodeString(val)
 		if err != nil {
-			return paseto.V4AsymmetricSecretKey{}, err
+			return paseto.V4AsymmetricSecretKey{}, fmt.Errorf("failed to decode string: %w", err)
 		}
 		return paseto.NewV4AsymmetricSecretKeyFromBytes(decoded)
 	}
@@ -714,7 +748,7 @@ func LoadOrCreateAsymmetricKey(val string) (paseto.V4AsymmetricSecretKey, error)
 		envFile, "HIREVEC_ASYMMETRIC_KEY",
 		key.ExportHex(),
 	); err != nil {
-		return key, err
+		return key, fmt.Errorf("failed to upsert environment variable: %w", err)
 	}
 
 	return key, nil
@@ -741,15 +775,11 @@ func GetenvAndParse[T any](key string, parser func(string) (T, error), defaultVa
 func Loadenv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open file %s: %w", path, err)
 	}
 	defer func() {
-		err := f.Close()
-		if err != nil {
-			slog.Error(
-				"failed to properly close file",
-				"err", err,
-			)
+		if err := f.Close(); err != nil {
+			slog.Error("failed to close file", "err", err)
 		}
 	}()
 
@@ -768,7 +798,7 @@ func Loadenv(path string) error {
 		key = strings.TrimSpace(key)
 		value = strings.Trim(strings.TrimSpace(value), `"'`)
 		if err = os.Setenv(key, value); err != nil {
-			return err
+			return fmt.Errorf("failed to set environment variable %s: %w", key, err)
 		}
 	}
 
@@ -787,5 +817,8 @@ func HashPassword(password string) (string, error) {
 		[]byte(password),
 		bcrypt.DefaultCost,
 	)
-	return string(hash), err
+	if err != nil {
+		return "", fmt.Errorf("failed to generate hash from password: %w", err)
+	}
+	return string(hash), nil
 }

@@ -19,32 +19,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var (
-	ErrPositionAlreadyExists            = errors.New("position already exists")
-	ErrPositionNotFound                 = errors.New("position not found")
-	ErrMissingDatabaseURL               = errors.New("database URL is not set")
-	ErrRecommendationAlreadyExists      = errors.New("recommendation already exists")
-	ErrRecommendationNotFound           = errors.New("recommendation not found")
-	ErrUserAlreadyExists                = errors.New("user already exists")
-	ErrCandidateAlreadyExists           = errors.New("candidate already exists")
-	ErrRecruiterAlreadyExists           = errors.New("recruiter already exists")
-	ErrUserNoRole                       = errors.New("user has no role")
-	ErrUserNotFound                     = errors.New("user not found")
-	ErrCandidateNotFound                = errors.New("candidate not found")
-	ErrRecruiterNotFound                = errors.New("recruiter not found")
-	ErrRecommendationExists             = errors.New("recommendation already exists")
-	ErrReactionAlreadyExists            = errors.New("reaction already exists")
-	ErrEmbeddingsCountConflict          = errors.New("mismatch between count of embedding IDs and embeddings")
-	ErrUnsupportedDatabaseProvider      = errors.New("unsupported database provider")
-	ErrEmptyCandidateProfile            = errors.New("candidate profile is empty")
-	ErrFailedGenerateUserULID           = errors.New("failed to generate ULID for user")
-	ErrFailedGenerateJTIULID            = errors.New("failed to generate ULID for refresh token (JTI)")
-	ErrFailedGenerateRecommendationULID = errors.New("failed to generate ULID for recommendation")
-	ErrFailedGenerateRecruiterULID      = errors.New("failed to generate ULID for recruiter")
-	ErrFailedGeneratePositionULID       = errors.New("failed to generate ULID for position")
-	ErrFailedGenerateCandidateULID      = errors.New("failed to generate ULID for candidate")
-)
-
 const Enc = "0123456789abcdefghjkmnpqrstvwxyz"
 
 type ULID string
@@ -56,7 +30,7 @@ func NewULID(prefix string) (ULID, error) {
 	ts := uint64(time.Now().UnixMilli())
 
 	if _, err := rand.Read(id[:]); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to read random bytes into slice: %w", err)
 	}
 
 	for i := 9; i >= 0; i-- {
@@ -122,13 +96,17 @@ type StoreConfig struct {
 func ExecMigration(db *sql.DB, path string) error {
 	sql, err := EmbeddedStatic.ReadFile(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to read embedded file %s: %w", path, err)
 	}
+
 	if _, err := db.Exec(string(sql)); err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
+
 	return nil
 }
+
+var ErrMissingDatabaseURL = errors.New("database URL is not set")
 
 func ConnectPostgreSQL(url string) (*sql.DB, error) {
 	slog.Debug("connecting to database", "database", "PostgreSQL")
@@ -138,7 +116,7 @@ func ConnectPostgreSQL(url string) (*sql.DB, error) {
 
 	db, err := sql.Open("pgx", url)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	db.SetMaxOpenConns(25)
@@ -147,27 +125,27 @@ func ConnectPostgreSQL(url string) (*sql.DB, error) {
 	db.SetConnMaxLifetime(1 * time.Hour)
 
 	if err := db.PingContext(context.Background()); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	return db, nil
 }
 
-var DefaultSQLiteConn = "file:db/.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
+var DefaultSQLiteConn = "file:.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 
 func ConnectSQLite() (*sql.DB, error) {
 	slog.Debug("connecting to database", "database", "SQLite")
 	db, err := sql.Open("sqlite", DefaultSQLiteConn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	var enabled int
 	err = db.QueryRow("PRAGMA foreign_keys").Scan(&enabled)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to scan: %w", err)
 	}
-	slog.Debug("setting foreign keys", "enabled", enabled, "database", "SQLite")
+	slog.Debug("foreign keys", "enabled", enabled, "database", "SQLite")
 
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(25)
@@ -175,40 +153,40 @@ func ConnectSQLite() (*sql.DB, error) {
 	db.SetConnMaxLifetime(1 * time.Hour)
 
 	if err := db.PingContext(context.Background()); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	return db, nil
 }
 
 var (
-	PathInitMigration          = path.Join("db/migrations/init.sql")
-	PathEmbeddingsMigration    = path.Join("db/migrations/embeddings.sql")
-	PathPostgreSQLFTSMigration = path.Join("db/migrations/postgresql-fts.sql")
-	PathSQLiteFTSMigration     = path.Join("db/migrations/sqlite-fts.sql")
-	PathQuickStartMigration    = path.Join("db/migrations/quick-start.sql")
+	PathInitMigration          = path.Join("migrations/init.sql")
+	PathEmbeddingsMigration    = path.Join("migrations/embeddings.sql")
+	PathPostgreSQLFTSMigration = path.Join("migrations/postgresql-fts.sql")
+	PathSQLiteFTSMigration     = path.Join("migrations/sqlite-fts.sql")
+	PathDevIngestMigration     = path.Join("migrations/dev-ingest.sql")
 )
 
 func InitPostgreSQL(url string) (*sql.DB, error) {
 	db, err := ConnectPostgreSQL(url)
 	if err != nil {
 		slog.Error("failed to connect to database", "database", "PostgreSQL", "err", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	slog.Debug("creating database schema", "database", "PostgreSQL")
 	if err := ExecMigration(db, PathInitMigration); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute migration %s: %w", PathInitMigration, err)
 	}
 
 	slog.Debug("creating embeddings tables", "database", "PostgreSQL")
 	if err := ExecMigration(db, PathEmbeddingsMigration); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute migration %s: %w", PathEmbeddingsMigration, err)
 	}
 
 	slog.Debug("initializing FTS", "database", "PostgreSQL")
 	if err := ExecMigration(db, PathPostgreSQLFTSMigration); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute migration %s: %w", PathPostgreSQLFTSMigration, err)
 	}
 
 	return db, nil
@@ -218,17 +196,17 @@ func InitSQLite() (*sql.DB, error) {
 	db, err := ConnectSQLite()
 	if err != nil {
 		slog.Error("failed to connect to database", "database", "SQLite", "err", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
 	slog.Debug("creating database schema", "database", "SQLite")
 	if err := ExecMigration(db, PathInitMigration); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute migration %s: %w", PathInitMigration, err)
 	}
 
 	slog.Debug("initializing FTS", "database", "SQLite")
 	if err := ExecMigration(db, PathSQLiteFTSMigration); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute migration %s: %w", PathPostgreSQLFTSMigration, err)
 	}
 
 	return db, nil
@@ -239,6 +217,8 @@ type Store struct {
 	DB               *sql.DB
 }
 
+var ErrUnsupportedDatabaseProvider = errors.New("unsupported database provider")
+
 func NewStore(c StoreConfig) (Store, error) {
 	s := Store{}
 
@@ -247,14 +227,16 @@ func NewStore(c StoreConfig) (Store, error) {
 		slog.Debug("initializing store", "database", "PostgreSQL")
 		if s.DB, err = InitPostgreSQL(c.PostgreSQLDatabaseURL); err != nil {
 			slog.Error("failed to initialize database", "database", "PostgreSQL", "err", err)
-			return s, err
+			return s, fmt.Errorf("failed to initialize database: %w", err)
 		}
+
 	} else if c.DatabaseProvider == DatabaseProviderSQLite {
 		slog.Debug("initializing store", "database", "SQLite")
 		if s.DB, err = InitSQLite(); err != nil {
 			slog.Error("failed to initialize database", "database", "SQLite", "err", err)
-			return s, err
+			return s, fmt.Errorf("failed to initialize database: %w", err)
 		}
+
 	} else {
 		return s, ErrUnsupportedDatabaseProvider
 	}
@@ -263,22 +245,25 @@ func NewStore(c StoreConfig) (Store, error) {
 	return s, nil
 }
 
+var ErrRecommendationNotFound = errors.New("recommendation not found")
+
 func (s Store) GetRecommendation(recommendationID ULID) (Recommendation, error) {
 	var candidateID, positionID ULID
-	err := s.DB.QueryRow(`
+
+	if err := s.DB.QueryRow(`
 		select candidate_id, position_id
 		from recommendations
 		where id = $1
 	`, recommendationID).Scan(
 		&candidateID,
 		&positionID,
-	)
-	if err != nil {
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Recommendation{}, ErrRecommendationNotFound
 		}
-		return Recommendation{}, err
+		return Recommendation{}, fmt.Errorf("failed to scan: %w", err)
 	}
+
 	return Recommendation{
 		recommendationID,
 		positionID,
@@ -286,13 +271,19 @@ func (s Store) GetRecommendation(recommendationID ULID) (Recommendation, error) 
 	}, nil
 }
 
+var (
+	ErrUserNoRole   = errors.New("user has no role")
+	ErrUserNotFound = errors.New("user not found")
+)
+
 func (s Store) GetUserAndRolesByEmail(email string, provider Provider) (User, map[Role]ULID, error) {
 	var userID ULID
 	var updatedAt time.Time
 	var optionalProviderUserID sql.NullString
 	var providerUserID, fullName, userName, passwordHash string
 	var candidateID, recruiterID sql.NullString
-	err := s.DB.QueryRow(`
+
+	if err := s.DB.QueryRow(`
 		select
 			u.id,
 			u.provider_user_id,
@@ -315,12 +306,11 @@ func (s Store) GetUserAndRolesByEmail(email string, provider Provider) (User, ma
 		&updatedAt,
 		&candidateID,
 		&recruiterID,
-	)
-	if err != nil {
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, nil, ErrUserNotFound
 		}
-		return User{}, nil, err
+		return User{}, nil, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	if optionalProviderUserID.Valid {
@@ -355,7 +345,8 @@ func (s Store) GetUserAndRolesByEmail(email string, provider Provider) (User, ma
 func (s Store) GetUserIDAndRolesByProvider(provider Provider, providerUserID string) (ULID, map[Role]ULID, error) {
 	var userID ULID
 	var candidateID, recruiterID sql.NullString
-	err := s.DB.QueryRow(`
+
+	if err := s.DB.QueryRow(`
 		select
 			u.id, 
 			c.id as candidate_id,
@@ -368,12 +359,11 @@ func (s Store) GetUserIDAndRolesByProvider(provider Provider, providerUserID str
 		&userID,
 		&candidateID,
 		&recruiterID,
-	)
-	if err != nil {
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil, ErrUserNotFound
 		}
-		return "", nil, err
+		return "", nil, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	roles := make(map[Role]ULID, 2)
@@ -406,7 +396,7 @@ func (s Store) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, erro
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrUserNotFound
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	roles := make(map[Role]ULID, 2)
@@ -425,12 +415,12 @@ func (s Store) GetUserRoles(userID ULID, provider Provider) (map[Role]ULID, erro
 
 type User struct {
 	ID             ULID      `json:"id"`
-	Provider       Provider  `json:"provider"`
-	ProviderUserID string    `json:"provider_user_id"`
+	Provider       Provider  `json:"-"`
+	ProviderUserID string    `json:"-"`
 	Email          string    `json:"email"`
 	FullName       string    `json:"full_name"`
 	UserName       string    `json:"user_name"`
-	PasswordHash   string    `json:"password_hash"`
+	PasswordHash   string    `json:"-"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -442,14 +432,12 @@ func CurrentTimestamp(offset ...time.Duration) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func (s Store) CreateUser(
-	provider Provider,
-	providerUserID,
-	email string,
-	fullName string,
-	userName string,
-	passwordHash string,
-) (ULID, error) {
+var (
+	ErrUserAlreadyExists      = errors.New("user already exists")
+	ErrFailedGenerateUserULID = errors.New("failed to generate ULID for user")
+)
+
+func (s Store) CreateUser(provider Provider, providerUserID string, email string, fullName string, userName string, passwordHash string) (ULID, error) {
 	id, err := NewUserULID()
 	if err != nil {
 		return "", ErrFailedGenerateUserULID
@@ -471,12 +459,12 @@ func (s Store) CreateUser(
 		on conflict (provider, provider_user_id) do nothing
 	`, id, provider, providerUserID, email, fullName, userName, passwordHash, CurrentTimestamp())
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return "", ErrUserAlreadyExists
@@ -513,20 +501,16 @@ func (r ReactorType) IsValid() bool {
 
 type Reaction struct {
 	RecommendationID ULID         `json:"recommendation_id"`
-	ReactorType      ReactorType  `json:"reactor_type"`
-	ReactorID        ULID         `json:"reactor_id"`
+	ReactorType      ReactorType  `json:"-"`
+	ReactorID        ULID         `json:"-"`
 	ReactionType     ReactionType `json:"reaction_type"`
 	ReactedAt        time.Time    `json:"reacted_at"`
 }
 
-func (s Store) CreateReaction(
-	recommendationID ULID,
-	reactorType ReactorType,
-	reactorID ULID,
-	reactionType ReactionType,
-) error {
-	result, err := s.DB.Exec(
-		`
+var ErrReactionAlreadyExists = errors.New("reaction already exists")
+
+func (s Store) CreateReaction(recommendationID ULID, reactorType ReactorType, reactorID ULID, reactionType ReactionType) error {
+	result, err := s.DB.Exec(`
 		insert into reactions (
 			recommendation_id, 
 			reactor_type,
@@ -536,37 +520,40 @@ func (s Store) CreateReaction(
 		)
 		values ($1, $2, $3, $4, $5)
 		on conflict (recommendation_id, reactor_type, reactor_id) do nothing
-	`,
-		recommendationID,
-		reactorType,
-		reactorID,
-		reactionType,
-		CurrentTimestamp(),
-	)
+	`, recommendationID, reactorType, reactorID, reactionType, CurrentTimestamp())
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute query: %w", err)
 	}
+
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrReactionAlreadyExists
 	}
+
 	return nil
 }
 
 func (s Store) IsRevokedRefreshToken(jti ULID) (bool, error) {
 	var isRevoked bool
-	return isRevoked, s.DB.QueryRow(`
+
+	if err := s.DB.QueryRow(`
 		select revoked 
 		from refresh_tokens 
 		where jti = $1 
 		and expires_at > $2 
-	`, jti, time.Now().UTC()).Scan(&isRevoked)
+	`, jti, time.Now().UTC()).Scan(&isRevoked); err != nil {
+		return true, fmt.Errorf("failed to scan: %w", err)
+	}
+
+	return isRevoked, nil
 }
 
 const DefaultMaxRefreshTokensCount = 5
+
+var ErrFailedGenerateJTIULID = errors.New("failed to generate ULID for refresh token (JTI)")
 
 func (s Store) CreateRefreshToken(userID ULID) (jti ULID, err error) {
 	jti, err = NewJTIULID()
@@ -576,11 +563,13 @@ func (s Store) CreateRefreshToken(userID ULID) (jti ULID, err error) {
 
 	tx, err := s.DB.Begin()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to start transaction: %w", err)
 	}
 	defer func() {
 		if err != nil {
-			_ = tx.Rollback()
+			if err = tx.Rollback(); err != nil {
+				slog.Debug("failed to rollback transaction", "err", err)
+			}
 		}
 	}()
 
@@ -594,7 +583,7 @@ func (s Store) CreateRefreshToken(userID ULID) (jti ULID, err error) {
 		  and revoked = false
 		  and expires_at > $2
 	`, userID, currentTimestamp).Scan(&count); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to scan: %w", err)
 	}
 	if count >= DefaultMaxRefreshTokensCount {
 		if _, err = tx.Exec(`
@@ -610,7 +599,7 @@ func (s Store) CreateRefreshToken(userID ULID) (jti ULID, err error) {
 				limit 1
 			)
 		`, userID, currentTimestamp); err != nil {
-			return "", err
+			return "", fmt.Errorf("failed to execute SQL: %w", err)
 		}
 	}
 
@@ -618,11 +607,11 @@ func (s Store) CreateRefreshToken(userID ULID) (jti ULID, err error) {
 		insert into refresh_tokens (jti, user_id, created_at, expires_at)
 		values ($1, $2, $3, $4)
 	`, jti, userID, currentTimestamp, CurrentTimestamp(DefaultRefreshTokenExpiration)); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return jti, nil
@@ -634,10 +623,12 @@ type Recommendation struct {
 	CandidateID ULID `json:"candidate_id"`
 }
 
-func (s Store) CreateRecommendation(
-	positionID ULID,
-	candidateID ULID,
-) (ULID, error) {
+var (
+	ErrRecommendationAlreadyExists      = errors.New("recommendation already exists")
+	ErrFailedGenerateRecommendationULID = errors.New("failed to generate ULID for recommendation")
+)
+
+func (s Store) CreateRecommendation(positionID ULID, candidateID ULID) (ULID, error) {
 	id, err := NewRecommendationULID()
 	if err != nil {
 		return "", ErrFailedGenerateRecommendationULID
@@ -648,12 +639,12 @@ func (s Store) CreateRecommendation(
 		values ($1, $2, $3)
 	`, id, positionID, candidateID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return "", ErrRecommendationAlreadyExists
@@ -692,7 +683,7 @@ func (s Store) GetPositionRecommendations(candidateID ULID, page Page, excludeRe
 		limit $3
 	`, candidateID, page.Cursor, page.Limit+1, excludeReacted)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -714,12 +705,9 @@ func (s Store) GetPositionRecommendations(candidateID ULID, page Page, excludeRe
 			&pr.Company,
 			&pr.Description,
 		); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("failed to scan: %w", err)
 		}
 		recommendations = append(recommendations, pr)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
 	}
 
 	if len(recommendations) > page.Limit {
@@ -754,7 +742,7 @@ func (s Store) GetCandidateRecommendations(recruiterID ULID, page Page, excludeR
 		limit $3
 	`, recruiterID, page.Cursor, page.Limit+1, excludeReacted)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -775,12 +763,9 @@ func (s Store) GetCandidateRecommendations(recruiterID ULID, page Page, excludeR
 			&cr.FullName,
 			&cr.About,
 		); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("failed to scan: %w", err)
 		}
 		recommendations = append(recommendations, cr)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
 	}
 
 	if len(recommendations) > page.Limit {
@@ -802,7 +787,7 @@ func (s Store) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions
 		limit $3
 	`, candidateID, page.Cursor, page.Limit+1)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to scan: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -824,7 +809,7 @@ func (s Store) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions
 			&rx.ReactionType,
 			&rx.ReactedAt,
 		); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("failed to scan: %w", err)
 		}
 		results = append(results, rx)
 	}
@@ -856,7 +841,7 @@ func (s Store) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []M
 		limit $3
 	`, candidateID, page.Cursor, page.Limit+1)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -878,12 +863,9 @@ func (s Store) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []M
 			&m.Company,
 			&m.CreatedAt,
 		); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("failed to scan: %w", err)
 		}
 		results = append(results, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
 	}
 
 	if len(results) > page.Limit {
@@ -911,7 +893,7 @@ func (s Store) FetchPendingEmbeddingsMetadata(limit uint16) ([]ULID, []string, e
 		limit $1
   `, limit)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -929,13 +911,13 @@ func (s Store) FetchPendingEmbeddingsMetadata(limit uint16) ([]ULID, []string, e
 		var id ULID
 		var text string
 		if err := rows.Scan(&id, &text); err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to scan: %w", err)
 		}
 		ids = append(ids, id)
 		texts = append(texts, text)
 	}
 
-	return ids, texts, rows.Err()
+	return ids, texts, nil
 }
 
 func SqlIn(column string, n int) string {
@@ -956,14 +938,15 @@ func (s Store) MarkEmbeddingsStatus(entityIDs []ULID, status EmbeddingStatus) er
 		args = append(args, id)
 	}
 
-	query := fmt.Sprintf(`
+	if _, err := s.DB.Exec(fmt.Sprintf(`
 		update embeddings_metadata
 		set embedding_status = ?
 		where %s
-	`, SqlIn("id", len(entityIDs)))
+	`, SqlIn("id", len(entityIDs))), args...); err != nil {
+		return fmt.Errorf("failed to execute SQL: %w", err)
+	}
 
-	_, err := s.DB.Exec(query, args...)
-	return err
+	return nil
 }
 
 func (s Store) MarkEmbeddingsStatusTx(tx *sql.Tx, entityIDs []ULID, status EmbeddingStatus) error {
@@ -977,12 +960,15 @@ func (s Store) MarkEmbeddingsStatusTx(tx *sql.Tx, entityIDs []ULID, status Embed
 		args = append(args, id)
 	}
 
-	_, err := tx.Exec(fmt.Sprintf(`
+	if _, err := tx.Exec(fmt.Sprintf(`
 		update embeddings_metadata
 		set embedding_status = ?
 		where %s
-	`, SqlIn("id", len(entityIDs))), args...)
-	return err
+	`, SqlIn("id", len(entityIDs))), args...); err != nil {
+		return fmt.Errorf("failed to execute SQL: %w", err)
+	}
+
+	return nil
 }
 
 func (s Store) GetPositionsForCandidateViaEmbeddings(candidateID ULID, topPositions uint16) ([]ULID, error) {
@@ -1017,7 +1003,7 @@ func (s Store) GetPositionsForCandidateViaEmbeddings(candidateID ULID, topPositi
 		limit $2
 	`, candidateID, topPositions)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -1033,17 +1019,15 @@ func (s Store) GetPositionsForCandidateViaEmbeddings(candidateID ULID, topPositi
 	for rows.Next() {
 		var positionID ULID
 		if err := rows.Scan(&positionID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan: %w", err)
 		}
 		results = append(results, positionID)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
 	return results, nil
 }
+
+var ErrEmbeddingsCountConflict = errors.New("mismatch between count of embedding IDs and embeddings")
 
 func (s Store) UpsertEmbeddingsTx(tx *sql.Tx, embeddingIDs []ULID, embeddings []EmbeddingEntity) error {
 	if len(embeddingIDs) == 0 {
@@ -1058,7 +1042,7 @@ func (s Store) UpsertEmbeddingsTx(tx *sql.Tx, embeddingIDs []ULID, embeddings []
 		values ($1, $2)
 	`)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to prepare transaction: %w", err)
 	}
 	defer func() {
 		if err := insertTx.Close(); err != nil {
@@ -1075,7 +1059,7 @@ func (s Store) UpsertEmbeddingsTx(tx *sql.Tx, embeddingIDs []ULID, embeddings []
 			embeddingIDs[i],
 			embeddings[i].Embedding,
 		); err != nil {
-			return err
+			return fmt.Errorf("failed to execute transaction: %w", err)
 		}
 	}
 
@@ -1093,7 +1077,7 @@ func (s Store) GetCandidates(limit uint16, recommendationSpan time.Duration) ([]
 		limit $2
 	`, cutoff, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -1109,13 +1093,9 @@ func (s Store) GetCandidates(limit uint16, recommendationSpan time.Duration) ([]
 	for rows.Next() {
 		var id ULID
 		if err := rows.Scan(&id); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan: %w", err)
 		}
 		ids = append(ids, id)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	return ids, nil
@@ -1125,6 +1105,11 @@ type Recruiter struct {
 	ID     ULID `json:"id"`
 	UserID ULID `json:"user_id"`
 }
+
+var (
+	ErrRecruiterAlreadyExists      = errors.New("recruiter already exists")
+	ErrFailedGenerateRecruiterULID = errors.New("failed to generate ULID for recruiter")
+)
 
 func (s Store) CreateRecruiter(userID ULID) (ULID, error) {
 	id, err := NewRecruiterULID()
@@ -1138,12 +1123,12 @@ func (s Store) CreateRecruiter(userID ULID) (ULID, error) {
 		on conflict (user_id) do nothing
 	`, id, userID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to exec SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return "", ErrRecruiterAlreadyExists
@@ -1161,38 +1146,29 @@ type Position struct {
 	IsActive    bool   `json:"is_active"`
 }
 
-func (s Store) CreatePosition(
-	recruiterID ULID,
-	title string,
-	description string,
-	company string,
-	isActive bool,
-) (ULID, error) {
+var (
+	ErrPositionAlreadyExists      = errors.New("position already exists")
+	ErrFailedGeneratePositionULID = errors.New("failed to generate ULID for position")
+)
+
+func (s Store) CreatePosition(recruiterID ULID, title string, description string, company string, isActive bool) (ULID, error) {
 	id, err := NewPositionULID()
 	if err != nil {
 		return "", ErrFailedGeneratePositionULID
 	}
 
-	result, err := s.DB.Exec(
-		`
+	result, err := s.DB.Exec(`
 		insert into positions (id, recruiter_id, title, description, company, is_active)
 		values ($1, $2, $3, $4, $5, $6)
 		on conflict (title, description, company) do nothing
-	`,
-		id,
-		recruiterID,
-		title,
-		description,
-		company,
-		isActive,
-	)
+	`, id, recruiterID, title, description, company, isActive)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to exec SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return "", ErrPositionAlreadyExists
@@ -1208,33 +1184,29 @@ type Candidate struct {
 	LastRecommendedAt time.Time `json:"last_recommended_at"`
 }
 
-func (s Store) CreateCandidate(
-	userID ULID,
-	about string,
-) (ULID, error) {
+var (
+	ErrCandidateAlreadyExists      = errors.New("candidate already exists")
+	ErrFailedGenerateCandidateULID = errors.New("failed to generate ULID for candidate")
+)
+
+func (s Store) CreateCandidate(userID ULID, about string) (ULID, error) {
 	id, err := NewCandidateULID()
 	if err != nil {
 		return "", ErrFailedGenerateCandidateULID
 	}
 
-	result, err := s.DB.Exec(
-		`
+	result, err := s.DB.Exec(`
 		insert into candidates (id, user_id, about, last_recommended_at)
 		values ($1, $2, $3, $4)
 		on conflict (user_id) do nothing
-	`,
-		id,
-		userID,
-		about,
-		CurrentTimestamp(-7*24*time.Hour),
-	)
+	`, id, userID, about, CurrentTimestamp(-7*24*time.Hour))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to exec SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return "", ErrCandidateAlreadyExists
@@ -1244,7 +1216,7 @@ func (s Store) CreateCandidate(
 }
 
 func (s Store) ClearAll(ctx context.Context) error {
-	_, err := s.DB.ExecContext(ctx, `
+	if _, err := s.DB.ExecContext(ctx, `
 		truncate table 
 			reactions,
 			recommendations,
@@ -1259,8 +1231,11 @@ func (s Store) ClearAll(ctx context.Context) error {
 			documents,
 			corpus_stats
 		restart identity cascade
-	`)
-	return err
+	`); err != nil {
+		return fmt.Errorf("failed to execute SQL: %w", err)
+	}
+
+	return nil
 }
 
 func (s Store) UserExistsByEmail(email string, provider Provider) (bool, error) {
@@ -1273,7 +1248,7 @@ func (s Store) UserExistsByEmail(email string, provider Provider) (bool, error) 
 		)
 	`, email, provider).Scan(&exists)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	return exists, nil
@@ -1315,7 +1290,7 @@ func (s Store) GetUserAndRoles(userID ULID) (User, map[Role]ULID, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, nil, ErrUserNotFound
 		}
-		return User{}, nil, err
+		return User{}, nil, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	if optionalProviderUserID.Valid {
@@ -1376,7 +1351,7 @@ func (s Store) GetUser(userID ULID) (User, error) {
 		return User{}, ErrUserNotFound
 	}
 	if err != nil {
-		return User{}, err
+		return User{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	if optionalProviderUserID.Valid {
@@ -1409,12 +1384,12 @@ func (s Store) UpdateUser(
 		where id = $4
 	`, newFullName, newUserName, CurrentTimestamp(), userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrUserNotFound
@@ -1460,7 +1435,7 @@ func (s Store) UpdateUserAndReturn(
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrUserNotFound
 		}
-		return User{}, err
+		return User{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	if optionalProviderUserID.Valid {
@@ -1485,12 +1460,12 @@ func (s Store) DeleteUser(userID ULID) error {
 		where id = $1
 	`, userID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrUserNotFound
@@ -1498,6 +1473,8 @@ func (s Store) DeleteUser(userID ULID) error {
 
 	return nil
 }
+
+var ErrCandidateNotFound = errors.New("candidate not found")
 
 func (s Store) GetCandidate(candidateID ULID) (Candidate, error) {
 	var userID ULID
@@ -1519,7 +1496,7 @@ func (s Store) GetCandidate(candidateID ULID) (Candidate, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Candidate{}, ErrCandidateNotFound
 		}
-		return Candidate{}, err
+		return Candidate{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	return Candidate{
@@ -1540,12 +1517,12 @@ func (s Store) UpdateCandidate(
 		where id = $2
 	`, newAbout, candidateID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrCandidateNotFound
@@ -1578,7 +1555,7 @@ func (s Store) UpdateCandidateAndReturn(
 		if err == sql.ErrNoRows {
 			return Candidate{}, ErrCandidateNotFound
 		}
-		return Candidate{}, err
+		return Candidate{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	return Candidate{
@@ -1595,12 +1572,12 @@ func (s Store) DeleteCandidate(candidateID ULID) error {
 		where id = $1
 	`, candidateID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrCandidateNotFound
@@ -1608,6 +1585,8 @@ func (s Store) DeleteCandidate(candidateID ULID) error {
 
 	return nil
 }
+
+var ErrRecruiterNotFound = errors.New("recruiter not found")
 
 func (s Store) GetRecruiter(recruiterID ULID) (Recruiter, error) {
 	var userID ULID
@@ -1620,7 +1599,7 @@ func (s Store) GetRecruiter(recruiterID ULID) (Recruiter, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Recruiter{}, ErrRecruiterNotFound
 		}
-		return Recruiter{}, err
+		return Recruiter{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	return Recruiter{
@@ -1635,12 +1614,12 @@ func (s Store) DeleteRecruiter(recruiterID ULID) error {
 		where id = $1
 	`, recruiterID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrRecruiterNotFound
@@ -1659,11 +1638,13 @@ func (s Store) RecruiterExists(recruiterID ULID) (bool, error) {
 		)
 	`, recruiterID).Scan(&exists)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	return exists, nil
 }
+
+var ErrPositionNotFound = errors.New("position not found")
 
 func (s Store) GetPosition(positionID ULID) (Position, error) {
 	var recruiterID ULID
@@ -1684,7 +1665,7 @@ func (s Store) GetPosition(positionID ULID) (Position, error) {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Position{}, ErrPositionNotFound
 		}
-		return Position{}, err
+		return Position{}, fmt.Errorf("failed to query: %w", err)
 	}
 	return Position{
 		positionID,
@@ -1705,7 +1686,7 @@ func (s Store) GetPositions(recruiterID ULID, page Page) (positions []Position, 
 		limit $3
 	`, recruiterID, page.Cursor, page.Limit+1)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -1727,12 +1708,9 @@ func (s Store) GetPositions(recruiterID ULID, page Page) (positions []Position, 
 			&position.Company,
 			&position.IsActive,
 		); err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("failed to scan: %w", err)
 		}
 		positions = append(positions, position)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
 	}
 
 	if len(positions) > page.Limit {
@@ -1766,12 +1744,12 @@ func (s Store) UpdatePosition(
 		isActive,
 	)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrPositionNotFound
@@ -1786,12 +1764,12 @@ func (s Store) DeletePosition(positionID ULID) error {
 		where id = $1
 	`, positionID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
 	if rows == 0 {
 		return ErrPositionNotFound
@@ -1816,6 +1794,8 @@ func EscapeSQLiteFTS(query string) string {
 	return `"` + strings.TrimSpace(query) + `"`
 }
 
+var ErrEmptyCandidateProfile = errors.New("candidate profile is empty")
+
 func (s Store) GetPositionsForCandidateViaFTS(candidateID ULID, topPositions uint16) ([]ULID, error) {
 	var candidateAbout string
 	err := s.DB.QueryRow(`
@@ -1827,7 +1807,7 @@ func (s Store) GetPositionsForCandidateViaFTS(candidateID ULID, topPositions uin
 		if errors.Is(err, sql.ErrNoRows) {
 			return []ULID{}, ErrCandidateNotFound
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	if strings.TrimSpace(candidateAbout) == "" {
@@ -1878,7 +1858,7 @@ func (s Store) GetPositionsForCandidateViaFTS(candidateID ULID, topPositions uin
 
 	rows, err := s.DB.Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -1894,13 +1874,9 @@ func (s Store) GetPositionsForCandidateViaFTS(candidateID ULID, topPositions uin
 	for rows.Next() {
 		var positionID ULID
 		if err := rows.Scan(&positionID); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan: %w", err)
 		}
 		results = append(results, positionID)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	return results, nil

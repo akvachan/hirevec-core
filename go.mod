@@ -1,6 +1,6 @@
 module github.com/akvachan/hirevec-core
 
-go 1.25.5
+go 1.26.0
 
 require (
 	aidanwoods.dev/go-paseto v1.6.0 // PASETO, for access and refresh tokens

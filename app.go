@@ -16,8 +16,6 @@ import (
 	"time"
 )
 
-var ErrUnknownLogLevel = errors.New("unknown log level")
-
 const (
 	DefaultLogLevel = slog.LevelWarn
 )
@@ -25,6 +23,8 @@ const (
 func InitLogger(level slog.Level) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
 }
+
+var ErrUnknownLogLevel = errors.New("unknown log level")
 
 func ParseLogLevel(value string) (slog.Level, error) {
 	switch value {
@@ -43,7 +43,7 @@ func ParseLogLevel(value string) (slog.Level, error) {
 
 func ParseInt(value string) (int, error) {
 	parsedValue, err := strconv.ParseInt(value, 10, 64)
-	return int(parsedValue), err
+	return int(parsedValue), fmt.Errorf("failed to parse int: %w", err)
 }
 
 type AppConfig struct {
@@ -89,7 +89,7 @@ func RunApp(c AppConfig) error {
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("vault init failed: %w", err)
+		return fmt.Errorf("failed to init vault: %w", err)
 	}
 
 	dbProvider := DatabaseProviderSQLite
@@ -102,7 +102,7 @@ func RunApp(c AppConfig) error {
 		PostgreSQLDatabaseURL: c.PostgreSQLDatabaseURL,
 	})
 	if err != nil {
-		return fmt.Errorf("store init failed: %w", err)
+		return fmt.Errorf("failed to init store: %w", err)
 	}
 
 	return RunAPI(
