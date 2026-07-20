@@ -4,54 +4,21 @@
 
 [Hirevec](https://hirevec.com) is a modern job recommendation engine that finds jobs and suitable candidates.
 
-## Quick Start
+## Quick start
 
-1. Start server:
+Start server with:
 
 ```sh
 go run cmd/hvserver/main.go
 ```
 
-2. Ingest some test data:
+Ingest some test data with:
 
 ```sh
 go run cmd/hvcli/main.go dev ingest
 ```
 
-3. Login as test candidate:
-
-```sh
-curl -X POST localhost:8888/sessions \
-  -H "Content-Type: application/vnd.api+json" \
-  -d '{"data":{"type":"sessions"},"meta":{"email":"alex.chan.demo@example.com","password":"test"}}'
-```
-
-4. List recommendations:
-
-```sh
-curl GET
-```
-
-5. React positively to the first recommendation:
-
-```sh
-curl POST
-```
-
-6. See all your matches:
-
-```sh
-curl GET
-```
-
-A match occurs when a candidate applies for a position
-and a recruiter that created this position, shortlists the candidate.
-
-For more commands, run:
-
-```sh
-go run cmd/hvcli/main.go help
-```
+You are set!
 
 ### Recommendation Engine
 
