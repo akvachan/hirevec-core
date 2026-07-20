@@ -660,7 +660,7 @@ type Page struct {
 	HasNext bool   `json:"has_next"`
 }
 
-type PositionRecommendation struct {
+type RecommendationForCandidate struct {
 	RecommendationID ULID   `json:"recommendation_id"`
 	PositionID       ULID   `json:"position_id"`
 	Title            string `json:"title"`
@@ -668,7 +668,7 @@ type PositionRecommendation struct {
 	Description      string `json:"description"`
 }
 
-func (s Store) GetPositionRecommendations(candidateID ULID, page Page, excludeReacted bool) (recommendations []PositionRecommendation, nextCursor ULID, err error) {
+func (s Store) GetRecommendationsForCandidate(candidateID ULID, page Page, excludeReacted bool) (recommendations []RecommendationForCandidate, nextCursor ULID, err error) {
 	rows, err := s.DB.Query(`
 		select r.id, p.id, p.title, p.company, p.description
 		from recommendations r
@@ -687,17 +687,13 @@ func (s Store) GetPositionRecommendations(candidateID ULID, page Page, excludeRe
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetPositionRecommendations",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
-	recommendations = make([]PositionRecommendation, 0, page.Limit)
+	recommendations = make([]RecommendationForCandidate, 0, page.Limit)
 	for rows.Next() {
-		var pr PositionRecommendation
+		var pr RecommendationForCandidate
 		if err := rows.Scan(
 			&pr.RecommendationID,
 			&pr.PositionID,
@@ -718,16 +714,18 @@ func (s Store) GetPositionRecommendations(candidateID ULID, page Page, excludeRe
 	return recommendations, nextCursor, nil
 }
 
-type CandidateRecommendation struct {
+type RecommendationForRecruiter struct {
 	RecommendationID ULID   `json:"recommendation_id"`
+	PositionID       ULID   `json:"position_id"`
+	PositionTitle    string `json:"position_title"`
 	CandidateID      ULID   `json:"candidate_id"`
 	FullName         string `json:"full_name"`
 	About            string `json:"about"`
 }
 
-func (s Store) GetCandidateRecommendations(recruiterID ULID, page Page, excludeReacted bool) (recommendations []CandidateRecommendation, nextCursor ULID, err error) {
+func (s Store) GetRecommendationsForRecruiter(recruiterID ULID, page Page, excludeReacted bool) (recommendations []RecommendationForRecruiter, nextCursor ULID, err error) {
 	rows, err := s.DB.Query(`
-		select r.id, c.id, u.full_name, c.about
+		select r.id, c.id, u.full_name, c.about, p.id, p.title
 		from recommendations r
 		join positions p on p.id = r.position_id
 		join candidates c on c.id = r.candidate_id
@@ -746,22 +744,20 @@ func (s Store) GetCandidateRecommendations(recruiterID ULID, page Page, excludeR
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetCandidateRecommendations",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
-	recommendations = make([]CandidateRecommendation, 0, page.Limit)
+	recommendations = make([]RecommendationForRecruiter, 0, page.Limit)
 	for rows.Next() {
-		var cr CandidateRecommendation
+		var cr RecommendationForRecruiter
 		if err := rows.Scan(
 			&cr.RecommendationID,
 			&cr.CandidateID,
 			&cr.FullName,
 			&cr.About,
+			&cr.PositionID,
+			&cr.PositionTitle,
 		); err != nil {
 			return nil, "", fmt.Errorf("failed to scan: %w", err)
 		}

@@ -1687,11 +1687,11 @@ func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 		positionCursor := q.Get("pos_cursor")
 		positionNextCursor, candidateNextCursor := "done", "done"
 		var data struct {
-			PositionRecommendations  []PositionRecommendation  `json:"position_recommendations"`
-			CandidateRecommendations []CandidateRecommendation `json:"candidate_recommendations"`
+			RecommendationsForCandidate []RecommendationForCandidate `json:"position_recommendations"`
+			RecommendationsForRecruiter []RecommendationForRecruiter `json:"candidate_recommendations"`
 		}
 		if isCandidate && positionCursor != "done" {
-			recommendations, cursor, err := a.Store.GetPositionRecommendations(
+			recommendations, cursor, err := a.Store.GetRecommendationsForCandidate(
 				candidateID,
 				Page{Cursor: positionCursor, Limit: page.Limit},
 				true,
@@ -1704,12 +1704,12 @@ func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 
 			positionNextCursor = cmp.Or(string(cursor), "done")
 			page.Count += len(recommendations)
-			data.PositionRecommendations = recommendations
+			data.RecommendationsForCandidate = recommendations
 		}
 
 		candidateCursor := q.Get("can_cursor")
 		if isRecruiter && candidateCursor != "done" {
-			recommendations, cursor, err := a.Store.GetCandidateRecommendations(
+			recommendations, cursor, err := a.Store.GetRecommendationsForRecruiter(
 				recruiterID,
 				Page{Cursor: candidateCursor, Limit: page.Limit},
 				true,
@@ -1722,7 +1722,7 @@ func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 
 			candidateNextCursor = cmp.Or(string(cursor), "done")
 			page.Count += len(recommendations)
-			data.CandidateRecommendations = recommendations
+			data.RecommendationsForRecruiter = recommendations
 		}
 
 		var links Links
