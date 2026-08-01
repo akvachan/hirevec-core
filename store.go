@@ -23,7 +23,7 @@ const Enc = "0123456789abcdefghjkmnpqrstvwxyz"
 
 type ULID string
 
-func NewULID(prefix string) (ULID, error) {
+func NewULID(prefix ULIDPrefix) (ULID, error) {
 	var id [16]byte
 	out := make([]byte, 26)
 
@@ -42,40 +42,39 @@ func NewULID(prefix string) (ULID, error) {
 		out[10+i] = Enc[id[i]%32]
 	}
 
-	return ULID(prefix + string(out)), nil
+	return ULID(string(prefix) + string(out)), nil
 }
 
-const ULIDPrefixCandidate = "can_"
+type ULIDPrefix string
+
+const (
+	ULIDPrefixCandidate      ULIDPrefix = "can_"
+	ULIDPrefixRecommendation ULIDPrefix = "rcm_"
+	ULIDPrefixRecruiter      ULIDPrefix = "rcr_"
+	ULIDPrefixUser           ULIDPrefix = "usr_"
+	ULIDPrefixJTI            ULIDPrefix = "jti_"
+	ULIDPrefixPosition       ULIDPrefix = "pos_"
+)
 
 func NewCandidateULID() (ULID, error) {
 	return NewULID(ULIDPrefixCandidate)
 }
 
-const ULIDPrefixRecruiter = "rcr_"
-
 func NewRecruiterULID() (ULID, error) {
 	return NewULID(ULIDPrefixRecruiter)
 }
-
-const ULIDPrefixUser = "usr_"
 
 func NewUserULID() (ULID, error) {
 	return NewULID(ULIDPrefixUser)
 }
 
-const ULIDPrefixRecommendation = "rcm_"
-
 func NewRecommendationULID() (ULID, error) {
 	return NewULID(ULIDPrefixRecommendation)
 }
 
-const ULIDPrefixJTI = "jti_"
-
 func NewJTIULID() (ULID, error) {
 	return NewULID(ULIDPrefixJTI)
 }
-
-const ULIDPrefixPosition = "pos_"
 
 func NewPositionULID() (ULID, error) {
 	return NewULID(ULIDPrefixPosition)
@@ -265,9 +264,9 @@ func (s Store) GetRecommendation(recommendationID ULID) (Recommendation, error) 
 	}
 
 	return Recommendation{
-		recommendationID,
-		positionID,
-		candidateID,
+		ID:          recommendationID,
+		PositionID:  positionID,
+		CandidateID: candidateID,
 	}, nil
 }
 
@@ -507,7 +506,10 @@ type Reaction struct {
 	ReactedAt        time.Time    `json:"reacted_at"`
 }
 
-var ErrReactionAlreadyExists = errors.New("reaction already exists")
+var (
+	ErrReactionAlreadyExists = errors.New("reaction already exists")
+	ErrUnauthorizedReactor   = errors.New("reactor with the reactorID is unauthorized")
+)
 
 func (s Store) CreateReaction(recommendationID ULID, reactorType ReactorType, reactorID ULID, reactionType ReactionType) error {
 	result, err := s.DB.Exec(`
@@ -516,24 +518,61 @@ func (s Store) CreateReaction(recommendationID ULID, reactorType ReactorType, re
 			reactor_type,
 			reactor_id,
 			reaction_type,
-			reacted_at,
+			created_at
 		)
-		values ($1, $2, $3, $4, $5)
+		select $1, $2, $3, $4, $5
+		from recommendations rec
+		join positions pos on rec.position_id = pos.id
+		where rec.id = $1
+		  and (
+		      ($2 = 'candidate' and rec.candidate_id = $3)
+		      or 
+		      ($2 = 'recruiter' and pos.recruiter_id = $3)
+		  )
 		on conflict (recommendation_id, reactor_type, reactor_id) do nothing
 	`, recommendationID, reactorType, reactorID, reactionType, CurrentTimestamp())
 	if err != nil {
-		return fmt.Errorf("failed to execute query: %w", err)
+		return fmt.Errorf("failed to execute insert query: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to determine number of affected rows: %w", err)
 	}
-	if rows == 0 {
-		return ErrReactionAlreadyExists
+	if rows == 1 {
+		return nil
 	}
 
-	return nil
+	var recExists, isAuthorized, reactionExists bool
+	if err = s.DB.QueryRow(`
+		select 
+			exists (select 1 from recommendations where id = $1),
+			exists (
+				select 1 from recommendations rec
+				join positions pos on rec.position_id = pos.id
+				where rec.id = $1
+				  and (
+				      ($2 = 'candidate' and rec.candidate_id = $3)
+				      or 
+				      ($2 = 'recruiter' and pos.recruiter_id = $3)
+				  )
+			),
+			exists (select 1 from reactions where recommendation_id = $1 and reactor_type = $2 and reactor_id = $3)
+	`, recommendationID, reactorType, reactorID).Scan(&recExists, &isAuthorized, &reactionExists); err != nil {
+		return fmt.Errorf("failed to run diagnostic query: %w", err)
+	}
+
+	if reactionExists {
+		return ErrReactionAlreadyExists
+	}
+	if !recExists {
+		return ErrRecommendationNotFound
+	}
+	if !isAuthorized {
+		return ErrUnauthorizedReactor
+	}
+
+	return fmt.Errorf("failed to create reaction for an unknown reason")
 }
 
 func (s Store) IsRevokedRefreshToken(jti ULID) (bool, error) {
@@ -661,14 +700,14 @@ type Page struct {
 }
 
 type RecommendationForCandidate struct {
-	RecommendationID ULID   `json:"recommendation_id"`
-	PositionID       ULID   `json:"position_id"`
-	Title            string `json:"title"`
-	Company          string `json:"company"`
-	Description      string `json:"description"`
+	RecommendationID    ULID   `json:"recommendation_id"`
+	PositionID          ULID   `json:"position_id"`
+	PositionTitle       string `json:"position_title"`
+	PositionCompany     string `json:"position_company"`
+	PositionDescription string `json:"position_description"`
 }
 
-func (s Store) GetRecommendationsForCandidate(candidateID ULID, page Page, excludeReacted bool) (recommendations []RecommendationForCandidate, nextCursor ULID, err error) {
+func (s Store) GetRecommendationsForCandidate(candidateID ULID, page Page, excludeReacted bool) ([]RecommendationForCandidate, Page, error) {
 	rows, err := s.DB.Query(`
 		select r.id, p.id, p.title, p.company, p.description
 		from recommendations r
@@ -683,7 +722,7 @@ func (s Store) GetRecommendationsForCandidate(candidateID ULID, page Page, exclu
 		limit $3
 	`, candidateID, page.Cursor, page.Limit+1, excludeReacted)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to query: %w", err)
+		return nil, Page{}, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -691,41 +730,48 @@ func (s Store) GetRecommendationsForCandidate(candidateID ULID, page Page, exclu
 		}
 	}()
 
-	recommendations = make([]RecommendationForCandidate, 0, page.Limit)
+	recommendations := make([]RecommendationForCandidate, 0, page.Limit)
 	for rows.Next() {
-		var pr RecommendationForCandidate
+		var recommendation RecommendationForCandidate
 		if err := rows.Scan(
-			&pr.RecommendationID,
-			&pr.PositionID,
-			&pr.Title,
-			&pr.Company,
-			&pr.Description,
+			&recommendation.RecommendationID,
+			&recommendation.PositionID,
+			&recommendation.PositionTitle,
+			&recommendation.PositionCompany,
+			&recommendation.PositionDescription,
 		); err != nil {
-			return nil, "", fmt.Errorf("failed to scan: %w", err)
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
 		}
-		recommendations = append(recommendations, pr)
+		recommendations = append(recommendations, recommendation)
 	}
 
-	if len(recommendations) > page.Limit {
+	hasNext := len(recommendations) > page.Limit
+	var nextCursor ULID
+	if hasNext {
+		nextCursor = recommendations[page.Limit-1].RecommendationID
 		recommendations = recommendations[:page.Limit]
-		nextCursor = ULID(recommendations[page.Limit-1].RecommendationID)
 	}
 
-	return recommendations, nextCursor, nil
+	return recommendations, Page{
+		Cursor:  string(nextCursor),
+		Limit:   page.Limit,
+		Count:   len(recommendations),
+		HasNext: hasNext,
+	}, nil
 }
 
 type RecommendationForRecruiter struct {
-	RecommendationID ULID   `json:"recommendation_id"`
-	PositionID       ULID   `json:"position_id"`
-	PositionTitle    string `json:"position_title"`
-	CandidateID      ULID   `json:"candidate_id"`
-	FullName         string `json:"full_name"`
-	About            string `json:"about"`
+	RecommendationID  ULID   `json:"recommendation_id"`
+	PositionID        ULID   `json:"position_id"`
+	PositionTitle     string `json:"position_title"`
+	CandidateID       ULID   `json:"candidate_id"`
+	CandidateFullName string `json:"candidate_full_name"`
+	CandidateAbout    string `json:"candidate_about"`
 }
 
-func (s Store) GetRecommendationsForRecruiter(recruiterID ULID, page Page, excludeReacted bool) (recommendations []RecommendationForRecruiter, nextCursor ULID, err error) {
+func (s Store) GetRecommendationsForRecruiter(recruiterID ULID, page Page, includeReacted bool) ([]RecommendationForRecruiter, Page, error) {
 	rows, err := s.DB.Query(`
-		select r.id, c.id, u.full_name, c.about, p.id, p.title
+		select r.id,  p.id, p.title, c.id, u.full_name, c.about,
 		from recommendations r
 		join positions p on p.id = r.position_id
 		join candidates c on c.id = r.candidate_id
@@ -735,12 +781,12 @@ func (s Store) GetRecommendationsForRecruiter(recruiterID ULID, page Page, exclu
 				and rx.reactor_id = $1
 		where p.recruiter_id = $1
 				and ($2 = '' or r.id > $2)
-				and (not $4 or rx.recommendation_id is null)
+				and ($4 or rx.recommendation_id is null)
 		order by r.id desc
 		limit $3
-	`, recruiterID, page.Cursor, page.Limit+1, excludeReacted)
+	`, recruiterID, page.Cursor, page.Limit+1, includeReacted)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to query: %w", err)
+		return nil, Page{}, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -748,31 +794,38 @@ func (s Store) GetRecommendationsForRecruiter(recruiterID ULID, page Page, exclu
 		}
 	}()
 
-	recommendations = make([]RecommendationForRecruiter, 0, page.Limit)
+	recommendations := make([]RecommendationForRecruiter, 0, page.Limit)
 	for rows.Next() {
-		var cr RecommendationForRecruiter
+		var recommendation RecommendationForRecruiter
 		if err := rows.Scan(
-			&cr.RecommendationID,
-			&cr.CandidateID,
-			&cr.FullName,
-			&cr.About,
-			&cr.PositionID,
-			&cr.PositionTitle,
+			&recommendation.RecommendationID,
+			&recommendation.PositionID,
+			&recommendation.PositionTitle,
+			&recommendation.CandidateID,
+			&recommendation.CandidateFullName,
+			&recommendation.CandidateAbout,
 		); err != nil {
-			return nil, "", fmt.Errorf("failed to scan: %w", err)
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
 		}
-		recommendations = append(recommendations, cr)
+		recommendations = append(recommendations, recommendation)
 	}
 
-	if len(recommendations) > page.Limit {
+	hasNext := len(recommendations) > page.Limit
+	var nextCursor ULID
+	if hasNext {
+		nextCursor = recommendations[page.Limit-1].RecommendationID
 		recommendations = recommendations[:page.Limit]
-		nextCursor = ULID(recommendations[page.Limit-1].RecommendationID)
 	}
 
-	return recommendations, nextCursor, nil
+	return recommendations, Page{
+		Cursor:  string(nextCursor),
+		Limit:   page.Limit,
+		Count:   len(recommendations),
+		HasNext: hasNext,
+	}, nil
 }
 
-func (s Store) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions []Reaction, nextCursor ULID, err error) {
+func (s Store) GetReactions(reactorID ULID, reactorType ReactorType, page Page) ([]Reaction, Page, error) {
 	rows, err := s.DB.Query(`
 		select recommendation_id, reactor_type, reactor_id, reaction_type, created_at
 		from reactions
@@ -781,17 +834,13 @@ func (s Store) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions
 		  and ($2 = '' or recommendation_id > $2)
 		order by recommendation_id desc
 		limit $3
-	`, candidateID, page.Cursor, page.Limit+1)
+	`, reactorID, page.Cursor, page.Limit+1)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to scan: %w", err)
+		return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetReactionsByCandidateID",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
@@ -805,20 +854,21 @@ func (s Store) GetReactionsByCandidateID(candidateID ULID, page Page) (reactions
 			&rx.ReactionType,
 			&rx.ReactedAt,
 		); err != nil {
-			return nil, "", fmt.Errorf("failed to scan: %w", err)
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
 		}
 		results = append(results, rx)
 	}
 
+	var nextPage Page
 	if len(results) > page.Limit {
 		results = results[:page.Limit]
-		nextCursor = ULID(results[page.Limit-1].RecommendationID)
+		nextPage.Cursor = string(results[page.Limit-1].RecommendationID)
 	}
 
-	return results, nextCursor, nil
+	return results, nextPage, nil
 }
 
-type Match struct {
+type MatchForCandidate struct {
 	PositionID  ULID      `json:"position_id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
@@ -826,7 +876,7 @@ type Match struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func (s Store) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []Match, nextCursor ULID, err error) {
+func (s Store) GetMatchesForCandidate(candidateID ULID, page Page) ([]MatchForCandidate, Page, error) {
 	rows, err := s.DB.Query(`
 		select m.position_id, p.title, p.description, coalesce(p.company, ''), m.created_at
 		from matches m
@@ -837,21 +887,17 @@ func (s Store) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []M
 		limit $3
 	`, candidateID, page.Cursor, page.Limit+1)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to query: %w", err)
+		return nil, Page{}, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetMatchesByCandidateID",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
-	results := make([]Match, 0, page.Limit)
+	results := make([]MatchForCandidate, 0, page.Limit)
 	for rows.Next() {
-		var m Match
+		var m MatchForCandidate
 		if err := rows.Scan(
 			&m.PositionID,
 			&m.Title,
@@ -859,17 +905,69 @@ func (s Store) GetMatchesByCandidateID(candidateID ULID, page Page) (matches []M
 			&m.Company,
 			&m.CreatedAt,
 		); err != nil {
-			return nil, "", fmt.Errorf("failed to scan: %w", err)
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
 		}
 		results = append(results, m)
 	}
 
+	var nextPage Page
 	if len(results) > page.Limit {
 		results = results[:page.Limit]
-		nextCursor = ULID(results[page.Limit-1].PositionID)
+		nextPage.Cursor = string(results[page.Limit-1].PositionID)
 	}
 
-	return results, nextCursor, nil
+	return results, nextPage, nil
+}
+
+type MatchForRecruiter struct {
+	PositionID  ULID      `json:"position_id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Company     string    `json:"company"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (s Store) GetMatchesForRecruiter(recruiterID ULID, page Page) ([]MatchForRecruiter, Page, error) {
+	rows, err := s.DB.Query(`
+		select m.position_id, p.title, p.description, coalesce(p.company, ''), m.created_at
+		from matches m
+		join positions p on p.id = m.position_id
+		where m.candidate_id = $1
+		  and ($2 = '' or m.position_id > $2)
+		order by m.position_id desc
+		limit $3
+	`, recruiterID, page.Cursor, page.Limit+1)
+	if err != nil {
+		return nil, Page{}, fmt.Errorf("failed to query: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("failed to close rows", "err", err)
+		}
+	}()
+
+	results := make([]MatchForRecruiter, 0, page.Limit)
+	for rows.Next() {
+		var m MatchForRecruiter
+		if err := rows.Scan(
+			&m.PositionID,
+			&m.Title,
+			&m.Description,
+			&m.Company,
+			&m.CreatedAt,
+		); err != nil {
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
+		}
+		results = append(results, m)
+	}
+
+	var nextPage Page
+	if len(results) > page.Limit {
+		results = results[:page.Limit]
+		nextPage.Cursor = string(results[page.Limit-1].PositionID)
+	}
+
+	return results, nextPage, nil
 }
 
 type EmbeddingStatus string
@@ -893,11 +991,7 @@ func (s Store) FetchPendingEmbeddingsMetadata(limit uint16) ([]ULID, []string, e
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "FetchPendingEmbeddingsMetadata",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
@@ -1003,11 +1097,7 @@ func (s Store) GetPositionsForCandidateViaEmbeddings(candidateID ULID, topPositi
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetPositionsForCandidateWithEmbedding",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
@@ -1042,11 +1132,7 @@ func (s Store) UpsertEmbeddingsTx(tx *sql.Tx, embeddingIDs []ULID, embeddings []
 	}
 	defer func() {
 		if err := insertTx.Close(); err != nil {
-			slog.Error(
-				"failed to close insert transaction",
-				"method", "UpsertEmbeddingsTx",
-				"err", err,
-			)
+			slog.Error("failed to close insert transaction", "err", err)
 		}
 	}()
 
@@ -1077,11 +1163,7 @@ func (s Store) GetCandidates(limit uint16, recommendationSpan time.Duration) ([]
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetCandidates",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
@@ -1324,14 +1406,7 @@ func (s Store) GetUser(userID ULID) (User, error) {
 	var providerUserID, fullName, userName, passwordHash, email string
 	var provider Provider
 	err := s.DB.QueryRow(`
-		select
-			provider,
-			provider_user_id,
-			email,
-			full_name,
-			user_name,
-			password_hash,
-			updated_at
+		select provider, provider_user_id, email, full_name, user_name, password_hash, updated_at
 		from users
 		where id = $1
 	`, userID).Scan(
@@ -1673,7 +1748,7 @@ func (s Store) GetPosition(positionID ULID) (Position, error) {
 	}, nil
 }
 
-func (s Store) GetPositions(recruiterID ULID, page Page) (positions []Position, nextCursor ULID, err error) {
+func (s Store) GetPositions(recruiterID ULID, page Page) ([]Position, Page, error) {
 	rows, err := s.DB.Query(`
 		select id, title, description, company, is_active 
 		from positions 
@@ -1682,19 +1757,15 @@ func (s Store) GetPositions(recruiterID ULID, page Page) (positions []Position, 
 		limit $3
 	`, recruiterID, page.Cursor, page.Limit+1)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to query: %w", err)
+		return nil, Page{}, fmt.Errorf("failed to query: %w", err)
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetPositions",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 
-	positions = make([]Position, 0, page.Limit)
+	positions := make([]Position, 0, page.Limit)
 	for rows.Next() {
 		var position Position
 		if err := rows.Scan(
@@ -1704,16 +1775,17 @@ func (s Store) GetPositions(recruiterID ULID, page Page) (positions []Position, 
 			&position.Company,
 			&position.IsActive,
 		); err != nil {
-			return nil, "", fmt.Errorf("failed to scan: %w", err)
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
 		}
 		positions = append(positions, position)
 	}
 
+	var nextPage Page
 	if len(positions) > page.Limit {
 		positions = positions[:page.Limit]
-		nextCursor = ULID(positions[page.Limit-1].ID)
+		page.Cursor = string(positions[page.Limit-1].ID)
 	}
-	return positions, nextCursor, nil
+	return positions, nextPage, nil
 }
 
 func (s Store) UpdatePosition(
@@ -1858,11 +1930,7 @@ func (s Store) GetPositionsForCandidateViaFTS(candidateID ULID, topPositions uin
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			slog.Error(
-				"failed to close rows",
-				"method", "GetPositionsForCandidateViaFTS",
-				"err", err,
-			)
+			slog.Error("failed to close rows", "err", err)
 		}
 	}()
 

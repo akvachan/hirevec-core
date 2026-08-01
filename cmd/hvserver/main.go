@@ -5,6 +5,7 @@ package main
 
 import (
 	"log/slog"
+	"net/url"
 	"os"
 	"time"
 
@@ -19,15 +20,15 @@ func main() {
 	}
 
 	if err := hirevec.RunApp(hirevec.AppConfig{
-		ServerBaseURL:               hirevec.Getenv("HIREVEC_BASE_URL", "localhost:8888"),
+		ServerBaseURL:               hirevec.GetenvAndParse("HIREVEC_BASE_URL", url.Parse, &url.URL{Host: "localhost:8888"}),
 		RequestReadTimeout:          hirevec.GetenvAndParse("HIREVEC_REQUEST_READ_TIMEOUT", time.ParseDuration, hirevec.DefaultRequestReadTimeout),
 		RequestWriteTimeout:         hirevec.GetenvAndParse("HIREVEC_REQUEST_WRITE_TIMEOUT", time.ParseDuration, hirevec.DefaultRequestWriteTimeout),
 		GracePeriod:                 hirevec.GetenvAndParse("HIREVEC_GRACE_PERIOD", time.ParseDuration, hirevec.DefaultGracePeriod),
 		LogLevel:                    hirevec.GetenvAndParse("HIREVEC_LOG_LEVEL", hirevec.ParseLogLevel, hirevec.DefaultLogLevel),
 		EmbeddingsJobFrequency:      hirevec.GetenvAndParse("HIREVEC_EMBEDDINGS_JOB_FREQUENCY", time.ParseDuration, hirevec.DefaultEmbeddingsJobFrequency),
 		RecommendationsJobFrequency: hirevec.GetenvAndParse("HIREVEC_RECOMMENDATIONS_JOB_FREQUENCY", time.ParseDuration, hirevec.DefaultRecommendationsJobFrequency),
-		PostgreSQLDatabaseURL:       os.Getenv("POSTGRESQL_DATABASE_URL"),
-		TEIBaseURL:                  os.Getenv("TEI_BASE_URL"),
+		PostgreSQLDatabaseURL:       hirevec.GetenvAndParse("POSTGRESQL_DATABASE_URL", url.Parse, &url.URL{Host: ""}),
+		TEIBaseURL:                  hirevec.GetenvAndParse("TEI_BASE_URL", url.Parse, &url.URL{Host: ""}),
 		TEIAPIKey:                   os.Getenv("TEI_API_KEY"),
 		SymmetricKey:                os.Getenv("HIREVEC_SYMMETRIC_KEY"),
 		AsymmetricKey:               os.Getenv("HIREVEC_ASYMMETRIC_KEY"),

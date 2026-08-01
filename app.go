@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -47,7 +48,7 @@ func ParseInt(value string) (int, error) {
 }
 
 type AppConfig struct {
-	ServerBaseURL               string
+	ServerBaseURL               *url.URL
 	LogLevel                    slog.Level
 	RequestReadTimeout          time.Duration
 	RequestWriteTimeout         time.Duration
@@ -60,9 +61,9 @@ type AppConfig struct {
 	AppleClientSecret           string
 	GoogleClientID              string
 	GoogleClientSecret          string
-	PostgreSQLDatabaseURL       string
+	PostgreSQLDatabaseURL       *url.URL
 	TEIAPIKey                   string
-	TEIBaseURL                  string
+	TEIBaseURL                  *url.URL
 }
 
 func RunApp(c AppConfig) error {
@@ -93,18 +94,19 @@ func RunApp(c AppConfig) error {
 	}
 
 	dbProvider := DatabaseProviderSQLite
-	if c.PostgreSQLDatabaseURL != "" {
+	if c.PostgreSQLDatabaseURL.String() != "" {
 		dbProvider = DatabaseProviderPostgreSQL
 	}
 
 	store, err := NewStore(StoreConfig{
 		DatabaseProvider:      dbProvider,
-		PostgreSQLDatabaseURL: c.PostgreSQLDatabaseURL,
+		PostgreSQLDatabaseURL: c.PostgreSQLDatabaseURL.String(),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to init store: %w", err)
 	}
 
+	teiBaseURL := c.TEIBaseURL.String()
 	return RunAPI(
 		ctx,
 		APIConfig{
@@ -116,8 +118,8 @@ func RunApp(c AppConfig) error {
 			UseAppleSSO:                 useAppleSSO,
 			TEIBaseURL:                  c.TEIBaseURL,
 			TEIAPIKey:                   c.TEIAPIKey,
-			UseEmbeddings:               (dbProvider != DatabaseProviderSQLite) && (c.TEIBaseURL != "" && c.TEIAPIKey != ""),
-			UseReranker:                 (c.TEIBaseURL != "" && c.TEIAPIKey != ""),
+			UseEmbeddings:               (dbProvider != DatabaseProviderSQLite) && (teiBaseURL != "" && c.TEIAPIKey != ""),
+			UseReranker:                 (teiBaseURL != "" && c.TEIAPIKey != ""),
 			EmbeddingsJobFrequency:      c.EmbeddingsJobFrequency,
 			RecommendationsJobFrequency: c.RecommendationsJobFrequency,
 		},

@@ -6,7 +6,6 @@ package hirevec
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -30,13 +29,13 @@ import (
 )
 
 type APIConfig struct {
-	ServerBaseURL               string
+	ServerBaseURL               *url.URL
 	RequestReadTimeout          time.Duration
 	RequestWriteTimeout         time.Duration
 	GracePeriod                 time.Duration
 	UseGoogleSSO                bool
 	UseAppleSSO                 bool
-	TEIBaseURL                  string
+	TEIBaseURL                  *url.URL
 	TEIAPIKey                   string
 	EmbeddingsModel             string
 	RerankerModel               string
@@ -262,10 +261,11 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 }
 
 type API struct {
-	Store  Store
-	Vault  Vault
-	Server http.Server
-	Mux    *http.ServeMux
+	BaseURL *url.URL
+	Store   Store
+	Vault   Vault
+	Server  http.Server
+	Mux     *http.ServeMux
 }
 
 const (
@@ -278,13 +278,14 @@ func NewAPI(ctx context.Context, c APIConfig, s Store, v Vault) *API {
 	slog.Debug("initializing server")
 
 	api := API{
-		Store: s,
-		Vault: v,
-		Mux:   http.NewServeMux(),
+		BaseURL: c.ServerBaseURL,
+		Store:   s,
+		Vault:   v,
+		Mux:     http.NewServeMux(),
 	}
 
 	api.Server = http.Server{
-		Addr:         c.ServerBaseURL,
+		Addr:         c.ServerBaseURL.Host,
 		ReadTimeout:  c.RequestReadTimeout,
 		WriteTimeout: c.RequestWriteTimeout,
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
@@ -349,7 +350,7 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 	aiConfig := AIConfig{
 		UseEmbeddings:   c.UseEmbeddings,
 		UseReranker:     c.UseReranker,
-		TEIBaseURL:      c.TEIBaseURL,
+		TEIBaseURL:      c.TEIBaseURL.Host,
 		TEIAPIKey:       c.TEIAPIKey,
 		EmbeddingsModel: c.EmbeddingsModel,
 		RerankerModel:   c.RerankerModel,
@@ -394,64 +395,22 @@ func (rw *ResponseWriter) WriteHeader(code int) {
 	rw.status = code
 }
 
-// Error represents a single error object returned when a request fails.
-type Error struct {
-	// Code is an application-specific error identifier used for programmatic handling.
-	Code string `json:"code,omitempty"`
+type ProblemType string
 
-	// Message provides a detailed explanation of the error.
-	Message string `json:"detail,omitempty"`
-
-	// Source identifies the specific field or parameter that caused the error.
-	Source ErrorSource `json:"source,omitempty"`
-}
-
-// ErrorSource identifies where an error originated in the request.
-type ErrorSource struct {
-	// Pointer is a JSON Pointer to the offending value in the request body.
-	Body string `json:"body,omitempty"`
-
-	// Parameter is the query string parameter that caused the error.
+type ProblemSource struct {
+	Pointer   string `json:"pointer,omitempty"`
 	Parameter string `json:"parameter,omitempty"`
-
-	// Header is a string indicating the name of a single request header which caused the error.
-	Header string `json:"header,omitempty"`
-
-	// Cookie is a string indicating the name of a cookie which caused the error.
-	Cookie string `json:"cookie,omitempty"`
+	Header    string `json:"header,omitempty"`
+	Cookie    string `json:"cookie,omitempty"`
 }
 
-// Links contains URLs to other related pages.
-type Links struct {
-	// Next is a link to the next page in a paginated response.
-	Next string `json:"next,omitempty"`
-
-	// Previous is a link to the previous page in a paginated response.
-	Previous string `json:"previous,omitempty"`
+type Problem struct {
+	Type   ProblemType   `json:"type,omitempty"`
+	Detail string        `json:"detail,omitempty"`
+	Source ProblemSource `json:"source,omitempty"`
 }
 
-// Meta contains that contains data that does not belong to Data, Errors, or Links.
-type Meta struct {
-	// Page contains metadata about current page
-	Page Page `json:"page,omitempty"`
-}
-
-// Envelope is a wrapper that contains zero or more fields.
-type Envelope struct {
-	// Data contains any main data to be consumed.
-	Data any `json:"data,omitempty"`
-
-	// Errors contains one or more errors when the request fails.
-	Errors []Error `json:"errors,omitempty"`
-
-	// Links contains top-level navigation or pagination URLs.
-	Links Links `json:"links,omitempty"`
-
-	// Meta contains additional information that is not links or errors or data.
-	Meta Meta `json:"meta,omitempty"`
-}
-
-func JSON(w http.ResponseWriter, responseBody Envelope, status int) {
+func JSON(w http.ResponseWriter, responseBody any, status int) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(responseBody); err != nil {
 		slog.Error("failed to encode response", "err", err)
@@ -507,6 +466,7 @@ const (
 	MaxPageSize     = 128
 )
 
+// TODO: Validate cursor format as well
 func GetPageFromQuery(r *http.Request) Page {
 	p := Page{
 		Cursor: r.URL.Query().Get("cursor"),
@@ -521,9 +481,9 @@ func GetPageFromQuery(r *http.Request) Page {
 }
 
 const (
-	ErrorCodeBearerTokenRequired = "bearer_token_required"
-	ErrorCodeInvalidAccessToken  = "invalid_access_token"
-	ErrorCodeUnauthorized        = "unauthorized"
+	ProblemTypeBearerTokenRequired ProblemType = "urn:hirevec:bearer-token-required"
+	ProblemTypeInvalidAccessToken  ProblemType = "urn:hirevec:invalid-access-token"
+	ProblemTypeUnauthorized        ProblemType = "urn:hirevec:unauthorized"
 )
 
 func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
@@ -533,21 +493,21 @@ func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
 
 			bearer, found := strings.CutPrefix(authHeader, "Bearer ")
 			if !found || bearer == "" {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeBearerTokenRequired,
-					Message: "Bearer token is required",
-					Source:  ErrorSource{Header: "Accept"},
-				}}}, http.StatusUnauthorized)
+				JSON(w, Problem{
+					Type:   ProblemTypeBearerTokenRequired,
+					Detail: "Bearer token is required",
+					Source: ProblemSource{Header: "Accept"},
+				}, http.StatusUnauthorized)
 				return
 			}
 
 			claims, err := a.Vault.ParseAccessToken(bearer)
 			if err != nil {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidAccessToken,
-					Message: "Invalid access token",
-					Source:  ErrorSource{Header: "Accept"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidAccessToken,
+					Detail: "Invalid access token",
+					Source: ProblemSource{Header: "Accept"},
+				}, http.StatusBadRequest)
 				return
 			}
 
@@ -560,10 +520,10 @@ func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
 					}
 				}
 				if !authorized {
-					JSON(w, Envelope{Errors: []Error{{
-						Code:   ErrorCodeUnauthorized,
-						Source: ErrorSource{Header: "Accept"},
-					}}}, http.StatusUnauthorized)
+					JSON(w, Problem{
+						Type:   ProblemTypeUnauthorized,
+						Source: ProblemSource{Header: "Accept"},
+					}, http.StatusUnauthorized)
 					return
 				}
 			}
@@ -573,7 +533,7 @@ func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
 	}
 }
 
-const ErrorCodeUnsupportedMediaType = "unsupported_media_type"
+const ProblemTypeUnsupportedMediaType ProblemType = "urn:hirevec:unsupported-media-type"
 
 func (a *API) MiddlewareLogging(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -667,16 +627,17 @@ const (
 	RouteRefresh          Route = "/refresh"
 
 	// Resources and collections
-	RouteCandidate       Route = "/candidate"
+	RouteCandidate       Route = "/candidates/{id}"
 	RouteCandidates      Route = "/candidates"
 	RouteMatches         Route = "/matches"
 	RoutePosition        Route = "/positions/{id}"
 	RoutePositions       Route = "/positions"
 	RouteReactions       Route = "/reactions"
+	RouteRecommendation  Route = "/recommendations/{id}"
 	RouteRecommendations Route = "/recommendations"
-	RouteRecruiter       Route = "/recruiter"
+	RouteRecruiter       Route = "/recruiters/{id}"
 	RouteRecruiters      Route = "/recruiters"
-	RouteUser            Route = "/user"
+	RouteUser            Route = "/users/{id}"
 	RouteUsers           Route = "/users"
 )
 
@@ -800,7 +761,7 @@ func (a *API) RegisterRoutes() {
 		Method:  MethodGet,
 		Route:   RouteCandidate,
 		Handler: a.HandlerGetCandidate(),
-		Roles:   []Role{RoleCandidate},
+		Roles:   []Role{RoleRecruiter, RoleCandidate},
 	})
 
 	// TODO: Document the route in openapi.json
@@ -835,7 +796,7 @@ func (a *API) RegisterRoutes() {
 		Method:  MethodGet,
 		Route:   RouteRecruiter,
 		Handler: a.HandlerGetRecruiter(),
-		Roles:   []Role{RoleRecruiter},
+		Roles:   []Role{RoleRecruiter, RoleCandidate},
 	})
 
 	// TODO: Document the route in openapi.json
@@ -871,7 +832,7 @@ func (a *API) RegisterRoutes() {
 		Method:  MethodGet,
 		Route:   RoutePosition,
 		Handler: a.HandlerGetPosition(),
-		Roles:   []Role{RoleRecruiter},
+		Roles:   []Role{RoleRecruiter, RoleCandidate},
 	})
 
 	// TODO: Document the route in openapi.json
@@ -905,6 +866,15 @@ func (a *API) RegisterRoutes() {
 	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PrivateRoute(RouteConfig{
 		Method:  MethodGet,
+		Route:   RouteRecommendation,
+		Handler: a.HandlerGetRecommendation(),
+		Roles:   []Role{RoleCandidate, RoleRecruiter},
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PrivateRoute(RouteConfig{
+		Method:  MethodGet,
 		Route:   RouteReactions,
 		Handler: a.HandlerGetReactions(),
 		Roles:   []Role{RoleCandidate, RoleRecruiter},
@@ -929,29 +899,11 @@ func (a *API) RegisterRoutes() {
 	})
 }
 
-func (a *API) CreateAccessToken(w http.ResponseWriter, userID ULID, provider Provider, roles map[Role]ULID) {
-	accessToken, err := a.Vault.CreateAccessToken(userID, provider, roles)
-	if err != nil {
-		slog.Error("failed to create access token", "err", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Cache-Control", "no-store")
-	JSON(w, Envelope{Data: map[string]any{
-		"access_token": accessToken.AccessToken,
-		"token_type":   accessToken.TokenType,
-		"expires_in":   accessToken.ExpiresIn,
-		"scope":        accessToken.Scope,
-		"user_id":      accessToken.UserID,
-	}}, http.StatusOK)
-}
-
 const (
-	ErrorCodeInvalidRequestBody   = "invalid_request_body"
-	ErrorCodeInvalidGrantType     = "invalid_grant_type"
-	ErrorCodeRefreshTokenRequired = "refresh_token_required"
-	ErrorCodeInvalidRefreshToken  = "invalid_refresh_token"
+	ProblemTypeInvalidRequestBody   ProblemType = "urn:hirevec:invalid-request-body"
+	ProblemTypeInvalidGrantType     ProblemType = "urn:hirevec:invalid-grant-type"
+	ProblemTypeRefreshTokenRequired ProblemType = "urn:hirevec:refresh-token-required"
+	ProblemTypeInvalidRefreshToken  ProblemType = "urn:hirevec:invalid-refresh-token"
 )
 
 type RequestBodyRefresh struct {
@@ -965,28 +917,28 @@ func (a *API) HandlerRefresh() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := DecodeRequestBody[RequestBodyRefresh](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
 		if body.GrantType != "refresh_token" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidGrantType,
-				Message: "grant_type must be refresh_token",
-				Source:  ErrorSource{Body: "/data/grant_type"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidGrantType,
+				Detail: "grant_type must be refresh_token",
+				Source: ProblemSource{Pointer: "/grant_type"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		if body.RefreshToken == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeRefreshTokenRequired,
-				Message: "refresh_token is required",
-				Source:  ErrorSource{Body: "/data/refresh_token"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeRefreshTokenRequired,
+				Detail: "refresh_token is required",
+				Source: ProblemSource{Pointer: "/refresh_token"},
+			}, http.StatusBadRequest)
 			return
 		}
 
@@ -997,11 +949,11 @@ func (a *API) HandlerRefresh() http.HandlerFunc {
 				"ip", r.RemoteAddr,
 				"err", err,
 			)
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRefreshToken,
-				Message: "Invalid refresh token",
-				Source:  ErrorSource{Body: "/data/refresh_token"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRefreshToken,
+				Detail: "Invalid refresh token",
+				Source: ProblemSource{Pointer: "/refresh_token"},
+			}, http.StatusBadRequest)
 			return
 		}
 
@@ -1014,11 +966,11 @@ func (a *API) HandlerRefresh() http.HandlerFunc {
 					"user_id", claims.UserID,
 					"ip", r.RemoteAddr,
 				)
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidRefreshToken,
-					Message: "Invalid refresh token",
-					Source:  ErrorSource{Body: "/data/refresh_token"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidRefreshToken,
+					Detail: "Invalid refresh token",
+					Source: ProblemSource{Pointer: "/refresh_token"},
+				}, http.StatusBadRequest)
 				return
 			}
 			slog.Error(
@@ -1038,11 +990,11 @@ func (a *API) HandlerRefresh() http.HandlerFunc {
 				"user_id", claims.UserID,
 				"ip", r.RemoteAddr,
 			)
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRefreshToken,
-				Message: "Invalid refresh token",
-				Source:  ErrorSource{Body: "/data/meta/refresh_token"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRefreshToken,
+				Detail: "Invalid refresh token",
+				Source: ProblemSource{Pointer: "/meta/refresh_token"},
+			}, http.StatusBadRequest)
 			return
 		}
 
@@ -1061,7 +1013,14 @@ func (a *API) HandlerRefresh() http.HandlerFunc {
 			return
 		}
 
-		a.CreateAccessToken(w, claims.UserID, claims.Provider, roles)
+		accessToken, err := a.Vault.CreateAccessToken(claims.UserID, claims.Provider, roles)
+		if err != nil {
+			slog.Error("failed to create access token", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		JSON(w, accessToken, http.StatusOK)
 	}
 }
 
@@ -1071,8 +1030,8 @@ type RequestBodyLoginViaEmail struct {
 }
 
 const (
-	ErrorCodePasswordRequired   = "password_required"
-	ErrorCodeInvalidCredentials = "invalid_credentials"
+	ProblemTypePasswordRequired   ProblemType = "urn:hirevec:password-required"
+	ProblemTypeInvalidCredentials ProblemType = "urn:hirevec:invalid-credentials"
 )
 
 // TODO: Write integration tests for this handler
@@ -1081,42 +1040,38 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := DecodeRequestBody[RequestBodyLoginViaEmail](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
-		missingEmail := body.Email == ""
-		missingPassword := body.Password == ""
-		if missingPassword || missingEmail {
-			errors := make([]Error, 0, 2)
-			if missingEmail {
-				errors = append(errors, Error{
-					Code:    ErrorCodeEmailRequired,
-					Message: "Email is required",
-					Source:  ErrorSource{Body: "/data/email"},
-				})
-			}
-			if missingPassword {
-				errors = append(errors, Error{
-					Code:    ErrorCodePasswordRequired,
-					Message: "Password is required",
-					Source:  ErrorSource{Body: "/data/password"},
-				})
-			}
-			JSON(w, Envelope{Errors: errors}, http.StatusBadRequest)
+		if body.Email == "" {
+			JSON(w, Problem{
+				Type:   ProblemTypeEmailRequired,
+				Detail: "Email is required",
+				Source: ProblemSource{Pointer: "/email"},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		if body.Password == "" {
+			JSON(w, Problem{
+				Type:   ProblemTypePasswordRequired,
+				Detail: "Password is required",
+				Source: ProblemSource{Pointer: "/password"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		user, roles, err := a.Store.GetUserAndRolesByEmail(body.Email, ProviderEmail)
 		switch {
 		case errors.Is(err, ErrUserNotFound):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidCredentials,
-				Message: "Invalid credentials",
-			}}}, http.StatusUnauthorized)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidCredentials,
+				Detail: "Invalid credentials",
+			}, http.StatusUnauthorized)
 			return
 
 		case errors.Is(err, ErrUserNoRole):
@@ -1127,7 +1082,7 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 				return
 			}
 			w.Header().Set("Cache-Control", "no-store")
-			JSON(w, Envelope{Data: accessToken}, http.StatusOK)
+			JSON(w, accessToken, http.StatusOK)
 
 		case err != nil:
 			slog.Error("failed to get user by email", "err", err)
@@ -1136,10 +1091,10 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 		}
 
 		if !IsValidPassword(user.PasswordHash, body.Password) {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidCredentials,
-				Message: "Invalid credentials",
-			}}}, http.StatusUnauthorized)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidCredentials,
+				Detail: "Invalid credentials",
+			}, http.StatusUnauthorized)
 			return
 		}
 
@@ -1157,11 +1112,11 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 			return
 		}
 
-		JSON(w, Envelope{Data: tokenPair}, http.StatusOK)
+		JSON(w, tokenPair, http.StatusOK)
 	}
 }
 
-const ErrorCodeInvalidProvider = "invalid_provider"
+const ProblemTypeInvalidProvider ProblemType = "urn:hirevec:invalid-provider"
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
@@ -1169,11 +1124,11 @@ func (a *API) HandlerLoginViaProvider() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provider := Provider(r.PathValue("provider"))
 		if provider != ProviderGoogle && provider != ProviderApple {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidProvider,
-				Message: "Provider must be google or apple",
-				Source:  ErrorSource{Parameter: "provider"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidProvider,
+				Detail: "Provider must be google or apple",
+				Source: ProblemSource{Parameter: "provider"},
+			}, http.StatusBadRequest)
 			return
 		}
 
@@ -1226,16 +1181,16 @@ func (a *API) HandlerLoginViaProvider() http.HandlerFunc {
 var ErrEmailNotVerified = errors.New("email not verified")
 
 const (
-	ErrorCodeMissingState          = "missing_state"
-	ErrorCodeInvalidState          = "invalid_state"
-	ErrorCodeInvalidCSRF           = "invalid_csrf"
-	ErrorCodeMissingVerifier       = "missing_verifier"
-	ErrorCodeAuthorizationProvider = "authorization_provider_error"
-	ErrorCodeMissingCode           = "missing_code"
-	ErrorCodeIDTokenRequired       = "id_token_required"
-	ErrorCodeInvalidIDToken        = "invalid_id_token"
-	ErrorCodeFailedParseClaims     = "failed_parse_claims"
-	ErrorCodeUnverifiedEmail       = "unverified_email"
+	ProblemTypeMissingState          ProblemType = "urn:hirevec:missing-state"
+	ProblemTypeInvalidState          ProblemType = "urn:hirevec:invalid-state"
+	ProblemTypeInvalidCSRF           ProblemType = "urn:hirevec:invalid-csrf"
+	ProblemTypeMissingVerifier       ProblemType = "urn:hirevec:missing-verifier"
+	ProblemTypeAuthorizationProvider ProblemType = "urn:hirevec:authorization-provider-error"
+	ProblemTypeMissingCode           ProblemType = "urn:hirevec:missing-code"
+	ProblemTypeIDTokenRequired       ProblemType = "urn:hirevec:id-token-required"
+	ProblemTypeInvalidIDToken        ProblemType = "urn:hirevec:invalid-id-token"
+	ProblemTypeFailedParseClaims     ProblemType = "urn:hirevec:failed-parse-claims"
+	ProblemTypeUnverifiedEmail       ProblemType = "urn:hirevec:unverified-email"
 )
 
 // TODO: Write integration tests for this handler
@@ -1247,60 +1202,60 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 
 		stateString := r.URL.Query().Get("state")
 		if stateString == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingState,
-				Message: "Missing state",
-				Source:  ErrorSource{Parameter: "state"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingState,
+				Detail: "Missing state",
+				Source: ProblemSource{Parameter: "state"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		state, err := a.Vault.ParseStateToken(stateString)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidState,
-				Message: "Invalid state",
-				Source:  ErrorSource{Parameter: "state"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidState,
+				Detail: "Invalid state",
+				Source: ProblemSource{Parameter: "state"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		csrfCookie, err := r.Cookie("oauth_csrf")
 		if err != nil || csrfCookie.Value != state.CSRF {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidCSRF,
-				Message: "Invalid CSRF",
-				Source:  ErrorSource{Cookie: "oauth_csrf"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidCSRF,
+				Detail: "Invalid CSRF",
+				Source: ProblemSource{Cookie: "oauth_csrf"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		verifierCookie, err := r.Cookie("oauth_verifier")
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingVerifier,
-				Message: "Missing Verifier",
-				Source:  ErrorSource{Cookie: "oauth_verifier"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingVerifier,
+				Detail: "Missing Verifier",
+				Source: ProblemSource{Cookie: "oauth_verifier"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		if errParam := r.URL.Query().Get("error"); errParam != "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeAuthorizationProvider,
-				Message: "Authorization provider returned error",
-				Source:  ErrorSource{Parameter: "error"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeAuthorizationProvider,
+				Detail: "Authorization provider returned error",
+				Source: ProblemSource{Parameter: "error"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingCode,
-				Message: "Missing authorization code",
-				Source:  ErrorSource{Parameter: "code"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingCode,
+				Detail: "Missing authorization code",
+				Source: ProblemSource{Parameter: "code"},
+			}, http.StatusBadRequest)
 			return
 		}
 
@@ -1323,10 +1278,10 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 		case ProviderGoogle:
 			rawIDToken, err := a.Vault.ExchangeGoogleCodeForIDToken(ctx, code, verifierCookie)
 			if errors.Is(err, ErrIDTokenRequired) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeIDTokenRequired,
-					Message: "id_token is required",
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeIDTokenRequired,
+					Detail: "id_token is required",
+				}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
@@ -1344,10 +1299,10 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 				verifierCookie,
 			)
 			if errors.Is(err, ErrIDTokenRequired) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeIDTokenRequired,
-					Message: "id_token is required",
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeIDTokenRequired,
+					Detail: "id_token is required",
+				}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
@@ -1363,34 +1318,34 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			)
 
 		default:
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeIDTokenRequired,
-				Message: "Invalid provider; must be one of: google, apple",
-				Source:  ErrorSource{Parameter: "provider"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeIDTokenRequired,
+				Detail: "Invalid provider; must be one of: google, apple",
+				Source: ProblemSource{Parameter: "provider"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		switch {
 		case errors.Is(idTokenErr, ErrInvalidIDToken):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidIDToken,
-				Message: "Invalid id_token",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidIDToken,
+				Detail: "Invalid id_token",
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(idTokenErr, ErrFailedParseClaims):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeFailedParseClaims,
-				Message: "Failed to parse claims",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeFailedParseClaims,
+				Detail: "Failed to parse claims",
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(idTokenErr, ErrEmailNotVerified):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeUnverifiedEmail,
-				Message: "Unverified email",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeUnverifiedEmail,
+				Detail: "Unverified email",
+			}, http.StatusBadRequest)
 			return
 
 		case idTokenErr != nil:
@@ -1412,16 +1367,16 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			fullName, err := NormalizeAndValidateUserFullName(idToken.FullName)
 			switch {
 			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidUserFullNameFormat,
-					Message: ErrorMessageUserFullNameWrongSize,
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidUserFullNameFormat,
+					Detail: ErrorMessageUserFullNameWrongSize,
+				}, http.StatusBadRequest)
 				return
 			case errors.Is(err, ErrTextForbiddenChars):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidUserFullNameFormat,
-					Message: ErrorMessageUserFullNameForbiddenChars,
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidUserFullNameFormat,
+					Detail: ErrorMessageUserFullNameForbiddenChars,
+				}, http.StatusBadRequest)
 				return
 			case err != nil:
 				slog.Error("failed to normalize and validate full name", "err", err)
@@ -1444,7 +1399,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			}
 
 			w.Header().Set("Cache-Control", "no-store")
-			JSON(w, Envelope{Data: accessToken}, http.StatusOK)
+			JSON(w, accessToken, http.StatusOK)
 			return
 
 		case errors.Is(err, ErrUserNoRole):
@@ -1456,7 +1411,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			}
 
 			w.Header().Set("Cache-Control", "no-store")
-			JSON(w, Envelope{Data: accessToken}, http.StatusOK)
+			JSON(w, accessToken, http.StatusOK)
 			return
 
 		case err != nil:
@@ -1480,7 +1435,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		JSON(w, Envelope{Data: tokenPair}, http.StatusOK)
+		JSON(w, tokenPair, http.StatusOK)
 		return
 	}
 }
@@ -1654,9 +1609,38 @@ type ResponseDataHealth struct {
 }
 
 func (a *API) HandlerHealth(w http.ResponseWriter, r *http.Request) {
-	JSON(w, Envelope{Data: ResponseDataHealth{
-		Status: "ok",
-	}}, http.StatusOK)
+	JSON(w, ResponseDataHealth{Status: "ok"}, http.StatusOK)
+}
+
+const ProblemTypeInvalidIncludeReacted ProblemType = "urn:hirevec:invalid-include-reacted"
+
+var (
+	ErrNoNextPageToLink = errors.New("failed to process page due to missing next page")
+	ErrEmptyCursor      = errors.New("failed to process page due to cursor being empty")
+	ErrZeroLimit        = errors.New("failed to process page due to limit being zero")
+)
+
+func (a *API) AddNextLink(w http.ResponseWriter, route Route, nextPage Page) error {
+	if !nextPage.HasNext {
+		return ErrNoNextPageToLink
+	}
+	if nextPage.Cursor == "" {
+		return ErrEmptyCursor
+	}
+	if nextPage.Limit == 0 {
+		return ErrZeroLimit
+	}
+
+	u := a.BaseURL.JoinPath(string(route))
+
+	query := url.Values{}
+	query.Set("cursor", nextPage.Cursor)
+	query.Set("limit", strconv.Itoa(nextPage.Limit))
+	u.RawQuery = query.Encode()
+
+	w.Header().Add("Link", fmt.Sprintf(`<%s>; rel="next"`, u.String()))
+
+	return nil
 }
 
 // TODO: Write integration tests for this handler
@@ -1672,73 +1656,131 @@ func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 
 		candidateID, isCandidate := claims.Roles[RoleCandidate]
 		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
-		if !isCandidate && !isRecruiter {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing one of required roles: recruiter, candidate",
-			}}}, http.StatusForbidden)
+
+		roleStr := r.URL.Query().Get("role")
+		role, err := StringToRole(roleStr)
+		if err != nil && roleStr != "" {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidReactionType,
+				Detail: "Invalid role; must be one of: recruiter, candidate",
+				Source: ProblemSource{Parameter: "role"},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		q := r.URL.Query()
-		page := GetPageFromQuery(r)
-
-		page.Count = 0
-		positionCursor := q.Get("pos_cursor")
-		positionNextCursor, candidateNextCursor := "done", "done"
-		var data struct {
-			RecommendationsForCandidate []RecommendationForCandidate `json:"position_recommendations"`
-			RecommendationsForRecruiter []RecommendationForRecruiter `json:"candidate_recommendations"`
+		includeReactedStr := r.URL.Query().Get("include_reacted")
+		includeReacted, err := strconv.ParseBool(includeReactedStr)
+		if err != nil && includeReactedStr != "" {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidIncludeReacted,
+				Detail: "Invalid include_reacted; must be one of: 1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False",
+				Source: ProblemSource{Parameter: "include_reacted"},
+			}, http.StatusBadRequest)
+			return
 		}
-		if isCandidate && positionCursor != "done" {
-			recommendations, cursor, err := a.Store.GetRecommendationsForCandidate(
-				candidateID,
-				Page{Cursor: positionCursor, Limit: page.Limit},
-				true,
-			)
+
+		if role == RoleRecruiter && !isRecruiter {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
+			return
+		}
+		if role == RoleCandidate && !isCandidate {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: candidate",
+			}, http.StatusForbidden)
+			return
+		}
+
+		if (role == RoleRecruiter || role == "") && isRecruiter {
+			recommendations, nextPage, err := a.Store.GetRecommendationsForRecruiter(recruiterID, GetPageFromQuery(r), includeReacted)
 			if err != nil {
-				slog.Error("failed to fetch position recommendations", "err", err)
+				slog.Error("failed to fetch recommendations", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
-			positionNextCursor = cmp.Or(string(cursor), "done")
-			page.Count += len(recommendations)
-			data.RecommendationsForCandidate = recommendations
-		}
-
-		candidateCursor := q.Get("can_cursor")
-		if isRecruiter && candidateCursor != "done" {
-			recommendations, cursor, err := a.Store.GetRecommendationsForRecruiter(
-				recruiterID,
-				Page{Cursor: candidateCursor, Limit: page.Limit},
-				true,
-			)
-			if err != nil {
-				slog.Error("failed to fetch candidate recommendations", "err", err)
+			err = a.AddNextLink(w, RouteRecommendations, nextPage)
+			if errors.Is(err, ErrZeroLimit) {
+				slog.Error("zero limit in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if errors.Is(err, ErrEmptyCursor) {
+				slog.Error("empty cursor in next page", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 
-			candidateNextCursor = cmp.Or(string(cursor), "done")
-			page.Count += len(recommendations)
-			data.RecommendationsForRecruiter = recommendations
+			JSON(w, recommendations, http.StatusOK)
+			return
+
+		} else if (role == RoleCandidate || role == "") && isCandidate {
+			recommendations, nextPage, err := a.Store.GetRecommendationsForCandidate(candidateID, GetPageFromQuery(r), includeReacted)
+			if err != nil {
+				slog.Error("failed to fetch recommendations", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			err = a.AddNextLink(w, RouteRecommendations, nextPage)
+			if errors.Is(err, ErrZeroLimit) {
+				slog.Error("zero limit in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if errors.Is(err, ErrEmptyCursor) {
+				slog.Error("empty cursor in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			JSON(w, recommendations, http.StatusOK)
+			return
+
+		} else {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing one of required roles: recruiter, candidate",
+			}, http.StatusForbidden)
+			return
+		}
+	}
+}
+
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
+func (a *API) HandlerGetRecommendation() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		recommendationIDStr := r.PathValue("id")
+		recommendationID := ULID(recommendationIDStr)
+		if recommendationID == "" {
+			JSON(w, Problem{
+				Type:   ProblemTypePositionIDRequired,
+				Detail: "Recommendation ID is required",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
+			return
 		}
 
-		var links Links
-		if positionNextCursor != "done" || candidateNextCursor != "done" {
-			nextHref := fmt.Sprintf(
-				"%s?pos_cursor=%s&can_cursor=%s&limit=%d",
-				RouteRecommendations, positionNextCursor, candidateNextCursor, page.Limit,
-			)
-			links.Next = nextHref
+		recommendation, err := a.Store.GetRecommendation(recommendationID)
+		if err != nil {
+			if errors.Is(err, ErrRecommendationNotFound) {
+				JSON(w, Problem{
+					Type:   ProblemTypeRecommendationNotFound,
+					Detail: "Recommendation not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to fetch position", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		}
 
-		JSON(w, Envelope{
-			Data:  data,
-			Meta:  Meta{Page: page},
-			Links: links,
-		}, http.StatusOK)
+		JSON(w, recommendation, http.StatusOK)
 	}
 }
 
@@ -1748,31 +1790,16 @@ type RequestCreateReaction struct {
 }
 
 const (
-	ErrorCodeRecommendationIDRequired = "recommendation_id_required"
-	ErrorCodeRecommendationNotFound   = "recommendation_not_found"
-	ErrorCodeReactionExists           = "reaction_exists"
-	ErrorCodeInvalidReactionType      = "invalid_reaction_type"
+	ProblemTypeRecommendationIDRequired ProblemType = "urn:hirevec:recommendation-id-required"
+	ProblemTypeRecommendationNotFound   ProblemType = "urn:hirevec:recommendation-not-found"
+	ProblemTypeReactionExists           ProblemType = "urn:hirevec:reaction-exists"
+	ProblemTypeInvalidReactionType      ProblemType = "urn:hirevec:invalid-reaction-type"
 )
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerCreateReaction() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := DecodeRequestBody[RequestCreateReaction](r)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		if !body.ReactionType.IsValid() {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidReactionType,
-				Message: "Must be one of: positive, negative, neutral",
-				Source:  ErrorSource{Body: "/data/reaction_type"},
-			}}}, http.StatusBadRequest)
-			return
-		}
-
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
@@ -1780,56 +1807,73 @@ func (a *API) HandlerCreateReaction() http.HandlerFunc {
 			return
 		}
 
-		candidateID, ok := claims.Roles[RoleCandidate]
-		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: candidate",
-			}}}, http.StatusForbidden)
+		candidateID, isCandidate := claims.Roles[RoleCandidate]
+		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
+		if !isCandidate && !isRecruiter {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing one of required roles: candidate, recruiter",
+			}, http.StatusForbidden)
 			return
 		}
 
-		if body.RecommendationID == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeRecommendationIDRequired,
-				Message: "Recommendation ID is required",
-				Source:  ErrorSource{Parameter: "id"},
-			}}}, http.StatusBadRequest)
-			return
-		}
-
-		recommendation, err := a.Store.GetRecommendation(body.RecommendationID)
+		body, err := DecodeRequestBody[RequestCreateReaction](r)
 		if err != nil {
-			if errors.Is(err, ErrRecommendationNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeRecommendationNotFound,
-					Message: "Recommendation not found",
-					Source:  ErrorSource{Parameter: "id"},
-				}}}, http.StatusNotFound)
-				return
-			}
-			slog.Error("failed to fetch recommendation", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-
-		if recommendation.CandidateID != candidateID {
-			w.WriteHeader(http.StatusInternalServerError)
+		if body.RecommendationID == "" {
+			JSON(w, Problem{
+				Type:   ProblemTypeRecommendationIDRequired,
+				Detail: "Recommendation ID is required",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
+			return
+		}
+		if !body.ReactionType.IsValid() {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidReactionType,
+				Detail: "Invalid reaction type; must be one of: positive, negative, neutral",
+				Source: ProblemSource{Pointer: "/reaction_type"},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		if err := a.Store.CreateReaction(body.RecommendationID, ReactorTypeCandidate, candidateID, body.ReactionType); err != nil {
-			if errors.Is(err, ErrReactionAlreadyExists) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeReactionExists,
-					Message: "Reaction already exists; reactions are immutable",
-					Source:  ErrorSource{Parameter: "id"},
-				}}}, http.StatusConflict)
-				return
-			}
+		var reactorType ReactorType
+		var reactorID ULID
+		if isCandidate {
+			reactorType = ReactorTypeCandidate
+			reactorID = candidateID
+		} else if isRecruiter {
+			reactorType = ReactorTypeRecruiter
+			reactorID = recruiterID
+		}
+
+		err = a.Store.CreateReaction(body.RecommendationID, reactorType, reactorID, body.ReactionType)
+		switch {
+		case errors.Is(err, ErrReactionAlreadyExists):
+			JSON(w, Problem{
+				Type:   ProblemTypeReactionExists,
+				Detail: "Reaction already exists; reactions are immutable",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusConflict)
+			return
+		case errors.Is(err, ErrRecommendationNotFound):
+			JSON(w, Problem{
+				Type:   ProblemTypeRecommendationNotFound,
+				Detail: "Recommendation not found",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusNotFound)
+			return
+		case errors.Is(err, ErrUnauthorizedReactor):
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
+			return
+		case err != nil:
 			slog.Error("failed to record reaction", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			return
 		}
 
 		w.WriteHeader(http.StatusCreated)
@@ -1847,41 +1891,88 @@ func (a *API) HandlerGetReactions() http.HandlerFunc {
 			return
 		}
 
-		candidateID, ok := claims.Roles[RoleCandidate]
-		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: candidate",
-			}}}, http.StatusForbidden)
+		candidateID, isCandidate := claims.Roles[RoleCandidate]
+		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
+
+		roleStr := r.URL.Query().Get("role")
+		role, err := StringToRole(roleStr)
+		if err != nil && roleStr != "" {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidReactionType,
+				Detail: "Invalid role; must be one of: recruiter, candidate",
+				Source: ProblemSource{Parameter: "role"},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		page := GetPageFromQuery(r)
-
-		reactions, nextCursor, err := a.Store.GetReactionsByCandidateID(candidateID, page)
-		if err != nil {
-			slog.Error("failed to fetch reactions", "err", err)
-			w.WriteHeader(http.StatusInternalServerError)
+		if role == RoleRecruiter && !isRecruiter {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
+			return
+		}
+		if role == RoleCandidate && !isCandidate {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: candidate",
+			}, http.StatusForbidden)
 			return
 		}
 
-		page.Count = len(reactions)
-		page.HasNext = nextCursor != ""
+		if (role == RoleRecruiter || role == "") && isRecruiter {
+			reactions, nextPage, err := a.Store.GetReactions(recruiterID, ReactorTypeRecruiter, GetPageFromQuery(r))
+			if err != nil {
+				slog.Error("failed to fetch reactions", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 
-		var links Links
-		if nextCursor != "" {
-			links.Next = fmt.Sprintf(
-				"%s?cursor=%s",
-				RouteReactions,
-				nextCursor,
-			)
+			err = a.AddNextLink(w, RouteReactions, nextPage)
+			if errors.Is(err, ErrZeroLimit) {
+				slog.Error("zero limit in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if errors.Is(err, ErrEmptyCursor) {
+				slog.Error("empty cursor in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			JSON(w, reactions, http.StatusOK)
+			return
+
+		} else if (role == RoleCandidate || role == "") && isCandidate {
+			reactions, nextPage, err := a.Store.GetReactions(candidateID, ReactorTypeCandidate, GetPageFromQuery(r))
+			if err != nil {
+				slog.Error("failed to fetch reactions", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			err = a.AddNextLink(w, RouteReactions, nextPage)
+			if errors.Is(err, ErrZeroLimit) {
+				slog.Error("zero limit in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if errors.Is(err, ErrEmptyCursor) {
+				slog.Error("empty cursor in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			JSON(w, reactions, http.StatusOK)
+			return
+
+		} else {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing one of required roles: recruiter, candidate",
+			}, http.StatusForbidden)
+			return
 		}
-
-		JSON(w, Envelope{
-			Data:  reactions,
-			Links: links,
-			Meta:  Meta{Page: page},
-		}, http.StatusOK)
 	}
 }
 
@@ -1896,40 +1987,88 @@ func (a *API) HandlerGetMatches() http.HandlerFunc {
 			return
 		}
 
-		candidateID, ok := claims.Roles[RoleCandidate]
-		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: candidate",
-			}}}, http.StatusForbidden)
+		candidateID, isCandidate := claims.Roles[RoleCandidate]
+		recruiterID, isRecruiter := claims.Roles[RoleRecruiter]
+
+		roleStr := r.URL.Query().Get("role")
+		role, err := StringToRole(roleStr)
+		if err != nil && roleStr != "" {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidReactionType,
+				Detail: "Invalid role; must be one of: recruiter, candidate",
+				Source: ProblemSource{Parameter: "role"},
+			}, http.StatusBadRequest)
 			return
 		}
 
-		page := GetPageFromQuery(r)
-		matches, nextCursor, err := a.Store.GetMatchesByCandidateID(candidateID, page)
-		if err != nil {
-			slog.Error("failed to fetch matches", "err", err)
-			w.WriteHeader(http.StatusInternalServerError)
+		if role == RoleRecruiter && !isRecruiter {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
 			return
 		}
-		page.Count = len(matches)
-		page.HasNext = nextCursor != ""
-
-		var links Links
-		if nextCursor != "" {
-			links.Next = fmt.Sprintf(
-				"%s?cursor=%s&limit=%d",
-				RouteMatches,
-				nextCursor,
-				page.Limit,
-			)
+		if role == RoleCandidate && !isCandidate {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: candidate",
+			}, http.StatusForbidden)
+			return
 		}
 
-		JSON(w, Envelope{
-			Data:  matches,
-			Links: links,
-			Meta:  Meta{Page: page},
-		}, http.StatusOK)
+		if (role == RoleRecruiter || role == "") && isRecruiter {
+			matches, nextPage, err := a.Store.GetMatchesForRecruiter(recruiterID, GetPageFromQuery(r))
+			if err != nil {
+				slog.Error("failed to fetch matches", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			err = a.AddNextLink(w, RouteMatches, nextPage)
+			if errors.Is(err, ErrZeroLimit) {
+				slog.Error("zero limit in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if errors.Is(err, ErrEmptyCursor) {
+				slog.Error("empty cursor in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			JSON(w, matches, http.StatusOK)
+			return
+
+		} else if (role == RoleCandidate || role == "") && isCandidate {
+			matches, nextPage, err := a.Store.GetMatchesForCandidate(candidateID, GetPageFromQuery(r))
+			if err != nil {
+				slog.Error("failed to fetch matches", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			err = a.AddNextLink(w, RouteMatches, nextPage)
+			if errors.Is(err, ErrZeroLimit) {
+				slog.Error("zero limit in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if errors.Is(err, ErrEmptyCursor) {
+				slog.Error("empty cursor in next page", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			JSON(w, matches, http.StatusOK)
+			return
+
+		} else {
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing one of required roles: recruiter, candidate",
+			}, http.StatusForbidden)
+			return
+		}
 	}
 }
 
@@ -1981,11 +2120,11 @@ type RequestBodyCreateUser struct {
 }
 
 const (
-	ErrorCodeEmailRequired             = "email_required"
-	ErrorCodeInvalidUserEmailFormat    = "invalid_user_email_format"
-	ErrorCodeInvalidUserPasswordFormat = "invalid_user_password_format"
-	ErrorCodeInvalidUserFullNameFormat = "invalid_user_full_name_format"
-	ErrorCodeUserAlreadyExists         = "user_exists"
+	ProblemTypeEmailRequired             ProblemType = "urn:hirevec:email-required"
+	ProblemTypeInvalidUserEmailFormat    ProblemType = "urn:hirevec:invalid-user-email-format"
+	ProblemTypeInvalidUserPasswordFormat ProblemType = "urn:hirevec:invalid-user-password-format"
+	ProblemTypeInvalidUserFullNameFormat ProblemType = "urn:hirevec:invalid-user-full-name-format"
+	ProblemTypeUserAlreadyExists         ProblemType = "urn:hirevec:user-exists"
 )
 
 // TODO: Write integration tests for this handler
@@ -1994,71 +2133,71 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := DecodeRequestBody[RequestBodyCreateUser](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
 		if body.Email == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeEmailRequired,
-				Message: "Email is required",
-				Source:  ErrorSource{Body: "/data/email"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeEmailRequired,
+				Detail: "Email is required",
+				Source: ProblemSource{Pointer: "/email"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		email, err := mail.ParseAddress(body.Email)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserEmailFormat,
-				Message: "Invalid email",
-				Source:  ErrorSource{Body: "/data/email"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserEmailFormat,
+				Detail: "Invalid email",
+				Source: ProblemSource{Pointer: "/email"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		switch err = ValidateUserPassword(body.Password); {
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserPasswordFormat,
-				Message: "Password must be between 8 and 128 characters",
-				Source:  ErrorSource{Body: "/data/password"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserPasswordFormat,
+				Detail: "Password must be between 8 and 128 characters",
+				Source: ProblemSource{Pointer: "/password"},
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(err, ErrPasswordHasNoLower):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserPasswordFormat,
-				Message: "Password must contain at least one lowercase letter",
-				Source:  ErrorSource{Body: "/data/password"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserPasswordFormat,
+				Detail: "Password must contain at least one lowercase letter",
+				Source: ProblemSource{Pointer: "/password"},
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(err, ErrPasswordHasNoUpper):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserPasswordFormat,
-				Message: "Password must contain at least one uppercase letter",
-				Source:  ErrorSource{Body: "/data/password"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserPasswordFormat,
+				Detail: "Password must contain at least one uppercase letter",
+				Source: ProblemSource{Pointer: "/password"},
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(err, ErrPasswordHasNoDigit):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserPasswordFormat,
-				Message: "Password must contain at least one digit",
-				Source:  ErrorSource{Body: "/data/password"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserPasswordFormat,
+				Detail: "Password must contain at least one digit",
+				Source: ProblemSource{Pointer: "/password"},
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(err, ErrPasswordHasNoSpecial):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserPasswordFormat,
-				Message: "Password must contain at least one special character",
-				Source:  ErrorSource{Body: "/data/password"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserPasswordFormat,
+				Detail: "Password must contain at least one special character",
+				Source: ProblemSource{Pointer: "/password"},
+			}, http.StatusBadRequest)
 			return
 
 		case err != nil:
@@ -2070,19 +2209,19 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 		fullName, err := NormalizeAndValidateUserFullName(body.FullName)
 		switch {
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserFullNameFormat,
-				Message: ErrorMessageUserFullNameWrongSize,
-				Source:  ErrorSource{Body: "/data/full_name"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserFullNameFormat,
+				Detail: ErrorMessageUserFullNameWrongSize,
+				Source: ProblemSource{Pointer: "/full_name"},
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(err, ErrTextForbiddenChars):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidUserFullNameFormat,
-				Message: ErrorMessageUserFullNameForbiddenChars,
-				Source:  ErrorSource{Body: "/data/full_name"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidUserFullNameFormat,
+				Detail: ErrorMessageUserFullNameForbiddenChars,
+				Source: ProblemSource{Pointer: "/full_name"},
+			}, http.StatusBadRequest)
 			return
 
 		case err != nil:
@@ -2098,11 +2237,11 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 			return
 		}
 		if exists {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeUserAlreadyExists,
-				Message: "User with the provided email already exists",
-				Source:  ErrorSource{Body: "data/email"},
-			}}}, http.StatusConflict)
+			JSON(w, Problem{
+				Type:   ProblemTypeUserAlreadyExists,
+				Detail: "User with the provided email already exists",
+				Source: ProblemSource{Pointer: "data/email"},
+			}, http.StatusConflict)
 			return
 		}
 
@@ -2142,11 +2281,11 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		JSON(w, Envelope{Data: tokenPair}, http.StatusCreated)
+		JSON(w, tokenPair, http.StatusCreated)
 	}
 }
 
-const ErrorCodeRecruiterExists = "recruiter_exists"
+const ProblemTypeRecruiterExists ProblemType = "urn:hirevec:recruiter-exists"
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
@@ -2161,11 +2300,11 @@ func (a *API) HandlerCreateRecruiter() http.HandlerFunc {
 
 		if _, err := a.Store.CreateRecruiter(claims.UserID); err != nil {
 			if errors.Is(err, ErrRecruiterAlreadyExists) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeRecruiterExists,
-					Message: "Recruiter already exists",
-					Source:  ErrorSource{Body: "data/user_id"},
-				}}}, http.StatusConflict)
+				JSON(w, Problem{
+					Type:   ProblemTypeRecruiterExists,
+					Detail: "Recruiter already exists",
+					Source: ProblemSource{Pointer: "data/user_id"},
+				}, http.StatusConflict)
 				return
 			}
 			slog.Error("failed to create recruiter", "err", err)
@@ -2188,7 +2327,7 @@ func (a *API) HandlerCreateRecruiter() http.HandlerFunc {
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		JSON(w, Envelope{Data: accessToken}, http.StatusCreated)
+		JSON(w, accessToken, http.StatusCreated)
 	}
 }
 
@@ -2212,8 +2351,8 @@ type RequestBodyCreateCandidate struct {
 }
 
 const (
-	ErrorCodeCandidateAlreadyExists      = "candiate_already_exists"
-	ErrorCodeInvalidCandidateAboutFormat = "invalid_candidate_about_format"
+	ProblemTypeCandidateAlreadyExists      ProblemType = "urn:hirevec:candiate-already-exists"
+	ProblemTypeInvalidCandidateAboutFormat ProblemType = "urn:hirevec:invalid-candidate-about-format"
 )
 
 // TODO: Write integration tests for this handler
@@ -2229,20 +2368,20 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 
 		body, err := DecodeRequestBody[RequestBodyCreateCandidate](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
 		about, err := NormalizeAndValidateCandidateAbout(body.About)
 		if errors.Is(err, ErrTextTooLong) {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidCandidateAboutFormat,
-				Message: "About must be up to 1024 characters",
-				Source:  ErrorSource{Body: "data/about"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidCandidateAboutFormat,
+				Detail: "About must be up to 1024 characters",
+				Source: ProblemSource{Pointer: "data/about"},
+			}, http.StatusBadRequest)
 			return
 		}
 		if err != nil {
@@ -2253,11 +2392,11 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 
 		if _, err = a.Store.CreateCandidate(claims.UserID, about); err != nil {
 			if errors.Is(err, ErrCandidateAlreadyExists) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeCandidateAlreadyExists,
-					Message: "Candidate already exists",
-					Source:  ErrorSource{Body: "data/user_id"},
-				}}}, http.StatusConflict)
+				JSON(w, Problem{
+					Type:   ProblemTypeCandidateAlreadyExists,
+					Detail: "Candidate already exists",
+					Source: ProblemSource{Pointer: "data/user_id"},
+				}, http.StatusConflict)
 				return
 			}
 			slog.Error("failed to create candidate", "err", err)
@@ -2280,14 +2419,14 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		JSON(w, Envelope{Data: accessToken}, http.StatusCreated)
+		JSON(w, accessToken, http.StatusCreated)
 	}
 }
 
 const (
-	ErrorCodeInternalServerError = "internal_server_error"
-	ErrorCodeUserNotFound        = "user_not_found"
-	ErrorCodeForbidden           = "forbidden"
+	ProblemTypeInternalServerError ProblemType = "urn:hirevec:internal-server-error"
+	ProblemTypeUserNotFound        ProblemType = "urn:hirevec:user-not-found"
+	ProblemTypeForbidden           ProblemType = "urn:hirevec:forbidden"
 )
 
 // TODO: Write integration tests for this handler
@@ -2301,12 +2440,19 @@ func (a *API) HandlerGetUser() http.HandlerFunc {
 			return
 		}
 
-		user, err := a.Store.GetUser(claims.UserID)
+		userID := ULID(r.PathValue("id"))
+
+		// Infer userID from claims
+		if userID == "me" {
+			userID = claims.UserID
+		}
+
+		user, err := a.Store.GetUser(userID)
 		if errors.Is(err, ErrUserNotFound) {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeUserNotFound,
-				Message: "User not found",
-			}}}, http.StatusNotFound)
+			JSON(w, Problem{
+				Type:   ProblemTypeUserNotFound,
+				Detail: "User not found",
+			}, http.StatusNotFound)
 			return
 		}
 		if err != nil {
@@ -2315,7 +2461,7 @@ func (a *API) HandlerGetUser() http.HandlerFunc {
 			return
 		}
 
-		JSON(w, Envelope{Data: user}, http.StatusOK)
+		JSON(w, user, http.StatusOK)
 	}
 }
 
@@ -2351,9 +2497,9 @@ type RequestBodyPatchUser struct {
 }
 
 const (
-	ErrorCodeResourceTypeMismatch      = "resource_type_mismatch"
-	ErrorCodeResourceIDMismatch        = "resource_id_mismatch"
-	ErrorCodeInvalidUserUserNameFormat = "invalid_user_user_name_format"
+	ProblemTypeResourceTypeMismatch      ProblemType = "urn:hirevec:resource-type-mismatch"
+	ProblemTypeResourceIDMismatch        ProblemType = "urn:hirevec:resource-id-mismatch"
+	ProblemTypeInvalidUserUserNameFormat ProblemType = "urn:hirevec:invalid-user-user-name-format"
 )
 
 // TODO: Write integration tests for this handler
@@ -2369,20 +2515,20 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 
 		body, err := DecodeRequestBody[RequestBodyPatchUser](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
 		user, err := a.Store.GetUser(claims.UserID)
 		if err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeUserNotFound,
-					Message: "User not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeUserNotFound,
+					Detail: "User not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get user", "err", err)
@@ -2395,19 +2541,19 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 			fullName, err := NormalizeAndValidateUserFullName(*body.FullName)
 			switch {
 			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidUserFullNameFormat,
-					Message: ErrorMessageUserFullNameWrongSize,
-					Source:  ErrorSource{Body: "data/full_name"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidUserFullNameFormat,
+					Detail: ErrorMessageUserFullNameWrongSize,
+					Source: ProblemSource{Pointer: "data/full_name"},
+				}, http.StatusBadRequest)
 				return
 
 			case errors.Is(err, ErrTextForbiddenChars):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidUserFullNameFormat,
-					Message: ErrorMessageUserFullNameForbiddenChars,
-					Source:  ErrorSource{Body: "data/full_name"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidUserFullNameFormat,
+					Detail: ErrorMessageUserFullNameForbiddenChars,
+					Source: ProblemSource{Pointer: "data/full_name"},
+				}, http.StatusBadRequest)
 				return
 
 			case err != nil:
@@ -2426,19 +2572,19 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 			userName, err := NormalizeAndValidateUserName(*body.UserName)
 			switch {
 			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidUserUserNameFormat,
-					Message: ErrorMessageUserNameWrongSize,
-					Source:  ErrorSource{Body: "data/user_name"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidUserUserNameFormat,
+					Detail: ErrorMessageUserNameWrongSize,
+					Source: ProblemSource{Pointer: "data/user_name"},
+				}, http.StatusBadRequest)
 				return
 
 			case errors.Is(err, ErrTextForbiddenChars):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidUserUserNameFormat,
-					Message: ErrorMessageUserNameForbiddenChars,
-					Source:  ErrorSource{Body: "data/user_name"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidUserUserNameFormat,
+					Detail: ErrorMessageUserNameForbiddenChars,
+					Source: ProblemSource{Pointer: "data/user_name"},
+				}, http.StatusBadRequest)
 				return
 
 			case err != nil:
@@ -2460,10 +2606,10 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 
 		if err = a.Store.UpdateUser(user.ID, user.FullName, user.UserName); err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeUserNotFound,
-					Message: "User not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeUserNotFound,
+					Detail: "User not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to update user", "err", err)
@@ -2489,20 +2635,20 @@ func (a *API) HandlerDeleteUser() http.HandlerFunc {
 		userIDStr := r.PathValue(("id"))
 		userID := ULID(userIDStr)
 		if userID != claims.UserID {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeForbidden,
-				Message: "You do not have permission to access or modify the requested resource",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
 			return
 		}
 
 		user, err := a.Store.GetUser(claims.UserID)
 		if err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeUserNotFound,
-					Message: "User not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeUserNotFound,
+					Detail: "User not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get user", "err", err)
@@ -2512,10 +2658,10 @@ func (a *API) HandlerDeleteUser() http.HandlerFunc {
 
 		if err = a.Store.DeleteUser(user.ID); err != nil {
 			if errors.Is(err, ErrUserNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeUserNotFound,
-					Message: "User not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeUserNotFound,
+					Detail: "User not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete user", "err", err)
@@ -2528,46 +2674,43 @@ func (a *API) HandlerDeleteUser() http.HandlerFunc {
 }
 
 const (
-	ErrorCodeMissingRequiredRole = "missing_required_role"
-	ErrorCodeCandidateNotFound   = "candidate_not_found"
+	ProblemTypeMissingRequiredRole ProblemType = "urn:hirevec:missing-required-role"
+	ProblemTypeCandidateNotFound   ProblemType = "urn:hirevec:candidate-not-found"
 )
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := GetClaims(r)
-		if !ok {
-			slog.Error("failed to access claims")
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+		candidateID := ULID(r.PathValue("id"))
 
-		candidateID, ok := claims.Roles[RoleCandidate]
-		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: candidate",
-			}}}, http.StatusForbidden)
-			return
-		}
+		// Infer candidateID from claims
+		if candidateID == "me" {
+			claims, ok := GetClaims(r)
+			if !ok {
+				slog.Error("failed to access claims")
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 
-		urlCandidateID := ULID(r.PathValue("id"))
-		if urlCandidateID != candidateID {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeForbidden,
-				Message: "You do not have permission to access or modify the requested resource",
-			}}}, http.StatusForbidden)
-			return
+			claimsCandidateID, ok := claims.Roles[RoleCandidate]
+			if !ok {
+				JSON(w, Problem{
+					Type:   ProblemTypeMissingRequiredRole,
+					Detail: "Missing required role: candidate",
+				}, http.StatusForbidden)
+				return
+			}
+			candidateID = claimsCandidateID
 		}
 
 		candidate, err := a.Store.GetCandidate(candidateID)
 		if err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeCandidateNotFound,
-					Message: "Candidate not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeCandidateNotFound,
+					Detail: "Candidate not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get candidate", "err", err)
@@ -2575,7 +2718,7 @@ func (a *API) HandlerGetCandidate() http.HandlerFunc {
 			return
 		}
 
-		JSON(w, Envelope{Data: candidate}, http.StatusOK)
+		JSON(w, candidate, http.StatusOK)
 	}
 }
 
@@ -2596,39 +2739,39 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: candidate",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: candidate",
+			}, http.StatusForbidden)
 			return
 		}
 
 		urlCandidateIDStr := r.PathValue("id")
 		urlCandidateID := ULID(urlCandidateIDStr)
 		if urlCandidateID != candidateID {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeForbidden,
-				Message: "You do not have permission to access or modify the requested resource",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
 			return
 		}
 
 		body, err := DecodeRequestBody[RequestBodyPatchCandidate](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
 		candidate, err := a.Store.GetCandidate(candidateID)
 		if err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeCandidateNotFound,
-					Message: "Candidate not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeCandidateNotFound,
+					Detail: "Candidate not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get candidate", "err", err)
@@ -2640,11 +2783,11 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 		if body.About != nil {
 			about, err := NormalizeAndValidateCandidateAbout(*body.About)
 			if errors.Is(err, ErrTextTooLong) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidCandidateAboutFormat,
-					Message: "About must be up to 1024 characters",
-					Source:  ErrorSource{Body: "data/about"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidateAboutFormat,
+					Detail: "About must be up to 1024 characters",
+					Source: ProblemSource{Pointer: "data/about"},
+				}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
@@ -2666,10 +2809,10 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 
 		if err = a.Store.UpdateCandidate(candidate.ID, candidate.About); err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeCandidateNotFound,
-					Message: "Candidate not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeCandidateNotFound,
+					Detail: "Candidate not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to update candidate", "err", err)
@@ -2694,19 +2837,29 @@ func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 
 		candidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: candidate",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: candidate",
+			}, http.StatusForbidden)
+			return
+		}
+
+		urlCandidateIDStr := r.PathValue("id")
+		urlCandidateID := ULID(urlCandidateIDStr)
+		if urlCandidateID != candidateID {
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
 			return
 		}
 
 		if err := a.Store.DeleteCandidate(candidateID); err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeCandidateNotFound,
-					Message: "Candidate not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeCandidateNotFound,
+					Detail: "Candidate not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete candidate", "err", err)
@@ -2718,35 +2871,41 @@ func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 	}
 }
 
-const ErrorCodeRecruiterNotFound = "recruiter_not_found"
+const ProblemTypeRecruiterNotFound ProblemType = "urn:hirevec:recruiter-not-found"
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := GetClaims(r)
-		if !ok {
-			slog.Error("failed to access claims")
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+		recruiterID := ULID(r.PathValue("id"))
 
-		recruiterID, ok := claims.Roles[RoleRecruiter]
-		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: recruiter",
-			}}}, http.StatusForbidden)
-			return
+		// Infer candidateID from claims
+		if recruiterID == "me" {
+			claims, ok := GetClaims(r)
+			if !ok {
+				slog.Error("failed to access claims")
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			claimsRecruiterID, ok := claims.Roles[RoleRecruiter]
+			if !ok {
+				JSON(w, Problem{
+					Type:   ProblemTypeMissingRequiredRole,
+					Detail: "Missing required role: recruiter",
+				}, http.StatusForbidden)
+				return
+			}
+			recruiterID = claimsRecruiterID
 		}
 
 		recruiter, err := a.Store.GetRecruiter(recruiterID)
 		if err != nil {
 			if errors.Is(err, ErrRecruiterNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeRecruiterNotFound,
-					Message: "Recruiter not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeRecruiterNotFound,
+					Detail: "Recruiter not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to get recruiter", "err", err)
@@ -2754,7 +2913,7 @@ func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 			return
 		}
 
-		JSON(w, Envelope{Data: recruiter}, http.StatusOK)
+		JSON(w, recruiter, http.StatusOK)
 	}
 }
 
@@ -2771,19 +2930,19 @@ func (a *API) HandlerDeleteRecruiter() http.HandlerFunc {
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: recruiter",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
 			return
 		}
 
 		if err := a.Store.DeleteRecruiter(recruiterID); err != nil {
 			if errors.Is(err, ErrRecruiterNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeRecruiterNotFound,
-					Message: "Recruiter not found",
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypeRecruiterNotFound,
+					Detail: "Recruiter not found",
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete recruiter", "err", err)
@@ -2857,10 +3016,10 @@ type RequestBodyCreatePosition struct {
 }
 
 const (
-	ErrorCodeInvalidPositionTitleFormat       = "invalid_position_title_format"
-	ErrorCodeInvalidPositionDescriptionFormat = "invalid_position_description_format"
-	ErrorCodeInvalidPositionCompanyFormat     = "invalid_position_company_format"
-	ErrorCodePositionExists                   = "position_exists"
+	ProblemTypeInvalidPositionTitleFormat       ProblemType = "urn:hirevec:invalid-position-title-format"
+	ProblemTypeInvalidPositionDescriptionFormat ProblemType = "urn:hirevec:invalid-position-description-format"
+	ProblemTypeInvalidPositionCompanyFormat     ProblemType = "urn:hirevec:invalid-position-company-format"
+	ProblemTypePositionExists                   ProblemType = "urn:hirevec:position-exists"
 )
 
 // TODO: Write integration tests for this handler
@@ -2876,38 +3035,38 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: recruiter",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
 			return
 		}
 
 		body, err := DecodeRequestBody[RequestBodyCreatePosition](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
 		title, err := NormalizeAndValidatePositionTitle(body.Title)
 		switch {
 		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidPositionTitleFormat,
-				Message: "Title must be between 4 and 64 characters",
-				Source:  ErrorSource{Body: "data/title"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidPositionTitleFormat,
+				Detail: "Title must be between 4 and 64 characters",
+				Source: ProblemSource{Pointer: "data/title"},
+			}, http.StatusBadRequest)
 			return
 
 		case errors.Is(err, ErrPositionTitleHasURL):
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidPositionTitleFormat,
-				Message: "Title cannot contain a URL",
-				Source:  ErrorSource{Body: "data/title"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidPositionTitleFormat,
+				Detail: "Title cannot contain a URL",
+				Source: ProblemSource{Pointer: "data/title"},
+			}, http.StatusBadRequest)
 			return
 
 		case err != nil:
@@ -2918,11 +3077,11 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 
 		description, err := NormalizeAndValidatePositionDescription(body.Description)
 		if errors.Is(err, ErrTextTooLong) {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidPositionDescriptionFormat,
-				Message: "Description must be up to 2048 characters",
-				Source:  ErrorSource{Body: "data/description"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidPositionDescriptionFormat,
+				Detail: "Description must be up to 2048 characters",
+				Source: ProblemSource{Pointer: "data/description"},
+			}, http.StatusBadRequest)
 			return
 		}
 		if err != nil {
@@ -2933,11 +3092,11 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 
 		company, err := NormalizeAndValidatePositionCompanyName(body.Company)
 		if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidPositionCompanyFormat,
-				Message: "Company name must be between 2 and 512 characters",
-				Source:  ErrorSource{Body: "data/company"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidPositionCompanyFormat,
+				Detail: "Company name must be between 2 and 512 characters",
+				Source: ProblemSource{Pointer: "data/company"},
+			}, http.StatusBadRequest)
 			return
 		}
 		if err != nil {
@@ -2948,10 +3107,10 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 
 		if _, err = a.Store.CreatePosition(recruiterID, title, description, company, true); err != nil {
 			if errors.Is(err, ErrPositionAlreadyExists) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodePositionExists,
-					Message: "Position with the same title, description and company already exists",
-				}}}, http.StatusConflict)
+				JSON(w, Problem{
+					Type:   ProblemTypePositionExists,
+					Detail: "Position with the same title, description and company already exists",
+				}, http.StatusConflict)
 				return
 			}
 			slog.Error("failed to create position", "err", err)
@@ -2976,77 +3135,54 @@ func (a *API) HandlerGetPositions() http.HandlerFunc {
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: recruiter",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
 			return
 		}
 
-		page := GetPageFromQuery(r)
-		positions, nextCursor, err := a.Store.GetPositions(recruiterID, page)
+		positions, page, err := a.Store.GetPositions(recruiterID, GetPageFromQuery(r))
 		if err != nil {
 			slog.Error("failed to fetch positions", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		var links Links
-		if nextCursor != "" {
-			links.Next = fmt.Sprintf("%s?cursor=%s", RoutePositions, nextCursor)
-		}
+		a.AddNextLink(w, RoutePositions, page)
 
-		JSON(w, Envelope{
-			Data:  positions,
-			Links: links,
-		}, http.StatusOK)
+		JSON(w, positions, http.StatusOK)
 	}
 }
 
 const (
-	ErrorCodePositionIDRequired = "position_id_required"
-	ErrorCodePositionNotFound   = "position_not_found"
+	ProblemTypePositionIDRequired ProblemType = "urn:hirevec:position-id-required"
+	ProblemTypePositionNotFound   ProblemType = "urn:hirevec:position-not-found"
 )
 
 // TODO: Write integration tests for this handler
 // https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetPosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := GetClaims(r)
-		if !ok {
-			slog.Error("failed to access claims")
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		recruiterID, ok := claims.Roles[RoleRecruiter]
-		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: recruiter",
-			}}}, http.StatusForbidden)
-			return
-		}
-
 		positionIDStr := r.PathValue("id")
 		positionID := ULID(positionIDStr)
 		if positionID == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodePositionIDRequired,
-				Message: "Position ID is required",
-				Source:  ErrorSource{Parameter: "id"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypePositionIDRequired,
+				Detail: "Position ID is required",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		position, err := a.Store.GetPosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodePositionNotFound,
-					Message: "Position not found",
-					Source:  ErrorSource{Parameter: "id"},
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypePositionNotFound,
+					Detail: "Position not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to fetch position", "err", err)
@@ -3054,15 +3190,7 @@ func (a *API) HandlerGetPosition() http.HandlerFunc {
 			return
 		}
 
-		if position.RecruiterID != recruiterID {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeForbidden,
-				Message: "You do not have access to this resource",
-			}}}, http.StatusForbidden)
-			return
-		}
-
-		JSON(w, Envelope{Data: position}, http.StatusOK)
+		JSON(w, position, http.StatusOK)
 	}
 }
 
@@ -3084,41 +3212,41 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeForbidden,
-				Message: "Missing required role: recruiter",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
 			return
 		}
 
 		positionIDStr := r.PathValue("id")
 		positionID := ULID(positionIDStr)
 		if positionID == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodePositionIDRequired,
-				Message: "Position ID is required",
-				Source:  ErrorSource{Parameter: "id"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypePositionIDRequired,
+				Detail: "Position ID is required",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		body, err := DecodeRequestBody[RequestBodyPatchPosition](r)
 		if err != nil {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeInvalidRequestBody,
-				Message: "Invalid request body",
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid request body",
+			}, http.StatusBadRequest)
 			return
 		}
 
 		position, err := a.Store.GetPosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodePositionNotFound,
-					Message: "Position not found",
-					Source:  ErrorSource{Parameter: "id"},
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypePositionNotFound,
+					Detail: "Position not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to fetch position", "err", err)
@@ -3127,10 +3255,10 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 		}
 
 		if position.RecruiterID != recruiterID {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeForbidden,
-				Message: "You do not have access to this resource",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
 			return
 		}
 
@@ -3139,19 +3267,19 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 			title, err := NormalizeAndValidatePositionTitle(*body.Title)
 			switch {
 			case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidPositionTitleFormat,
-					Message: "Title must be between 4 and 64 characters",
-					Source:  ErrorSource{Body: "data/title"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionTitleFormat,
+					Detail: "Title must be between 4 and 64 characters",
+					Source: ProblemSource{Pointer: "data/title"},
+				}, http.StatusBadRequest)
 				return
 
 			case errors.Is(err, ErrPositionTitleHasURL):
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidPositionTitleFormat,
-					Message: "Title cannot contain a URL",
-					Source:  ErrorSource{Body: "data/title"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionTitleFormat,
+					Detail: "Title cannot contain a URL",
+					Source: ProblemSource{Pointer: "data/title"},
+				}, http.StatusBadRequest)
 				return
 
 			case err != nil:
@@ -3169,11 +3297,11 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 		if body.Description != nil {
 			description, err := NormalizeAndValidatePositionDescription(*body.Description)
 			if errors.Is(err, ErrTextTooLong) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidPositionDescriptionFormat,
-					Message: "Description must be up to 2048 characters",
-					Source:  ErrorSource{Body: "data/description"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionDescriptionFormat,
+					Detail: "Description must be up to 2048 characters",
+					Source: ProblemSource{Pointer: "data/description"},
+				}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
@@ -3190,11 +3318,11 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 		if body.Company != nil {
 			company, err := NormalizeAndValidatePositionCompanyName(*body.Company)
 			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodeInvalidPositionCompanyFormat,
-					Message: "Company name must be between 2 and 512 characters",
-					Source:  ErrorSource{Body: "data/company"},
-				}}}, http.StatusBadRequest)
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionCompanyFormat,
+					Detail: "Company name must be between 2 and 512 characters",
+					Source: ProblemSource{Pointer: "data/company"},
+				}, http.StatusBadRequest)
 				return
 			}
 			if err != nil {
@@ -3228,11 +3356,11 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 			position.IsActive,
 		); err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodePositionNotFound,
-					Message: "Position not found",
-					Source:  ErrorSource{Parameter: "id"},
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypePositionNotFound,
+					Detail: "Position not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to update position", "err", err)
@@ -3255,32 +3383,32 @@ func (a *API) HandlerDeletePosition() http.HandlerFunc {
 
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeMissingRequiredRole,
-				Message: "Missing required role: recruiter",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeMissingRequiredRole,
+				Detail: "Missing required role: recruiter",
+			}, http.StatusForbidden)
 			return
 		}
 
 		positionIDStr := r.PathValue("id")
 		positionID := ULID(positionIDStr)
 		if positionID == "" {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodePositionIDRequired,
-				Message: "Position ID is required",
-				Source:  ErrorSource{Parameter: "id"},
-			}}}, http.StatusBadRequest)
+			JSON(w, Problem{
+				Type:   ProblemTypePositionIDRequired,
+				Detail: "Position ID is required",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
 			return
 		}
 
 		position, err := a.Store.GetPosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodePositionNotFound,
-					Message: "Position not found",
-					Source:  ErrorSource{Parameter: "id"},
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypePositionNotFound,
+					Detail: "Position not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to fetch position", "err", err)
@@ -3289,21 +3417,21 @@ func (a *API) HandlerDeletePosition() http.HandlerFunc {
 		}
 
 		if position.RecruiterID != recruiterID {
-			JSON(w, Envelope{Errors: []Error{{
-				Code:    ErrorCodeForbidden,
-				Message: "You do not have access to this resource",
-			}}}, http.StatusForbidden)
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
 			return
 		}
 
 		err = a.Store.DeletePosition(positionID)
 		if err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
-				JSON(w, Envelope{Errors: []Error{{
-					Code:    ErrorCodePositionNotFound,
-					Message: "Position not found",
-					Source:  ErrorSource{Parameter: "id"},
-				}}}, http.StatusNotFound)
+				JSON(w, Problem{
+					Type:   ProblemTypePositionNotFound,
+					Detail: "Position not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
 				return
 			}
 			slog.Error("failed to delete position", "err", err)

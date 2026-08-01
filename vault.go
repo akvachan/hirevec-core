@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/mail"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -67,6 +68,18 @@ const (
 	// RoleAdmin Role = "admin"
 )
 
+var ErrInvalidRole = errors.New("invalid role")
+
+func StringToRole(roleStr string) (Role, error) {
+	if roleStr == string(RoleCandidate) {
+		return RoleCandidate, nil
+	} else if roleStr == string(RoleRecruiter) {
+		return RoleRecruiter, nil
+	} else {
+		return Role(""), ErrInvalidRole
+	}
+}
+
 // TODO: Extend RBAC with a notion of role:mode:resource instead of plain role
 // type Mode string
 //
@@ -116,7 +129,7 @@ type OIDCConfig struct {
 }
 
 type VaultConfig struct {
-	ServerBaseURL          string
+	ServerBaseURL          *url.URL
 	SymmetricKey           string
 	AsymmetricKey          string
 	UseGoogleSSO           bool
