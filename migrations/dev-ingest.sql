@@ -27,7 +27,7 @@ insert or ignore into users (
     'alex.chen.demo@example.com',
     'Alex Chen',
     'alexchen',
-    '$2a$10$t9LpVDfHKqaB1RtcpPBHmOvgghnlMEs9tKCFu0TKm8TkyQJt51pXu',
+    '$2a$10$t9LpVDfHKqaB1RtcpPBHmOvgghnlMEs9tKCFu0TKm8TkyQJt51pXu', -- "test"
     '2026-07-01T10:00:00Z'
 );
 
@@ -189,5 +189,40 @@ insert or ignore into reactions values (
     'positive',
     '2026-07-01T10:15:00Z'
 );
+
+
+insert or ignore into users (
+    id,
+    provider,
+    provider_user_id,
+    email,
+    full_name,
+    user_name,
+    password_hash,
+    updated_at
+) values (
+    'usr_demo_candidate_2',
+    'email',
+    null,
+    'alex.chen.demo@example.com',
+    'Alex Chen',
+    'alexchen',
+    '$2a$10$t9LpVDfHKqaB1RtcpPBHmOvgghnlMEs9tKCFu0TKm8TkyQJt51pXu',
+    '2026-07-01T10:00:00Z'
+);
+
+
+insert or ignore into candidates (
+    id,
+    user_id,
+    about,
+    last_recommended_at
+) values (
+    'can_demo_2',
+    'usr_demo_candidate_2',
+    'Senior Backend Engineer with 8+ years building scalable SaaS platforms. Expert in TypeScript, React, Node.js, Go and AWS. Led teams of up to 10 engineers, shipped products used by millions of users, and enjoys mentoring, system design and developer experience.',
+    '2026-07-01T10:00:00Z'
+);
+
 
 commit;

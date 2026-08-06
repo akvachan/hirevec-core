@@ -18,6 +18,9 @@ Ingest some test data with:
 go run cmd/hvcli/main.go dev ingest
 ```
 
+> [!TIP]
+> Email from a test user is `alex.chen.demo@example.com` and password is `test`.
+
 You are set!
 
 ### Recommendation Engine
