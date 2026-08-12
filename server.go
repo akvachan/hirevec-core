@@ -496,7 +496,7 @@ func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
 				JSON(w, Problem{
 					Type:   ProblemTypeBearerTokenRequired,
 					Detail: "Bearer token is required",
-					Source: ProblemSource{Header: "Accept"},
+					Source: ProblemSource{Header: "Authorization"},
 				}, http.StatusUnauthorized)
 				return
 			}
@@ -506,7 +506,7 @@ func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidAccessToken,
 					Detail: "Invalid access token",
-					Source: ProblemSource{Header: "Accept"},
+					Source: ProblemSource{Header: "Authorization"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -522,7 +522,7 @@ func (a *API) MiddlewareAuth(roles map[Role]bool) Middleware {
 				if !authorized {
 					JSON(w, Problem{
 						Type:   ProblemTypeUnauthorized,
-						Source: ProblemSource{Header: "Accept"},
+						Source: ProblemSource{Header: "Authorization"},
 					}, http.StatusUnauthorized)
 					return
 				}
