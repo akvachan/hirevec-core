@@ -45,9 +45,9 @@ create table if not exists candidates (
   user_id text not null, -- ULID
   about text not null,
   pref_remote integer not null default 0, 
-  preferred_title_1 text,
-  preferred_title_2 text,
-  preferred_title_3 text,
+  pref_title_1 text,
+  pref_title_2 text,
+  pref_title_3 text,
   last_recommended_at timestamp not null, -- UTC, RFC3339
   unique(user_id),
   foreign key (user_id) references users(id) on delete cascade
