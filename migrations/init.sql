@@ -2,6 +2,16 @@
 
 begin transaction;
 
+create table if not exists locations (
+  id serial primary key not null,
+  street_1 text not null,
+  street_2 text,
+  country text not null,
+  city text not null,
+  state text,
+  postal_code text not null
+);
+
 create table if not exists users (
   id text primary key not null, -- ULID
   provider text not null,
@@ -9,8 +19,10 @@ create table if not exists users (
   email text,
   full_name text,
   user_name text unique not null,
+  location_id int not null,
   password_hash text,
   updated_at timestamp not null, -- UTC, RFC3339
+  foreign key (location_id) references locations(id) on delete cascade,
   check (provider in ('google', 'apple', 'email')),
   unique(provider, provider_user_id)
 );
@@ -32,9 +44,41 @@ create table if not exists candidates (
   id text primary key not null, -- ULID
   user_id text not null, -- ULID
   about text not null,
+  pref_remote integer not null default 0, 
+  preferred_title_1 text,
+  preferred_title_2 text,
+  preferred_title_3 text,
   last_recommended_at timestamp not null, -- UTC, RFC3339
   unique(user_id),
   foreign key (user_id) references users(id) on delete cascade
+);
+
+create table if not exists candidate_experiences (
+  candidate_id text primary key not null, -- ULID
+  title text not null,
+  started_at timestamp not null, -- UTC, RFC3339
+  ended_at timestamp not null, -- UTC, RFC3339
+  description text,
+  company text,
+  experience_type text not null,
+  skill_1 text,
+  skill_2 text,
+  skill_3 text,
+  skill_4 text,
+  skill_5 text,
+  foreign key (candidate_id) references candidate(id) on delete cascade,
+  check (experience_type in (
+      'work',
+      'education',
+			'certification', 
+      'internship', 
+			'personal project', 
+			'enterpreneurship', 
+			'apprenticeship', 
+			'volunteering', 
+			'other'
+    )
+  )
 );
 
 create table if not exists recruiters (
@@ -50,9 +94,18 @@ create table if not exists positions (
   title text not null,
   description text not null,
   company text,
+  is_remote integer not null default 0,
+  location_id int,
+  skill_1 text,
+  skill_2 text,
+  skill_3 text,
+  skill_4 text,
+  skill_5 text,
   is_active integer not null default 1,
+  created_at timestamp not null, -- UTC, RFC3339
   unique(title, description, company),
   foreign key (recruiter_id) references recruiters(id) on delete cascade,
+  foreign key (location_id) references locations(id),
   check (is_active in (0, 1))
 );
 
@@ -80,15 +133,25 @@ on recommendations(candidate_id);
 create index if not exists idx_recommendations_candidate_id
 on recommendations(candidate_id, id);
 
-create table if not exists reactions (
+create table if not exists candidate_reactions (
   recommendation_id text not null, -- ULID
-  reactor_type text not null,
-  reactor_id text not null, -- ULID
+  candidate_id text not null, -- ULID
   reaction_type text not null,
   created_at timestamp not null, -- UTC, RFC3339
-  primary key (recommendation_id, reactor_type, reactor_id),
+  primary key (recommendation_id, candidate_id),
   foreign key (recommendation_id) references recommendations(id) on delete cascade,
-  check (reactor_type in ('candidate', 'recruiter')),
+  foreign key (recruiter_id) references candidates(id) on delete cascade,
+  check (reaction_type in ('positive', 'negative'))
+);
+
+create table if not exists recruiter_reactions (
+  recommendation_id text not null, -- ULID
+  recruiter_id text not null, -- ULID
+  reaction_type text not null,
+  created_at timestamp not null, -- UTC, RFC3339
+  primary key (recommendation_id, recruiter_id),
+  foreign key (recommendation_id) references recommendations(id) on delete cascade,
+  foreign key (recruiter_id) references recruiters(id) on delete cascade,
   check (reaction_type in ('positive', 'negative'))
 );
 

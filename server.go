@@ -1921,7 +1921,7 @@ func (a *API) HandlerGetReactions() http.HandlerFunc {
 		}
 
 		if (role == RoleRecruiter || role == "") && isRecruiter {
-			reactions, nextPage, err := a.Store.GetReactions(recruiterID, ReactorTypeRecruiter, GetPageFromQuery(r))
+			reactions, nextPage, err := a.Store.GetReactionsForRecruiter(recruiterID, GetPageFromQuery(r))
 			if err != nil {
 				slog.Error("failed to fetch reactions", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1944,7 +1944,7 @@ func (a *API) HandlerGetReactions() http.HandlerFunc {
 			return
 
 		} else if (role == RoleCandidate || role == "") && isCandidate {
-			reactions, nextPage, err := a.Store.GetReactions(candidateID, ReactorTypeCandidate, GetPageFromQuery(r))
+			reactions, nextPage, err := a.Store.GetReactionsForCandidate(candidateID, GetPageFromQuery(r))
 			if err != nil {
 				slog.Error("failed to fetch reactions", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)

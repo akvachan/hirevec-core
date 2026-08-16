@@ -23,7 +23,7 @@ const Enc = "0123456789abcdefghjkmnpqrstvwxyz"
 
 type ULID string
 
-func NewULID(prefix ULIDPrefix) (ULID, error) {
+func NewULID() (ULID, error) {
 	var id [16]byte
 	out := make([]byte, 26)
 
@@ -42,42 +42,7 @@ func NewULID(prefix ULIDPrefix) (ULID, error) {
 		out[10+i] = Enc[id[i]%32]
 	}
 
-	return ULID(string(prefix) + string(out)), nil
-}
-
-type ULIDPrefix string
-
-const (
-	ULIDPrefixCandidate      ULIDPrefix = "can_"
-	ULIDPrefixRecommendation ULIDPrefix = "rcm_"
-	ULIDPrefixRecruiter      ULIDPrefix = "rcr_"
-	ULIDPrefixUser           ULIDPrefix = "usr_"
-	ULIDPrefixJTI            ULIDPrefix = "jti_"
-	ULIDPrefixPosition       ULIDPrefix = "pos_"
-)
-
-func NewCandidateULID() (ULID, error) {
-	return NewULID(ULIDPrefixCandidate)
-}
-
-func NewRecruiterULID() (ULID, error) {
-	return NewULID(ULIDPrefixRecruiter)
-}
-
-func NewUserULID() (ULID, error) {
-	return NewULID(ULIDPrefixUser)
-}
-
-func NewRecommendationULID() (ULID, error) {
-	return NewULID(ULIDPrefixRecommendation)
-}
-
-func NewJTIULID() (ULID, error) {
-	return NewULID(ULIDPrefixJTI)
-}
-
-func NewPositionULID() (ULID, error) {
-	return NewULID(ULIDPrefixPosition)
+	return ULID(string(out)), nil
 }
 
 type DatabaseProvider string
@@ -169,7 +134,6 @@ var (
 func InitPostgreSQL(url string) (*sql.DB, error) {
 	db, err := ConnectPostgreSQL(url)
 	if err != nil {
-		slog.Error("failed to connect to database", "database", "PostgreSQL", "err", err)
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
@@ -194,7 +158,6 @@ func InitPostgreSQL(url string) (*sql.DB, error) {
 func InitSQLite() (*sql.DB, error) {
 	db, err := ConnectSQLite()
 	if err != nil {
-		slog.Error("failed to connect to database", "database", "SQLite", "err", err)
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
@@ -225,14 +188,12 @@ func NewStore(c StoreConfig) (Store, error) {
 	if c.DatabaseProvider == DatabaseProviderPostgreSQL {
 		slog.Debug("initializing store", "database", "PostgreSQL")
 		if s.DB, err = InitPostgreSQL(c.PostgreSQLDatabaseURL); err != nil {
-			slog.Error("failed to initialize database", "database", "PostgreSQL", "err", err)
 			return s, fmt.Errorf("failed to initialize database: %w", err)
 		}
 
 	} else if c.DatabaseProvider == DatabaseProviderSQLite {
 		slog.Debug("initializing store", "database", "SQLite")
 		if s.DB, err = InitSQLite(); err != nil {
-			slog.Error("failed to initialize database", "database", "SQLite", "err", err)
 			return s, fmt.Errorf("failed to initialize database: %w", err)
 		}
 
@@ -437,7 +398,7 @@ var (
 )
 
 func (s Store) CreateUser(provider Provider, providerUserID string, email string, fullName string, userName string, passwordHash string) (ULID, error) {
-	id, err := NewUserULID()
+	id, err := NewULID()
 	if err != nil {
 		return "", ErrFailedGenerateUserULID
 	}
@@ -500,8 +461,6 @@ func (r ReactorType) IsValid() bool {
 
 type Reaction struct {
 	RecommendationID ULID         `json:"recommendation_id"`
-	ReactorType      ReactorType  `json:"-"`
-	ReactorID        ULID         `json:"-"`
 	ReactionType     ReactionType `json:"reaction_type"`
 	ReactedAt        time.Time    `json:"reacted_at"`
 }
@@ -595,7 +554,7 @@ const DefaultMaxRefreshTokensCount = 5
 var ErrFailedGenerateJTIULID = errors.New("failed to generate ULID for refresh token (JTI)")
 
 func (s Store) CreateRefreshToken(userID ULID) (jti ULID, err error) {
-	jti, err = NewJTIULID()
+	jti, err = NewULID()
 	if err != nil {
 		return "", ErrFailedGenerateJTIULID
 	}
@@ -668,7 +627,7 @@ var (
 )
 
 func (s Store) CreateRecommendation(positionID ULID, candidateID ULID) (ULID, error) {
-	id, err := NewRecommendationULID()
+	id, err := NewULID()
 	if err != nil {
 		return "", ErrFailedGenerateRecommendationULID
 	}
@@ -825,16 +784,15 @@ func (s Store) GetRecommendationsForRecruiter(recruiterID ULID, page Page, inclu
 	}, nil
 }
 
-func (s Store) GetReactions(reactorID ULID, reactorType ReactorType, page Page) ([]Reaction, Page, error) {
+func (s Store) GetReactionsForRecruiter(recruiterID ULID, page Page) ([]Reaction, Page, error) {
 	rows, err := s.DB.Query(`
-		select recommendation_id, reactor_type, reactor_id, reaction_type, created_at
-		from reactions
+		select recommendation_id, reaction_type, created_at
+		from recruiter_reactions
 		where reactor_id = $1
-		  and reactor_type = 'candidate'
 		  and ($2 = '' or recommendation_id > $2)
 		order by recommendation_id desc
 		limit $3
-	`, reactorID, page.Cursor, page.Limit+1)
+	`, recruiterID, page.Cursor, page.Limit+1)
 	if err != nil {
 		return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
 	}
@@ -849,8 +807,46 @@ func (s Store) GetReactions(reactorID ULID, reactorType ReactorType, page Page) 
 		var rx Reaction
 		if err := rows.Scan(
 			&rx.RecommendationID,
-			&rx.ReactorType,
-			&rx.ReactorID,
+			&rx.ReactionType,
+			&rx.ReactedAt,
+		); err != nil {
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
+		}
+		results = append(results, rx)
+	}
+
+	var nextPage Page
+	if len(results) > page.Limit {
+		results = results[:page.Limit]
+		nextPage.Cursor = string(results[page.Limit-1].RecommendationID)
+	}
+
+	return results, nextPage, nil
+}
+
+func (s Store) GetReactionsForCandidate(candidateID ULID, page Page) ([]Reaction, Page, error) {
+	rows, err := s.DB.Query(`
+		select recommendation_id, reaction_type, created_at
+		from candidate_reactions
+		where candidate_id = $1
+		  and ($2 = '' or recommendation_id > $2)
+		order by recommendation_id desc
+		limit $3
+	`, candidateID, page.Cursor, page.Limit+1)
+	if err != nil {
+		return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("failed to close rows", "err", err)
+		}
+	}()
+
+	results := make([]Reaction, 0, page.Limit)
+	for rows.Next() {
+		var rx Reaction
+		if err := rows.Scan(
+			&rx.RecommendationID,
 			&rx.ReactionType,
 			&rx.ReactedAt,
 		); err != nil {
@@ -1190,7 +1186,7 @@ var (
 )
 
 func (s Store) CreateRecruiter(userID ULID) (ULID, error) {
-	id, err := NewRecruiterULID()
+	id, err := NewULID()
 	if err != nil {
 		return "", ErrFailedGenerateRecruiterULID
 	}
@@ -1230,7 +1226,7 @@ var (
 )
 
 func (s Store) CreatePosition(recruiterID ULID, title string, description string, company string, isActive bool) (ULID, error) {
-	id, err := NewPositionULID()
+	id, err := NewULID()
 	if err != nil {
 		return "", ErrFailedGeneratePositionULID
 	}
@@ -1268,7 +1264,7 @@ var (
 )
 
 func (s Store) CreateCandidate(userID ULID, about string) (ULID, error) {
-	id, err := NewCandidateULID()
+	id, err := NewULID()
 	if err != nil {
 		return "", ErrFailedGenerateCandidateULID
 	}
