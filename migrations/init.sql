@@ -44,7 +44,7 @@ create table if not exists candidates (
   id text primary key not null, -- ULID
   user_id text not null, -- ULID
   about text not null,
-  pref_remote integer not null default 0, 
+  pref_remote integer not null default -1, 
   pref_title_1 text,
   pref_title_2 text,
   pref_title_3 text,
@@ -94,7 +94,7 @@ create table if not exists positions (
   title text not null,
   description text not null,
   company text,
-  is_remote integer not null default 0,
+  is_remote integer not null default -1,
   location_id int,
   skill_1 text,
   skill_2 text,
