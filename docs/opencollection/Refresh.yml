@@ -1,0 +1,23 @@
+info:
+  name: Refresh
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: localhost:8888/refresh
+  body:
+    type: json
+    data: |-
+      {
+        "refresh_token": "v4.local.-CQUT9HnkAMKj_-c88BhsncRV9UJ5JZiItplycs5cnTBoBKRRLe0WKlXuzE9DpUHa2Xz2LIOmBFzkIcpbkihl4gveT1-GesDhUt3DGOx2PFe1X7136VPsV115CekYQvg9buES1yYF1lQaA7H4CNEhevmUJqv4zevUVVHq9gx5-LFzKO1wYFajqRgs7cTs6KrrZUsEwX9swGG5ymbD_2DK2yoUkUKewaPYFJt-KdMbfWinMBmUo5aKzsu0XhtSElLj1_f1aOPX01JjI4sm8HSJRKsqfQ-5j5G5ys7ekJkv5uCaBbc0vzF9QmN6aD1FsptjP1diGjr13cjhoZjs3XVZDOVYNYgXtku-YzIL65Vf6k-1U7LJDHSjdbvdw",
+        "grant_type": "refresh_token"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

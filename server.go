@@ -393,6 +393,7 @@ type ResponseWriter struct {
 
 func (rw *ResponseWriter) WriteHeader(code int) {
 	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 type ProblemType string
@@ -629,6 +630,7 @@ const (
 	// Resources and collections
 	RouteCandidate       Route = "/candidates/{id}"
 	RouteCandidates      Route = "/candidates"
+	RouteLocations       Route = "/locations"
 	RouteMatches         Route = "/matches"
 	RoutePosition        Route = "/positions/{id}"
 	RoutePositions       Route = "/positions"
@@ -897,6 +899,14 @@ func (a *API) RegisterRoutes() {
 		Handler: a.HandlerGetMatches(),
 		Roles:   []Role{RoleCandidate, RoleRecruiter},
 	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteLocations,
+		Handler: a.HandlerSearchLocations(),
+	})
 }
 
 const (
@@ -1083,6 +1093,7 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 			}
 			w.Header().Set("Cache-Control", "no-store")
 			JSON(w, accessToken, http.StatusOK)
+			return
 
 		case err != nil:
 			slog.Error("failed to get user by email", "err", err)
@@ -1451,6 +1462,12 @@ var (
 	ErrTextForbiddenChars = errors.New("text contains forbidden characters")
 	ErrTextTooShort       = errors.New("text too short")
 	ErrTextTooLong        = errors.New("text too long")
+)
+
+var (
+	ErrInvalidPrefLocationID  = errors.New("pref_location_id must be a positive number")
+	ErrInvalidExperienceType  = errors.New("invalid experience type")
+	ErrInvalidExperienceDates = errors.New("started_at must not be after ended_at")
 )
 
 // TODO: Return an array of errors instead of one by one.
@@ -2346,13 +2363,137 @@ func NormalizeAndValidateCandidateAbout(about string) (string, error) {
 	return html.EscapeString(about), nil
 }
 
+const (
+	DefaultExperienceTitleMaxLength = 128
+	DefaultExperienceTextMaxLength  = 1024
+)
+
+type RequestBodyCandidatePrefs struct {
+	PrefRemote      *bool   `json:"pref_remote"`
+	PrefTitle1      *string `json:"pref_title_1"`
+	PrefTitle2      *string `json:"pref_title_2"`
+	PrefTitle3      *string `json:"pref_title_3"`
+	PrefLocation1ID *int    `json:"pref_location_1_id"`
+	PrefLocation2ID *int    `json:"pref_location_2_id"`
+	PrefLocation3ID *int    `json:"pref_location_3_id"`
+}
+
+type RequestBodyCandidateExperience struct {
+	Title          string    `json:"title"`
+	StartedAt      time.Time `json:"started_at"`
+	EndedAt        time.Time `json:"ended_at"`
+	Description    *string   `json:"description"`
+	Company        *string   `json:"company"`
+	ExperienceType string    `json:"experience_type"`
+	Skill1         *string   `json:"skill_1"`
+	Skill2         *string   `json:"skill_2"`
+	Skill3         *string   `json:"skill_3"`
+	Skill4         *string   `json:"skill_4"`
+	Skill5         *string   `json:"skill_5"`
+}
+
 type RequestBodyCreateCandidate struct {
-	About string `json:"about"`
+	About       string                           `json:"about"`
+	Experiences []RequestBodyCandidateExperience `json:"experiences"`
+	RequestBodyCandidatePrefs
+}
+
+func NormalizeAndValidateCandidateExperienceTitle(title string) (string, error) {
+	title = strings.TrimSpace(title)
+	title = RegexHasTags.ReplaceAllString(title, "")
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" {
+		return "", ErrTextTooShort
+	}
+	if len(title) > DefaultExperienceTitleMaxLength {
+		return "", ErrTextTooLong
+	}
+	return html.EscapeString(title), nil
+}
+
+func NormalizeAndValidateOptionalExperienceText(text *string) (*string, error) {
+	if text == nil {
+		return nil, nil
+	}
+
+	normalized := strings.TrimSpace(*text)
+	normalized = RegexHasTags.ReplaceAllString(normalized, "")
+	if normalized == "" {
+		return nil, nil
+	}
+	if len(normalized) > DefaultExperienceTextMaxLength {
+		return nil, ErrTextTooLong
+	}
+
+	return &normalized, nil
+}
+
+func ValidatePrefLocationID(locationID int) error {
+	if locationID < 1 {
+		return ErrInvalidPrefLocationID
+	}
+	return nil
+}
+
+func NormalizeAndValidateCandidateExperiences(experiences []RequestBodyCandidateExperience) ([]CandidateExperience, error) {
+	normalized := make([]CandidateExperience, 0, len(experiences))
+
+	for i, experience := range experiences {
+		title, err := NormalizeAndValidateCandidateExperienceTitle(experience.Title)
+		if err != nil {
+			return nil, fmt.Errorf("%w: experiences/%v/title", err, i)
+		}
+
+		experienceType := ExperienceType(experience.ExperienceType)
+		if !experienceType.IsValid() {
+			return nil, fmt.Errorf("%w: experiences/%v/experience_type", ErrInvalidExperienceType, i)
+		}
+
+		if experience.StartedAt.After(experience.EndedAt) {
+			return nil, fmt.Errorf("%w: experiences/%v/started_at", ErrInvalidExperienceDates, i)
+		}
+
+		description, err := NormalizeAndValidateOptionalExperienceText(experience.Description)
+		if err != nil {
+			return nil, fmt.Errorf("%w: experiences/%v/description", err, i)
+		}
+
+		company, err := NormalizeAndValidateOptionalExperienceText(experience.Company)
+		if err != nil {
+			return nil, fmt.Errorf("%w: experiences/%v/company", err, i)
+		}
+
+		skills := []*string{experience.Skill1, experience.Skill2, experience.Skill3, experience.Skill4, experience.Skill5}
+		for j, skill := range skills {
+			if skill, err = NormalizeAndValidateOptionalExperienceText(skill); err != nil {
+				return nil, fmt.Errorf("%w: experiences/%v/skill_%v", err, i, j+1)
+			}
+			skills[j] = skill
+		}
+
+		normalized = append(normalized, CandidateExperience{
+			Title:          title,
+			StartedAt:      experience.StartedAt,
+			EndedAt:        experience.EndedAt,
+			Description:    description,
+			Company:        company,
+			ExperienceType: experienceType,
+			Skill1:         skills[0],
+			Skill2:         skills[1],
+			Skill3:         skills[2],
+			Skill4:         skills[3],
+			Skill5:         skills[4],
+		})
+	}
+
+	return normalized, nil
 }
 
 const (
-	ProblemTypeCandidateAlreadyExists      ProblemType = "urn:hirevec:candiate-already-exists"
-	ProblemTypeInvalidCandidateAboutFormat ProblemType = "urn:hirevec:invalid-candidate-about-format"
+	ProblemTypeCandidateAlreadyExists           ProblemType = "urn:hirevec:candiate-already-exists"
+	ProblemTypeInvalidCandidateAboutFormat      ProblemType = "urn:hirevec:invalid-candidate-about-format"
+	ProblemTypeInvalidCandidatePrefsFormat      ProblemType = "urn:hirevec:invalid-candidate-prefs-format"
+	ProblemTypeInvalidCandidateExperienceFormat ProblemType = "urn:hirevec:invalid-candidate-experience-format"
 )
 
 // TODO: Write integration tests for this handler
@@ -2390,7 +2531,111 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 			return
 		}
 
-		if _, err = a.Store.CreateCandidate(claims.UserID, about); err != nil {
+		experiences, err := NormalizeAndValidateCandidateExperiences(body.Experiences)
+		if err != nil {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidCandidateExperienceFormat,
+				Detail: err.Error(),
+			}, http.StatusBadRequest)
+			return
+		}
+
+		candidate := Candidate{
+			UserID: claims.UserID,
+			About:  about,
+		}
+
+		if body.PrefRemote != nil {
+			candidate.PrefRemote = body.PrefRemote
+		}
+
+		if body.PrefTitle1 != nil {
+			title, err := NormalizeAndValidateCandidateExperienceTitle(*body.PrefTitle1)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_title_1 must be between 1 and 128 characters",
+					Source: ProblemSource{Pointer: "data/pref_title_1"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate pref_title_1", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			candidate.PrefTitle1 = &title
+		}
+		if body.PrefTitle2 != nil {
+			title, err := NormalizeAndValidateCandidateExperienceTitle(*body.PrefTitle2)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_title_2 must be between 1 and 128 characters",
+					Source: ProblemSource{Pointer: "data/pref_title_2"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate pref_title_2", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			candidate.PrefTitle2 = &title
+		}
+		if body.PrefTitle3 != nil {
+			title, err := NormalizeAndValidateCandidateExperienceTitle(*body.PrefTitle3)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_title_3 must be between 1 and 128 characters",
+					Source: ProblemSource{Pointer: "data/pref_title_3"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate pref_title_3", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			candidate.PrefTitle3 = &title
+		}
+
+		if body.PrefLocation1ID != nil {
+			if err := ValidatePrefLocationID(*body.PrefLocation1ID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_location_1_id must be a positive number",
+					Source: ProblemSource{Pointer: "data/pref_location_1_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+			candidate.PrefLocation1ID = body.PrefLocation1ID
+		}
+		if body.PrefLocation2ID != nil {
+			if err := ValidatePrefLocationID(*body.PrefLocation2ID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_location_2_id must be a positive number",
+					Source: ProblemSource{Pointer: "data/pref_location_2_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+			candidate.PrefLocation2ID = body.PrefLocation2ID
+		}
+		if body.PrefLocation3ID != nil {
+			if err := ValidatePrefLocationID(*body.PrefLocation3ID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_location_3_id must be a positive number",
+					Source: ProblemSource{Pointer: "data/pref_location_3_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+			candidate.PrefLocation3ID = body.PrefLocation3ID
+		}
+
+		if _, err = a.Store.CreateCandidate(candidate, experiences); err != nil {
 			if errors.Is(err, ErrCandidateAlreadyExists) {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateAlreadyExists,
@@ -2718,12 +2963,29 @@ func (a *API) HandlerGetCandidate() http.HandlerFunc {
 			return
 		}
 
-		JSON(w, candidate, http.StatusOK)
+		experiences, err := a.Store.GetCandidateExperiences(candidateID)
+		if err != nil {
+			slog.Error("failed to get candidate experiences", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, CandidateProfile{
+			Candidate:   candidate,
+			Experiences: experiences,
+		}, http.StatusOK)
 	}
 }
 
+type CandidateProfile struct {
+	Candidate
+	Experiences []CandidateExperience `json:"experiences"`
+}
+
 type RequestBodyPatchCandidate struct {
-	About *string `json:"about"`
+	About       *string                           `json:"about"`
+	Experiences *[]RequestBodyCandidateExperience `json:"experiences"`
+	RequestBodyCandidatePrefs
 }
 
 // TODO: Write integration tests for this handler
@@ -2748,6 +3010,12 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 
 		urlCandidateIDStr := r.PathValue("id")
 		urlCandidateID := ID(urlCandidateIDStr)
+
+		// Infer candidateID from claims
+		if urlCandidateID == "me" {
+			urlCandidateID = candidateID
+		}
+
 		if urlCandidateID != candidateID {
 			JSON(w, Problem{
 				Type:   ProblemTypeForbidden,
@@ -2763,6 +3031,18 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 				Detail: "Invalid request body",
 			}, http.StatusBadRequest)
 			return
+		}
+
+		var experiences []CandidateExperience
+		if body.Experiences != nil {
+			experiences, err = NormalizeAndValidateCandidateExperiences(*body.Experiences)
+			if err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidateExperienceFormat,
+					Detail: err.Error(),
+				}, http.StatusBadRequest)
+				return
+			}
 		}
 
 		candidate, err := a.Store.GetCandidate(candidateID)
@@ -2802,12 +3082,127 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 			}
 		}
 
+		if body.PrefRemote != nil {
+			if candidate.PrefRemote == nil || *candidate.PrefRemote != *body.PrefRemote {
+				candidate.PrefRemote = body.PrefRemote
+				changed = true
+			}
+		}
+
+		if body.PrefTitle1 != nil {
+			title, err := NormalizeAndValidateCandidateExperienceTitle(*body.PrefTitle1)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_title_1 must be between 1 and 128 characters",
+					Source: ProblemSource{Pointer: "data/pref_title_1"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate pref_title_1", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if candidate.PrefTitle1 == nil || *candidate.PrefTitle1 != title {
+				candidate.PrefTitle1 = &title
+				changed = true
+			}
+		}
+		if body.PrefTitle2 != nil {
+			title, err := NormalizeAndValidateCandidateExperienceTitle(*body.PrefTitle2)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_title_2 must be between 1 and 128 characters",
+					Source: ProblemSource{Pointer: "data/pref_title_2"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate pref_title_2", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if candidate.PrefTitle2 == nil || *candidate.PrefTitle2 != title {
+				candidate.PrefTitle2 = &title
+				changed = true
+			}
+		}
+		if body.PrefTitle3 != nil {
+			title, err := NormalizeAndValidateCandidateExperienceTitle(*body.PrefTitle3)
+			if errors.Is(err, ErrTextTooShort) || errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_title_3 must be between 1 and 128 characters",
+					Source: ProblemSource{Pointer: "data/pref_title_3"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate pref_title_3", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if candidate.PrefTitle3 == nil || *candidate.PrefTitle3 != title {
+				candidate.PrefTitle3 = &title
+				changed = true
+			}
+		}
+
+		if body.PrefLocation1ID != nil {
+			if err := ValidatePrefLocationID(*body.PrefLocation1ID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_location_1_id must be a positive number",
+					Source: ProblemSource{Pointer: "data/pref_location_1_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if candidate.PrefLocation1ID == nil || *candidate.PrefLocation1ID != *body.PrefLocation1ID {
+				candidate.PrefLocation1ID = body.PrefLocation1ID
+				changed = true
+			}
+		}
+		if body.PrefLocation2ID != nil {
+			if err := ValidatePrefLocationID(*body.PrefLocation2ID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_location_2_id must be a positive number",
+					Source: ProblemSource{Pointer: "data/pref_location_2_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if candidate.PrefLocation2ID == nil || *candidate.PrefLocation2ID != *body.PrefLocation2ID {
+				candidate.PrefLocation2ID = body.PrefLocation2ID
+				changed = true
+			}
+		}
+		if body.PrefLocation3ID != nil {
+			if err := ValidatePrefLocationID(*body.PrefLocation3ID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidCandidatePrefsFormat,
+					Detail: "pref_location_3_id must be a positive number",
+					Source: ProblemSource{Pointer: "data/pref_location_3_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if candidate.PrefLocation3ID == nil || *candidate.PrefLocation3ID != *body.PrefLocation3ID {
+				candidate.PrefLocation3ID = body.PrefLocation3ID
+				changed = true
+			}
+		}
+
+		if body.Experiences != nil {
+			changed = true
+		}
+
 		if !changed {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
-		if err = a.Store.UpdateCandidate(candidate.ID, candidate.About); err != nil {
+		if err = a.Store.UpdateCandidate(candidate, experiences); err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateNotFound,
@@ -3152,6 +3547,35 @@ func (a *API) HandlerGetPositions() http.HandlerFunc {
 		a.AddNextLink(w, RoutePositions, page)
 
 		JSON(w, positions, http.StatusOK)
+	}
+}
+
+const ProblemTypeInvalidLocationCursor ProblemType = "urn:hirevec:invalid-location-cursor"
+
+// TODO: Write integration tests for this handler
+// https://github.com/akvachan/hirevec-core/issues/34
+func (a *API) HandlerSearchLocations() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("q")
+
+		locations, page, err := a.Store.SearchLocations(query, GetPageFromQuery(r))
+		if err != nil {
+			if errors.Is(err, ErrInvalidLocationCursor) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidLocationCursor,
+					Detail: "Invalid cursor; must be a positive integer",
+					Source: ProblemSource{Parameter: "cursor"},
+				}, http.StatusBadRequest)
+				return
+			}
+			slog.Error("failed to fetch locations", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		a.AddNextLink(w, RouteLocations, page)
+
+		JSON(w, locations, http.StatusOK)
 	}
 }
 

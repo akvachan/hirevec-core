@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 	"uuid"
@@ -1176,6 +1177,16 @@ func (s Store) CreateRecruiter(userID ID) (ID, error) {
 	return id, nil
 }
 
+type Location struct {
+	ID         int     `json:"id"`
+	Street1    string  `json:"street_1"`
+	Street2    *string `json:"street_2"`
+	Country    string  `json:"country"`
+	City       string  `json:"city"`
+	State      *string `json:"state"`
+	PostalCode string  `json:"postal_code"`
+}
+
 type Position struct {
 	ID          ID     `json:"id"`
 	RecruiterID ID     `json:"recruiter_id,omitempty"`
@@ -1214,21 +1225,155 @@ type Candidate struct {
 	ID                ID        `json:"id"`
 	UserID            ID        `json:"user_id"`
 	About             string    `json:"about"`
+	PrefRemote        *bool     `json:"pref_remote"`
+	PrefTitle1        *string   `json:"pref_title_1"`
+	PrefTitle2        *string   `json:"pref_title_2"`
+	PrefTitle3        *string   `json:"pref_title_3"`
+	PrefLocation1ID   *int      `json:"pref_location_1_id"`
+	PrefLocation2ID   *int      `json:"pref_location_2_id"`
+	PrefLocation3ID   *int      `json:"pref_location_3_id"`
 	LastRecommendedAt time.Time `json:"last_recommended_at"`
+}
+
+type ExperienceType string
+
+const (
+	ExperienceTypeWork             ExperienceType = "work"
+	ExperienceTypeEducation        ExperienceType = "education"
+	ExperienceTypeCertification    ExperienceType = "certification"
+	ExperienceTypeInternship       ExperienceType = "internship"
+	ExperienceTypePersonalProject  ExperienceType = "personal project"
+	ExperienceTypeEnterpreneurship ExperienceType = "enterpreneurship"
+	ExperienceTypeApprenticeship   ExperienceType = "apprenticeship"
+	ExperienceTypeVolunteering     ExperienceType = "volunteering"
+	ExperienceTypeOther            ExperienceType = "other"
+)
+
+func (t ExperienceType) IsValid() bool {
+	switch t {
+	case ExperienceTypeWork,
+		ExperienceTypeEducation,
+		ExperienceTypeCertification,
+		ExperienceTypeInternship,
+		ExperienceTypePersonalProject,
+		ExperienceTypeEnterpreneurship,
+		ExperienceTypeApprenticeship,
+		ExperienceTypeVolunteering,
+		ExperienceTypeOther:
+		return true
+	}
+	return false
+}
+
+type CandidateExperience struct {
+	ID             ID             `json:"id"`
+	CandidateID    ID             `json:"candidate_id"`
+	Title          string         `json:"title"`
+	StartedAt      time.Time      `json:"started_at"`
+	EndedAt        time.Time      `json:"ended_at"`
+	Description    *string        `json:"description"`
+	Company        *string        `json:"company"`
+	ExperienceType ExperienceType `json:"experience_type"`
+	Skill1         *string        `json:"skill_1"`
+	Skill2         *string        `json:"skill_2"`
+	Skill3         *string        `json:"skill_3"`
+	Skill4         *string        `json:"skill_4"`
+	Skill5         *string        `json:"skill_5"`
+}
+
+func CreateCandidateExperiences(tx *sql.Tx, candidateID ID, experiences []CandidateExperience) error {
+	for i := range experiences {
+		experiences[i].CandidateID = candidateID
+		if experiences[i].ID == "" {
+			experiences[i].ID = NewID()
+		}
+
+		_, err := tx.Exec(`
+			insert into candidate_experiences (
+				id,
+				candidate_id,
+				title,
+				started_at,
+				ended_at,
+				description,
+				company,
+				experience_type,
+				skill_1,
+				skill_2,
+				skill_3,
+				skill_4,
+				skill_5
+			) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		`,
+			experiences[i].ID,
+			experiences[i].CandidateID,
+			experiences[i].Title,
+			experiences[i].StartedAt.UTC().Format(time.RFC3339),
+			experiences[i].EndedAt.UTC().Format(time.RFC3339),
+			experiences[i].Description,
+			experiences[i].Company,
+			experiences[i].ExperienceType,
+			experiences[i].Skill1,
+			experiences[i].Skill2,
+			experiences[i].Skill3,
+			experiences[i].Skill4,
+			experiences[i].Skill5,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to execute SQL: %w", err)
+		}
+	}
+
+	return nil
 }
 
 var ErrCandidateAlreadyExists = errors.New("candidate already exists")
 
-func (s Store) CreateCandidate(userID ID, about string) (ID, error) {
-	id := NewID()
+func (s Store) CreateCandidate(candidate Candidate, experiences []CandidateExperience) (ID, error) {
+	candidate.ID = NewID()
 
-	result, err := s.DB.Exec(`
-		insert into candidates (id, user_id, about, last_recommended_at)
-		values ($1, $2, $3, $4)
-		on conflict (user_id) do nothing
-	`, id, userID, about, CurrentTimestamp(-7*24*time.Hour))
+	tx, err := s.DB.Begin()
 	if err != nil {
-		return "", fmt.Errorf("failed to exec SQL: %w", err)
+		return "", fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			if err = tx.Rollback(); err != nil {
+				slog.Debug("failed to rollback transaction", "err", err)
+			}
+		}
+	}()
+
+	result, err := tx.Exec(`
+		insert into candidates (
+			id,
+			user_id,
+			about,
+			pref_remote,
+			pref_title_1,
+			pref_title_2,
+			pref_title_3,
+			pref_location_1_id,
+			pref_location_2_id,
+			pref_location_3_id,
+			last_recommended_at
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		on conflict (user_id) do nothing
+	`,
+		candidate.ID,
+		candidate.UserID,
+		candidate.About,
+		candidate.PrefRemote,
+		candidate.PrefTitle1,
+		candidate.PrefTitle2,
+		candidate.PrefTitle3,
+		candidate.PrefLocation1ID,
+		candidate.PrefLocation2ID,
+		candidate.PrefLocation3ID,
+		CurrentTimestamp(-7*24*time.Hour),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
@@ -1239,7 +1384,15 @@ func (s Store) CreateCandidate(userID ID, about string) (ID, error) {
 		return "", ErrCandidateAlreadyExists
 	}
 
-	return id, nil
+	if err = CreateCandidateExperiences(tx, candidate.ID, experiences); err != nil {
+		return "", fmt.Errorf("failed to insert candidate experiences: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return "", fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return candidate.ID, nil
 }
 
 func (s Store) ClearAll(ctx context.Context) error {
@@ -1497,20 +1650,32 @@ func (s Store) DeleteUser(userID ID) error {
 var ErrCandidateNotFound = errors.New("candidate not found")
 
 func (s Store) GetCandidate(candidateID ID) (Candidate, error) {
-	var userID ID
-	var about string
-	var lastRecommendedAt time.Time
+	var candidate Candidate
 	err := s.DB.QueryRow(`
 		select
 			user_id,
 			about,
+			pref_remote,
+			pref_title_1,
+			pref_title_2,
+			pref_title_3,
+			pref_location_1_id,
+			pref_location_2_id,
+			pref_location_3_id,
 			last_recommended_at
 		from candidates
 		where id = $1
 	`, candidateID).Scan(
-		&userID,
-		&about,
-		&lastRecommendedAt,
+		&candidate.UserID,
+		&candidate.About,
+		&candidate.PrefRemote,
+		&candidate.PrefTitle1,
+		&candidate.PrefTitle2,
+		&candidate.PrefTitle3,
+		&candidate.PrefLocation1ID,
+		&candidate.PrefLocation2ID,
+		&candidate.PrefLocation3ID,
+		&candidate.LastRecommendedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1519,23 +1684,48 @@ func (s Store) GetCandidate(candidateID ID) (Candidate, error) {
 		return Candidate{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
-	return Candidate{
-		candidateID,
-		userID,
-		about,
-		lastRecommendedAt,
-	}, nil
+	candidate.ID = candidateID
+	return candidate, nil
 }
 
-func (s Store) UpdateCandidate(
-	candidateID ID,
-	newAbout string,
-) error {
-	result, err := s.DB.Exec(`
+// UpdateCandidate updates the candidate fields and, if experiences is not nil,
+// replaces all existing candidate experiences with the provided ones in the same transaction.
+func (s Store) UpdateCandidate(candidate Candidate, experiences []CandidateExperience) error {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			if err = tx.Rollback(); err != nil {
+				slog.Debug("failed to rollback transaction", "err", err)
+			}
+		}
+	}()
+
+	result, err := tx.Exec(`
 		update candidates
-		set about = $1
-		where id = $2
-	`, newAbout, candidateID)
+		set
+			about = $1,
+			pref_remote = $2,
+			pref_title_1 = $3,
+			pref_title_2 = $4,
+			pref_title_3 = $5,
+			pref_location_1_id = $6,
+			pref_location_2_id = $7,
+			pref_location_3_id = $8
+		where id = $9
+	`,
+		candidate.About,
+		candidate.PrefRemote,
+		candidate.PrefTitle1,
+		candidate.PrefTitle2,
+		candidate.PrefTitle3,
+		candidate.PrefLocation1ID,
+		candidate.PrefLocation2ID,
+		candidate.PrefLocation3ID,
+		candidate.ID,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
@@ -1548,6 +1738,23 @@ func (s Store) UpdateCandidate(
 		return ErrCandidateNotFound
 	}
 
+	if experiences != nil {
+		if _, err = tx.Exec(`
+			delete from candidate_experiences
+			where candidate_id = $1
+		`, candidate.ID); err != nil {
+			return fmt.Errorf("failed to execute SQL: %w", err)
+		}
+
+		if err = CreateCandidateExperiences(tx, candidate.ID, experiences); err != nil {
+			return fmt.Errorf("failed to insert candidate experiences: %w", err)
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
 	return nil
 }
 
@@ -1555,35 +1762,70 @@ func (s Store) UpdateCandidateAndReturn(
 	candidateID ID,
 	newAbout string,
 ) (Candidate, error) {
-	var userID ID
-	var lastRecommendedAt time.Time
+	candidate := Candidate{ID: candidateID}
 	err := s.DB.QueryRow(`
 		update candidates
-		set
-			about = $1,
+		set about = $1
 		where id = $2
-		returning 
-			user_id,
-			about,
-			last_recommended_at
+		returning user_id, about, last_recommended_at
 	`, newAbout, candidateID).Scan(
-		&userID,
-		&newAbout,
-		&lastRecommendedAt,
+		&candidate.UserID,
+		&candidate.About,
+		&candidate.LastRecommendedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return Candidate{}, ErrCandidateNotFound
 		}
 		return Candidate{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
-	return Candidate{
-		candidateID,
-		userID,
-		newAbout,
-		lastRecommendedAt,
-	}, nil
+	return candidate, nil
+}
+
+func (s Store) GetCandidateExperiences(candidateID ID) ([]CandidateExperience, error) {
+	rows, err := s.DB.Query(`
+		select 
+			id,
+			candidate_id,
+			title,
+			started_at,
+			ended_at,
+			description,
+			company,
+			experience_type,
+			skill_1,
+			skill_2,
+			skill_3,
+			skill_4,
+			skill_5
+		from candidate_experiences
+		where candidate_id = $1
+		order by started_at desc
+	`, candidateID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("failed to close rows", "err", err)
+		}
+	}()
+
+	experiences := []CandidateExperience{}
+	for rows.Next() {
+		var experience CandidateExperience
+		err := rows.Scan(&experience.ID, &experience.CandidateID, &experience.Title, &experience.StartedAt, &experience.EndedAt, &experience.Description, &experience.Company, &experience.ExperienceType, &experience.Skill1, &experience.Skill2, &experience.Skill3, &experience.Skill4, &experience.Skill5)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan: %w", err)
+		}
+		experiences = append(experiences, experience)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate rows: %w", err)
+	}
+
+	return experiences, nil
 }
 
 func (s Store) DeleteCandidate(candidateID ID) error {
@@ -1735,6 +1977,74 @@ func (s Store) GetPositions(recruiterID ID, page Page) ([]Position, Page, error)
 		page.Cursor = string(positions[page.Limit-1].ID)
 	}
 	return positions, nextPage, nil
+}
+
+var ErrInvalidLocationCursor = errors.New("invalid location cursor; must be a positive integer")
+
+func (s Store) SearchLocations(query string, page Page) ([]Location, Page, error) {
+	cursorID := 0
+	if page.Cursor != "" {
+		parsed, err := strconv.ParseInt(page.Cursor, 10, 64)
+		if err != nil || parsed < 0 {
+			return nil, Page{}, ErrInvalidLocationCursor
+		}
+		cursorID = int(parsed)
+	}
+
+	search := strings.TrimSpace(query)
+
+	rows, err := s.DB.Query(`
+		select id, street_1, street_2, country, city, state, postal_code
+		from locations
+		where ($1 = 0 or id > $1)
+				and ($2 = ''
+						or lower(country) like '%' || lower($2) || '%'
+						or lower(city) like '%' || lower($2) || '%')
+		order by id
+		limit $3
+	`, cursorID, search, page.Limit+1)
+	if err != nil {
+		return nil, Page{}, fmt.Errorf("failed to query: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("failed to close rows", "err", err)
+		}
+	}()
+
+	locations := make([]Location, 0, page.Limit)
+	for rows.Next() {
+		var location Location
+		if err := rows.Scan(
+			&location.ID,
+			&location.Street1,
+			&location.Street2,
+			&location.Country,
+			&location.City,
+			&location.State,
+			&location.PostalCode,
+		); err != nil {
+			return nil, Page{}, fmt.Errorf("failed to scan: %w", err)
+		}
+		locations = append(locations, location)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, Page{}, fmt.Errorf("failed to iterate rows: %w", err)
+	}
+
+	hasNext := len(locations) > page.Limit
+	var nextCursor int
+	if hasNext {
+		locations = locations[:page.Limit]
+		nextCursor = locations[page.Limit-1].ID
+	}
+
+	return locations, Page{
+		Cursor:  strconv.Itoa(nextCursor),
+		Limit:   page.Limit,
+		Count:   len(locations),
+		HasNext: hasNext,
+	}, nil
 }
 
 func (s Store) UpdatePosition(

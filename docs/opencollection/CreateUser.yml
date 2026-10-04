@@ -1,0 +1,24 @@
+info:
+  name: CreateUser
+  type: http
+  seq: 4
+
+http:
+  method: POST
+  url: localhost:8888/users
+  body:
+    type: json
+    data: |-
+      {
+        "email": "john.doe@gmail.com",
+        "password": "JohnDoe123!",
+        "full_name": "John Doe"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false

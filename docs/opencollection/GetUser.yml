@@ -1,0 +1,23 @@
+info:
+  name: GetUser
+  type: http
+  seq: 5
+
+http:
+  method: GET
+  url: localhost:8888/users/me
+  headers:
+    - name: Authorization
+      value: Bearer v4.public.eyJhdWQiOiJoaXJldmVjLmNvbSIsImNhbmRpZGF0ZV9pZCI6ImNhbl9kZW1vIiwiZXhwIjoiMjAyNi0xMC0wNFQxMDo0Mzo1OFoiLCJpYXQiOiIyMDI2LTEwLTA0VDEwOjEzOjU4WiIsImlzcyI6ImhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0xMC0wNFQxMDoxMzo1OFoiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSIsInN1YiI6InVzcl9kZW1vX2NhbmRpZGF0ZSJ9Lnm4g4Yv_3dVmXKxwZafiNgbsP60vNzxdwMS_HvlDPfscbAZHw7RMPqBnBcNEqAQPwJxSFytxVC1KXXZaXt3AA
+      description: Access Token
+  body:
+    type: json
+    data: ""
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

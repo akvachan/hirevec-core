@@ -1,0 +1,23 @@
+info:
+  name: Login
+  type: http
+  seq: 2
+
+http:
+  method: POST
+  url: localhost:8888/login
+  body:
+    type: json
+    data: |-
+      {
+        "email": "alex.chen.demo@example.com",
+        "password": "test"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

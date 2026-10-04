@@ -19,10 +19,8 @@ create table if not exists users (
   email text,
   full_name text,
   user_name text unique not null,
-  location_id int not null,
   password_hash text,
   updated_at timestamp not null, -- UTC, RFC3339
-  foreign key (location_id) references locations(id) on delete cascade,
   check (provider in ('google', 'apple', 'email')),
   unique(provider, provider_user_id)
 );
@@ -44,17 +42,24 @@ create table if not exists candidates (
   id text primary key not null, -- UUID
   user_id text not null, -- UUID
   about text not null,
-  pref_remote integer not null default -1, 
+  pref_remote boolean, 
   pref_title_1 text,
   pref_title_2 text,
   pref_title_3 text,
+  pref_location_1_id int,
+  pref_location_2_id int,
+  pref_location_3_id int,
   last_recommended_at timestamp not null, -- UTC, RFC3339
   unique(user_id),
-  foreign key (user_id) references users(id) on delete cascade
+  foreign key (user_id) references users(id) on delete cascade,
+  foreign key (pref_location_1_id) references locations(id),
+  foreign key (pref_location_2_id) references locations(id),
+  foreign key (pref_location_3_id) references locations(id)
 );
 
 create table if not exists candidate_experiences (
-  candidate_id text primary key not null, -- UUID
+  id text primary key not null, -- UUID
+  candidate_id text not null, -- UUID
   title text not null,
   started_at timestamp not null, -- UTC, RFC3339
   ended_at timestamp not null, -- UTC, RFC3339
@@ -66,7 +71,7 @@ create table if not exists candidate_experiences (
   skill_3 text,
   skill_4 text,
   skill_5 text,
-  foreign key (candidate_id) references candidate(id) on delete cascade,
+  foreign key (candidate_id) references candidates(id) on delete cascade,
   check (experience_type in (
       'work',
       'education',
@@ -80,6 +85,9 @@ create table if not exists candidate_experiences (
     )
   )
 );
+
+create index if not exists idx_candidate_experiences_candidate
+on candidate_experiences(candidate_id);
 
 create table if not exists recruiters (
   id text primary key not null, -- UUID
