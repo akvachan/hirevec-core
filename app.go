@@ -64,6 +64,7 @@ type AppConfig struct {
 	PostgreSQLDatabaseURL       *url.URL
 	TEIAPIKey                   string
 	TEIBaseURL                  *url.URL
+	DevMode                     bool
 }
 
 func RunApp(c AppConfig) error {
@@ -101,6 +102,7 @@ func RunApp(c AppConfig) error {
 	store, err := NewStore(StoreConfig{
 		DatabaseProvider:      dbProvider,
 		PostgreSQLDatabaseURL: c.PostgreSQLDatabaseURL.String(),
+		DevMode:               c.DevMode,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to init store: %w", err)

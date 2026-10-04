@@ -478,9 +478,9 @@ func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string
 }
 
 type AccessTokenClaims struct {
-	UserID   ULID
+	UserID   ID
 	Provider Provider
-	Roles    map[Role]ULID
+	Roles    map[Role]ID
 }
 
 func (v Vault) ParseAccessToken(tokenString string) (AccessTokenClaims, error) {
@@ -507,27 +507,27 @@ func (v Vault) ParseAccessToken(tokenString string) (AccessTokenClaims, error) {
 		return AccessTokenClaims{}, ErrInvalidProvider
 	}
 
-	roles := make(map[Role]ULID, 3)
+	roles := make(map[Role]ID, 3)
 	recruiterID, _ := parsedToken.GetString("recruiter_id")
 	candidateID, _ := parsedToken.GetString("candidate_id")
 	if recruiterID != "" {
-		roles[RoleRecruiter] = ULID(recruiterID)
+		roles[RoleRecruiter] = ID(recruiterID)
 	}
 	if candidateID != "" {
-		roles[RoleCandidate] = ULID(candidateID)
+		roles[RoleCandidate] = ID(candidateID)
 	}
 
 	return AccessTokenClaims{
-		UserID:   ULID(userID),
+		UserID:   ID(userID),
 		Provider: provider,
 		Roles:    roles,
 	}, nil
 }
 
 type RefreshTokenClaims struct {
-	UserID   ULID
+	UserID   ID
 	Provider Provider
-	JTI      ULID
+	JTI      ID
 }
 
 func (v Vault) ParseRefreshToken(tokenString string) (RefreshTokenClaims, error) {
@@ -561,9 +561,9 @@ func (v Vault) ParseRefreshToken(tokenString string) (RefreshTokenClaims, error)
 	}
 
 	return RefreshTokenClaims{
-		UserID:   ULID(userID),
+		UserID:   ID(userID),
 		Provider: provider,
-		JTI:      ULID(jti),
+		JTI:      ID(jti),
 	}, nil
 }
 
@@ -579,10 +579,10 @@ type AccessToken struct {
 	TokenType   string `json:"token_type"`
 	ExpiresIn   uint32 `json:"expires_in"`
 	Scope       string `json:"scope"`
-	UserID      ULID   `json:"user_id"`
+	UserID      ID     `json:"user_id"`
 }
 
-func (v Vault) CreateAccessToken(userID ULID, provider Provider, roles map[Role]ULID) (AccessToken, error) {
+func (v Vault) CreateAccessToken(userID ID, provider Provider, roles map[Role]ID) (AccessToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
@@ -628,10 +628,10 @@ func (v Vault) CreateAccessToken(userID ULID, provider Provider, roles map[Role]
 type RefreshToken struct {
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    uint32 `json:"expires_in"`
-	UserID       ULID   `json:"user_id"`
+	UserID       ID     `json:"user_id"`
 }
 
-func (v Vault) CreateRefreshToken(userID ULID, provider Provider, jti ULID) (RefreshToken, error) {
+func (v Vault) CreateRefreshToken(userID ID, provider Provider, jti ID) (RefreshToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
@@ -660,10 +660,10 @@ type TokenPair struct {
 	ExpiresIn    uint32 `json:"expires_in"`
 	RefreshToken string `json:"refresh_token"`
 	Scope        string `json:"scope"`
-	UserID       ULID   `json:"user_id"`
+	UserID       ID     `json:"user_id"`
 }
 
-func (v Vault) CreateTokenPair(userID ULID, provider Provider, jti ULID, roles map[Role]ULID) (TokenPair, error) {
+func (v Vault) CreateTokenPair(userID ID, provider Provider, jti ID, roles map[Role]ID) (TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, roles)
 	if err != nil {
 		return TokenPair{}, fmt.Errorf("failed to create access token: %w", err)

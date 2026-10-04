@@ -181,7 +181,7 @@ type AIConfig struct {
 	RerankerModel   string
 }
 
-func Rerank(c AIConfig, candidateID ULID, positions []ULID) ([]ULID, error) {
+func Rerank(c AIConfig, candidateID ID, positions []ID) ([]ID, error) {
 	return nil, nil
 }
 
@@ -207,7 +207,7 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 	}
 
 	for i := range len(candidateIDs) {
-		var positionIDs []ULID
+		var positionIDs []ID
 
 		if c.UseEmbeddings {
 			positionIDs, err = a.Store.GetPositionsForCandidateViaEmbeddings(candidateIDs[i], DefaultTopPositions)
@@ -662,41 +662,41 @@ func (a *API) RegisterRoutes() {
 	// TODO: Document the route in openapi.json
 	// https://github.com/akvachan/hirevec-core/issues/33
 	a.PublicRoute(RouteConfig{
-		Method:  MethodPost,
-		Route:   RouteLoginViaProvider,
-		Handler: a.HandlerLoginViaProvider(),
-	})
-
-	// TODO: Document the route in openapi.json
-	// https://github.com/akvachan/hirevec-core/issues/33
-	a.PublicRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteLoginViaProvider,
-		Handler: a.HandlerLoginViaProvider(),
-	})
-
-	// TODO: Document the route in openapi.json
-	// https://github.com/akvachan/hirevec-core/issues/33
-	a.PublicRoute(RouteConfig{
-		Method:  MethodPost,
-		Route:   RouteCallback,
-		Handler: a.HandlerSSOCallback(),
-	})
-
-	// TODO: Document the route in openapi.json
-	// https://github.com/akvachan/hirevec-core/issues/33
-	a.PublicRoute(RouteConfig{
-		Method:  MethodGet,
-		Route:   RouteCallback,
-		Handler: a.HandlerSSOCallback(),
-	})
-
-	// TODO: Document the route in openapi.json
-	// https://github.com/akvachan/hirevec-core/issues/33
-	a.PublicRoute(RouteConfig{
 		Method:  MethodGet,
 		Route:   RouteHealth,
 		Handler: a.HandlerHealth,
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteLoginViaProvider,
+		Handler: a.HandlerLoginViaProvider(),
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteLoginViaProvider,
+		Handler: a.HandlerLoginViaProvider(),
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodPost,
+		Route:   RouteCallback,
+		Handler: a.HandlerSSOCallback(),
+	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteCallback,
+		Handler: a.HandlerSSOCallback(),
 	})
 
 	// TODO: Document the route in openapi.json
@@ -1075,7 +1075,7 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 			return
 
 		case errors.Is(err, ErrUserNoRole):
-			accessToken, err := a.Vault.CreateAccessToken(user.ID, user.Provider, map[Role]ULID{})
+			accessToken, err := a.Vault.CreateAccessToken(user.ID, user.Provider, map[Role]ID{})
 			if err != nil {
 				slog.Error("failed to create access token", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1391,7 +1391,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 				return
 			}
 
-			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ULID{})
+			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ID{})
 			if err != nil {
 				slog.Error("failed to create access token", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1403,7 +1403,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			return
 
 		case errors.Is(err, ErrUserNoRole):
-			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ULID{})
+			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ID{})
 			if err != nil {
 				slog.Error("failed to create access token", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1755,7 +1755,7 @@ func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 func (a *API) HandlerGetRecommendation() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		recommendationIDStr := r.PathValue("id")
-		recommendationID := ULID(recommendationIDStr)
+		recommendationID := ID(recommendationIDStr)
 		if recommendationID == "" {
 			JSON(w, Problem{
 				Type:   ProblemTypePositionIDRequired,
@@ -1785,7 +1785,7 @@ func (a *API) HandlerGetRecommendation() http.HandlerFunc {
 }
 
 type RequestCreateReaction struct {
-	RecommendationID ULID         `json:"recommendation_id"`
+	RecommendationID ID           `json:"recommendation_id"`
 	ReactionType     ReactionType `json:"reaction_type"`
 }
 
@@ -1840,7 +1840,7 @@ func (a *API) HandlerCreateReaction() http.HandlerFunc {
 		}
 
 		var reactorType ReactorType
-		var reactorID ULID
+		var reactorID ID
 		if isCandidate {
 			reactorType = ReactorTypeCandidate
 			reactorID = candidateID
@@ -2273,7 +2273,7 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 			return
 		}
 
-		tokenPair, err := a.Vault.CreateTokenPair(userID, ProviderEmail, jti, map[Role]ULID{})
+		tokenPair, err := a.Vault.CreateTokenPair(userID, ProviderEmail, jti, map[Role]ID{})
 		if err != nil {
 			slog.Error("failed to create token pair", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -2440,7 +2440,7 @@ func (a *API) HandlerGetUser() http.HandlerFunc {
 			return
 		}
 
-		userID := ULID(r.PathValue("id"))
+		userID := ID(r.PathValue("id"))
 
 		// Infer userID from claims
 		if userID == "me" {
@@ -2633,7 +2633,7 @@ func (a *API) HandlerDeleteUser() http.HandlerFunc {
 		}
 
 		userIDStr := r.PathValue(("id"))
-		userID := ULID(userIDStr)
+		userID := ID(userIDStr)
 		if userID != claims.UserID {
 			JSON(w, Problem{
 				Type:   ProblemTypeForbidden,
@@ -2682,7 +2682,7 @@ const (
 // https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		candidateID := ULID(r.PathValue("id"))
+		candidateID := ID(r.PathValue("id"))
 
 		// Infer candidateID from claims
 		if candidateID == "me" {
@@ -2747,7 +2747,7 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 		}
 
 		urlCandidateIDStr := r.PathValue("id")
-		urlCandidateID := ULID(urlCandidateIDStr)
+		urlCandidateID := ID(urlCandidateIDStr)
 		if urlCandidateID != candidateID {
 			JSON(w, Problem{
 				Type:   ProblemTypeForbidden,
@@ -2845,7 +2845,7 @@ func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 		}
 
 		urlCandidateIDStr := r.PathValue("id")
-		urlCandidateID := ULID(urlCandidateIDStr)
+		urlCandidateID := ID(urlCandidateIDStr)
 		if urlCandidateID != candidateID {
 			JSON(w, Problem{
 				Type:   ProblemTypeForbidden,
@@ -2877,7 +2877,7 @@ const ProblemTypeRecruiterNotFound ProblemType = "urn:hirevec:recruiter-not-foun
 // https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		recruiterID := ULID(r.PathValue("id"))
+		recruiterID := ID(r.PathValue("id"))
 
 		// Infer candidateID from claims
 		if recruiterID == "me" {
@@ -3165,7 +3165,7 @@ const (
 func (a *API) HandlerGetPosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		positionIDStr := r.PathValue("id")
-		positionID := ULID(positionIDStr)
+		positionID := ID(positionIDStr)
 		if positionID == "" {
 			JSON(w, Problem{
 				Type:   ProblemTypePositionIDRequired,
@@ -3220,7 +3220,7 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 		}
 
 		positionIDStr := r.PathValue("id")
-		positionID := ULID(positionIDStr)
+		positionID := ID(positionIDStr)
 		if positionID == "" {
 			JSON(w, Problem{
 				Type:   ProblemTypePositionIDRequired,
@@ -3391,7 +3391,7 @@ func (a *API) HandlerDeletePosition() http.HandlerFunc {
 		}
 
 		positionIDStr := r.PathValue("id")
-		positionID := ULID(positionIDStr)
+		positionID := ID(positionIDStr)
 		if positionID == "" {
 			JSON(w, Problem{
 				Type:   ProblemTypePositionIDRequired,

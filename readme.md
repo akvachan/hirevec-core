@@ -12,21 +12,9 @@ Start server with:
 go run cmd/hvserver/main.go
 ```
 
-Ingest some test data with:
-
-```sh
-go run cmd/hvcli/main.go dev ingest
-```
-
-> [!TIP]
-> Email from a test user is `alex.chen.demo@example.com` and password is `test`.
-
-You are set!
-
 ### Recommendation Engine
 
 The recommendation engine currently only employs a content-based approach.
-There are plans to extend it to utilize collaborative filtering with matrix factorization.
 
 #### Model Features
 
@@ -54,6 +42,7 @@ You can define them in a `.env` file of a current working directory or via envir
 
 ### Checklist
 
+- [x] Developers can enable development mode (pre-ingested demo data via `dev-ingest.sql`).
 - [ ] Developers can enable PostgreSQL.
 - [ ] Developers can enable TEI (embeddings and reranker worker).
 - [ ] Developers can enable SMTP relay for resetting user password (e-mail users).

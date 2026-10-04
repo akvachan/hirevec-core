@@ -13,7 +13,7 @@ create table if not exists locations (
 );
 
 create table if not exists users (
-  id text primary key not null, -- ULID
+  id text primary key not null, -- UUID
   provider text not null,
   provider_user_id text,
   email text,
@@ -28,8 +28,8 @@ create table if not exists users (
 );
 
 create table if not exists refresh_tokens (
-  jti text primary key not null, -- ULID
-  user_id text not null, -- ULID
+  jti text primary key not null, -- UUID
+  user_id text not null, -- UUID
   created_at timestamp not null, -- UTC, RFC3339
   expires_at timestamp not null, -- UTC, RFC3339
   revoked integer not null default 0,
@@ -41,8 +41,8 @@ create index if not exists idx_refresh_tokens_user_id
 on refresh_tokens(user_id);
 
 create table if not exists candidates (
-  id text primary key not null, -- ULID
-  user_id text not null, -- ULID
+  id text primary key not null, -- UUID
+  user_id text not null, -- UUID
   about text not null,
   pref_remote integer not null default -1, 
   pref_title_1 text,
@@ -54,7 +54,7 @@ create table if not exists candidates (
 );
 
 create table if not exists candidate_experiences (
-  candidate_id text primary key not null, -- ULID
+  candidate_id text primary key not null, -- UUID
   title text not null,
   started_at timestamp not null, -- UTC, RFC3339
   ended_at timestamp not null, -- UTC, RFC3339
@@ -82,15 +82,15 @@ create table if not exists candidate_experiences (
 );
 
 create table if not exists recruiters (
-  id text primary key not null, -- ULID
-  user_id text not null, -- ULID
+  id text primary key not null, -- UUID
+  user_id text not null, -- UUID
   unique(user_id),
   foreign key (user_id) references users(id) on delete cascade
 );
 
 create table if not exists positions (
-  id text primary key not null, -- ULID
-  recruiter_id text not null, -- ULID
+  id text primary key not null, -- UUID
+  recruiter_id text not null, -- UUID
   title text not null,
   description text not null,
   company text,
@@ -113,9 +113,9 @@ create index if not exists idx_positions_active
 on positions(is_active);
 
 create table if not exists recommendations (
-  id text primary key not null, -- ULID
-  position_id text not null, -- ULID
-  candidate_id text not null, -- ULID
+  id text primary key not null, -- UUID
+  position_id text not null, -- UUID
+  candidate_id text not null, -- UUID
   foreign key (position_id) references positions(id) on delete cascade,
   foreign key (candidate_id) references candidates(id) on delete cascade,
   unique(position_id, candidate_id)
@@ -134,19 +134,22 @@ create index if not exists idx_recommendations_candidate_id
 on recommendations(candidate_id, id);
 
 create table if not exists candidate_reactions (
-  recommendation_id text not null, -- ULID
-  candidate_id text not null, -- ULID
+  recommendation_id text not null, -- UUID
+  candidate_id text not null, -- UUID
   reaction_type text not null,
   created_at timestamp not null, -- UTC, RFC3339
   primary key (recommendation_id, candidate_id),
   foreign key (recommendation_id) references recommendations(id) on delete cascade,
-  foreign key (recruiter_id) references candidates(id) on delete cascade,
+  foreign key (candidate_id) references candidates(id) on delete cascade,
   check (reaction_type in ('positive', 'negative'))
 );
 
+create index if not exists idx_reactions_recommendation
+on candidate_reactions(recommendation_id);
+
 create table if not exists recruiter_reactions (
-  recommendation_id text not null, -- ULID
-  recruiter_id text not null, -- ULID
+  recommendation_id text not null, -- UUID
+  recruiter_id text not null, -- UUID
   reaction_type text not null,
   created_at timestamp not null, -- UTC, RFC3339
   primary key (recommendation_id, recruiter_id),
@@ -156,11 +159,11 @@ create table if not exists recruiter_reactions (
 );
 
 create index if not exists idx_reactions_recommendation
-on reactions(recommendation_id);
+on recruiter_reactions(recommendation_id);
 
 create table if not exists matches (
-  candidate_id text not null, -- ULID
-  position_id text not null, -- ULID
+  candidate_id text not null, -- UUID
+  position_id text not null, -- UUID
   created_at timestamp not null, -- UTC, RFC3339
   primary key (candidate_id, position_id),
   foreign key (candidate_id) references candidates(id) on delete cascade,

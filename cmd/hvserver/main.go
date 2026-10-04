@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/akvachan/hirevec-core"
@@ -36,6 +37,7 @@ func main() {
 		GoogleClientSecret:          os.Getenv("HIREVEC_GOOGLE_CLIENT_SECRET"),
 		AppleClientID:               os.Getenv("HIREVEC_APPLE_CLIENT_ID"),
 		AppleClientSecret:           os.Getenv("HIREVEC_APPLE_CLIENT_SECRET"),
+		DevMode:                     hirevec.GetenvAndParse("HIREVEC_DEV_MODE", strconv.ParseBool, false),
 	}); err != nil {
 		slog.Error(
 			"failed to run app",
