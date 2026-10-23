@@ -31,7 +31,7 @@ You can configure them in a `.env` file of a current working directory or via en
 
 ## TODOs
 
-- [ ] Integrate candidate*experiences and `positions.skill*\*` into FTS.
+- [ ] Integrate `candidate_experiences` and `positions.skill*` into FTS.
 - [ ] Read locations from CSV (country, city, state).
 - [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
 - [ ] Create golden dataset of recommendations per each scenario.
