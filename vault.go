@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"uuid"
 
 	"aidanwoods.dev/go-paseto"
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -80,41 +81,10 @@ func StringToRole(roleStr string) (Role, error) {
 	}
 }
 
-// TODO: Extend RBAC with a notion of role:mode:resource instead of plain role
-// type Mode string
-//
-// const (
-// 	ModeSelfRead   Mode = "self-read"
-// 	ModeSelfWrite  Mode = "self-write"
-// 	ModeSelfDelete Mode = "self-delete"
-// 	ModeRead       Mode = "read"
-// 	ModeWrite      Mode = "write"
-// 	ModeDelete     Mode = "delete"
-// )
-//
-// type Resource string
-//
-// const (
-// 	ResourceUsers           Resource = "users"
-// 	ResourceCandidates      Resource = "candidates"
-// 	ResourceRecruiters      Resource = "recruiters"
-// 	ResourcePositions       Resource = "positions"
-// 	ResourceRecommendations Resource = "recommendations"
-// 	ResourceReaction        Resource = "reactions"
-// 	ResourceMatches         Resource = "matches"
-// )
-//
-// type Permission string
-//
-// func NewPermission(role Role, mode Mode, resource Resource) Permission {
-// 	return Permission(fmt.Sprintf("%s:%s:%s", role, mode, resource))
-// }
-
 const (
-	DefaultRefreshTokenExpiration = 90 * 24 * time.Hour // 90 days
-	DefaultAccessTokenExpiration  = 30 * time.Minute    // 30 minutes
-	DefaultStateTokenExpiration   = 10 * time.Minute    // 10 minutes
-	DefaultVerifierExpiration     = 10 * time.Minute    // 10 minutes
+	DefaultAccessTokenExpiration = 30 * time.Minute // 30 minutes
+	DefaultStateTokenExpiration  = 10 * time.Minute // 10 minutes
+	DefaultVerifierExpiration    = 10 * time.Minute // 10 minutes
 )
 
 const (
@@ -129,34 +99,34 @@ type OIDCConfig struct {
 }
 
 type VaultConfig struct {
-	ServerBaseURL          *url.URL
-	SymmetricKey           string
-	AsymmetricKey          string
-	UseGoogleSSO           bool
-	UseAppleSSO            bool
-	GoogleClientID         string
-	GoogleClientSecret     string
-	AppleClientID          string
-	AppleClientSecret      string
-	RefreshTokenExpiration time.Duration
-	AccessTokenExpiration  time.Duration
+	ServerBaseURL                    *url.URL
+	SymmetricKey                     string
+	AsymmetricKey                    string
+	UseGoogleSSO                     bool
+	UseAppleSSO                      bool
+	GoogleClientID                   string
+	GoogleClientSecret               string
+	AppleClientID                    string
+	AppleClientSecret                string
+	AccessTokenExpiration            time.Duration
+	DevelopmentMode                  bool
+	DevelopmentModeTokensNeverExpire bool
 }
 
 type Vault struct {
-	AccessTokenParser      paseto.Parser
-	RefreshTokenParser     paseto.Parser
-	StateTokenParser       paseto.Parser
-	V4AsymmetricPublicKey  paseto.V4AsymmetricPublicKey
-	V4AsymmetricSecretKey  paseto.V4AsymmetricSecretKey
-	V4SymmetricKey         paseto.V4SymmetricKey
-	UseGoogleSSO           bool
-	UseAppleSSO            bool
-	GoogleOIDCConfig       *OIDCConfig
-	AppleOIDCConfig        *OIDCConfig
-	RefreshTokenExpiration time.Duration
-	AccessTokenExpiration  time.Duration
-	StateTokenExpiration   time.Duration
-	VerifierExpiration     time.Duration
+	AccessTokenParser     paseto.Parser
+	RefreshTokenParser    paseto.Parser
+	StateTokenParser      paseto.Parser
+	V4AsymmetricPublicKey paseto.V4AsymmetricPublicKey
+	V4AsymmetricSecretKey paseto.V4AsymmetricSecretKey
+	V4SymmetricKey        paseto.V4SymmetricKey
+	UseGoogleSSO          bool
+	UseAppleSSO           bool
+	GoogleOIDCConfig      *OIDCConfig
+	AppleOIDCConfig       *OIDCConfig
+	AccessTokenExpiration time.Duration
+	StateTokenExpiration  time.Duration
+	VerifierExpiration    time.Duration
 }
 
 func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
@@ -165,20 +135,24 @@ func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 	accessTokenParser := paseto.NewParser()
 	accessTokenParser.AddRule(paseto.ForAudience(TokenAudience))
 	accessTokenParser.AddRule(paseto.IssuedBy(TokenIssuer))
-	accessTokenParser.AddRule(paseto.NotExpired())
-	accessTokenParser.AddRule(paseto.NotBeforeNbf())
 
 	refreshTokenParser := paseto.NewParser()
 	refreshTokenParser.AddRule(paseto.ForAudience(TokenAudience))
 	refreshTokenParser.AddRule(paseto.IssuedBy(TokenIssuer))
-	refreshTokenParser.AddRule(paseto.NotExpired())
-	refreshTokenParser.AddRule(paseto.NotBeforeNbf())
 
 	stateTokenParser := paseto.NewParser()
 	stateTokenParser.AddRule(paseto.ForAudience(StateTokenAudience))
 	stateTokenParser.AddRule(paseto.IssuedBy(TokenIssuer))
-	stateTokenParser.AddRule(paseto.NotExpired())
-	stateTokenParser.AddRule(paseto.NotBeforeNbf())
+
+	if c.DevelopmentMode && c.DevelopmentModeTokensNeverExpire {
+		slog.Warn("ignoring token expiration validation", "development_mode", c.DevelopmentMode)
+	} else {
+		accessTokenParser.AddRule(paseto.NotExpired())
+		accessTokenParser.AddRule(paseto.NotBeforeNbf())
+
+		stateTokenParser.AddRule(paseto.NotExpired())
+		stateTokenParser.AddRule(paseto.NotBeforeNbf())
+	}
 
 	sk, err := LoadOrCreateSymmetricKey(c.SymmetricKey)
 	if err != nil {
@@ -241,26 +215,20 @@ func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 		accessTokenExpiration = c.AccessTokenExpiration
 	}
 
-	refreshTokenExpiration := DefaultRefreshTokenExpiration
-	if c.RefreshTokenExpiration != 0 {
-		refreshTokenExpiration = c.RefreshTokenExpiration
-	}
-
 	vault := Vault{
-		AccessTokenParser:      accessTokenParser,
-		RefreshTokenParser:     refreshTokenParser,
-		StateTokenParser:       stateTokenParser,
-		V4AsymmetricSecretKey:  ak,
-		V4AsymmetricPublicKey:  ak.Public(),
-		V4SymmetricKey:         sk,
-		UseGoogleSSO:           c.UseGoogleSSO,
-		UseAppleSSO:            c.UseAppleSSO,
-		GoogleOIDCConfig:       googleOIDCConfig,
-		AppleOIDCConfig:        appleOIDCConfig,
-		RefreshTokenExpiration: refreshTokenExpiration,
-		AccessTokenExpiration:  accessTokenExpiration,
-		StateTokenExpiration:   DefaultStateTokenExpiration,
-		VerifierExpiration:     DefaultVerifierExpiration,
+		AccessTokenParser:     accessTokenParser,
+		RefreshTokenParser:    refreshTokenParser,
+		StateTokenParser:      stateTokenParser,
+		V4AsymmetricSecretKey: ak,
+		V4AsymmetricPublicKey: ak.Public(),
+		V4SymmetricKey:        sk,
+		UseGoogleSSO:          c.UseGoogleSSO,
+		UseAppleSSO:           c.UseAppleSSO,
+		GoogleOIDCConfig:      googleOIDCConfig,
+		AppleOIDCConfig:       appleOIDCConfig,
+		AccessTokenExpiration: accessTokenExpiration,
+		StateTokenExpiration:  DefaultStateTokenExpiration,
+		VerifierExpiration:    DefaultVerifierExpiration,
 	}
 
 	return vault, nil
@@ -312,8 +280,8 @@ func (v Vault) ParseStateToken(raw string) (StateTokenClaims, error) {
 }
 
 var (
-	ErrGoogleOIDCConfigNotInitialized = errors.New("Google OIDC configuration is not initialized")
-	ErrAppleOIDCConfigNotInitialized  = errors.New("Apple OIDC configuration is not initialized")
+	ErrGoogleOIDCConfigNotInitialized = errors.New("configuration Google OIDC is not initialized")
+	ErrAppleOIDCConfigNotInitialized  = errors.New("configuration Apple OIDC is not initialized")
 )
 
 func (v Vault) CreateAuthCodeURL(state string, verifier string, provider Provider) (string, error) {
@@ -478,9 +446,9 @@ func (v Vault) VerifyAndParseAppleIDToken(ctx context.Context, rawIDToken string
 }
 
 type AccessTokenClaims struct {
-	UserID   ID
+	UserID   uuid.UUID
 	Provider Provider
-	Roles    map[Role]ID
+	Roles    map[Role]uuid.UUID
 }
 
 func (v Vault) ParseAccessToken(tokenString string) (AccessTokenClaims, error) {
@@ -493,9 +461,13 @@ func (v Vault) ParseAccessToken(tokenString string) (AccessTokenClaims, error) {
 		return AccessTokenClaims{}, fmt.Errorf("failed to parse token: %w", err)
 	}
 
-	userID, err := parsedToken.GetSubject()
+	userIDRaw, err := parsedToken.GetSubject()
 	if err != nil {
 		return AccessTokenClaims{}, fmt.Errorf("failed to get subject: %w", err)
+	}
+	userID, err := uuid.Parse(userIDRaw)
+	if err != nil {
+		return AccessTokenClaims{}, fmt.Errorf("failed to parse userID: %w", err)
 	}
 
 	stringProvider, err := parsedToken.GetString("provider")
@@ -504,30 +476,34 @@ func (v Vault) ParseAccessToken(tokenString string) (AccessTokenClaims, error) {
 	}
 	provider, err := StringToProvider(stringProvider)
 	if err != nil {
-		return AccessTokenClaims{}, ErrInvalidProvider
+		return AccessTokenClaims{}, fmt.Errorf("failed to convert string to provider: %w", err)
 	}
 
-	roles := make(map[Role]ID, 3)
+	roles := make(map[Role]uuid.UUID, 3)
 	recruiterID, _ := parsedToken.GetString("recruiter_id")
 	candidateID, _ := parsedToken.GetString("candidate_id")
 	if recruiterID != "" {
-		roles[RoleRecruiter] = ID(recruiterID)
+		if roles[RoleRecruiter], err = uuid.Parse(recruiterID); err != nil {
+			return AccessTokenClaims{}, fmt.Errorf("failed to parse recruiterID: %w", err)
+		}
 	}
 	if candidateID != "" {
-		roles[RoleCandidate] = ID(candidateID)
+		if roles[RoleCandidate], err = uuid.Parse(candidateID); err != nil {
+			return AccessTokenClaims{}, fmt.Errorf("failed to parse candidateID: %w", err)
+		}
 	}
 
 	return AccessTokenClaims{
-		UserID:   ID(userID),
+		UserID:   userID,
 		Provider: provider,
 		Roles:    roles,
 	}, nil
 }
 
 type RefreshTokenClaims struct {
-	UserID   ID
+	UserID   uuid.UUID
 	Provider Provider
-	JTI      ID
+	JTI      uuid.UUID
 }
 
 func (v Vault) ParseRefreshToken(tokenString string) (RefreshTokenClaims, error) {
@@ -541,9 +517,13 @@ func (v Vault) ParseRefreshToken(tokenString string) (RefreshTokenClaims, error)
 		return RefreshTokenClaims{}, fmt.Errorf("failed to parse token: %w", err)
 	}
 
-	userID, err := parsedToken.GetSubject()
-	if err != nil || userID == "" {
+	userIDRaw, err := parsedToken.GetSubject()
+	if err != nil {
 		return RefreshTokenClaims{}, fmt.Errorf("failed to get subject: %w", err)
+	}
+	userID, err := uuid.Parse(userIDRaw)
+	if err != nil {
+		return RefreshTokenClaims{}, fmt.Errorf("failed to parse userID: %w", err)
 	}
 
 	stringProvider, err := parsedToken.GetString("provider")
@@ -555,15 +535,19 @@ func (v Vault) ParseRefreshToken(tokenString string) (RefreshTokenClaims, error)
 		return RefreshTokenClaims{}, ErrInvalidProvider
 	}
 
-	jti, err := parsedToken.GetJti()
-	if err != nil || jti == "" {
+	jtiRaw, err := parsedToken.GetJti()
+	if err != nil {
 		return RefreshTokenClaims{}, fmt.Errorf("failed to get JTI: %w", err)
+	}
+	jti, err := uuid.Parse(jtiRaw)
+	if err != nil {
+		return RefreshTokenClaims{}, fmt.Errorf("failed to parse JTI: %w", err)
 	}
 
 	return RefreshTokenClaims{
-		UserID:   ID(userID),
+		UserID:   userID,
 		Provider: provider,
-		JTI:      ID(jti),
+		JTI:      jti,
 	}, nil
 }
 
@@ -575,20 +559,20 @@ const (
 )
 
 type AccessToken struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   uint32 `json:"expires_in"`
-	Scope       string `json:"scope"`
-	UserID      ID     `json:"user_id"`
+	AccessToken string    `json:"access_token"`
+	TokenType   string    `json:"token_type"`
+	ExpiresIn   uint32    `json:"expires_in"`
+	Scope       string    `json:"scope"`
+	UserID      uuid.UUID `json:"user_id"`
 }
 
-func (v Vault) CreateAccessToken(userID ID, provider Provider, roles map[Role]ID) (AccessToken, error) {
+func (v Vault) CreateAccessToken(userID uuid.UUID, provider Provider, roles map[Role]uuid.UUID) (AccessToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
 	token.SetAudience(TokenAudience)
 	token.SetIssuer(TokenIssuer)
-	token.SetSubject(string(userID))
+	token.SetSubject(userID.String())
 	token.SetExpiration(now.Add(v.AccessTokenExpiration))
 	token.SetNotBefore(now)
 	token.SetIssuedAt(now)
@@ -626,22 +610,20 @@ func (v Vault) CreateAccessToken(userID ID, provider Provider, roles map[Role]ID
 }
 
 type RefreshToken struct {
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    uint32 `json:"expires_in"`
-	UserID       ID     `json:"user_id"`
+	RefreshToken string    `json:"refresh_token"`
+	UserID       uuid.UUID `json:"user_id"`
 }
 
-func (v Vault) CreateRefreshToken(userID ID, provider Provider, jti ID) (RefreshToken, error) {
+func (v Vault) CreateRefreshToken(userID uuid.UUID, provider Provider, jti uuid.UUID) (RefreshToken, error) {
 	now := time.Now().UTC()
 
 	token := paseto.NewToken()
 	token.SetAudience(TokenAudience)
 	token.SetIssuer(TokenIssuer)
-	token.SetSubject(string(userID))
-	token.SetExpiration(now.Add(v.RefreshTokenExpiration))
+	token.SetSubject(userID.String())
 	token.SetNotBefore(now)
 	token.SetIssuedAt(now)
-	token.SetJti(string(jti))
+	token.SetJti(jti.String())
 
 	if err := token.Set("provider", provider); err != nil {
 		return RefreshToken{}, fmt.Errorf("failed to set provider: %w", err)
@@ -649,21 +631,20 @@ func (v Vault) CreateRefreshToken(userID ID, provider Provider, jti ID) (Refresh
 
 	return RefreshToken{
 		RefreshToken: token.V4Encrypt(v.V4SymmetricKey, nil),
-		ExpiresIn:    uint32(v.RefreshTokenExpiration.Seconds()),
 		UserID:       userID,
 	}, nil
 }
 
 type TokenPair struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    uint32 `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
-	Scope        string `json:"scope"`
-	UserID       ID     `json:"user_id"`
+	AccessToken  string    `json:"access_token"`
+	TokenType    string    `json:"token_type"`
+	ExpiresIn    uint32    `json:"expires_in"`
+	RefreshToken string    `json:"refresh_token"`
+	Scope        string    `json:"scope"`
+	UserID       uuid.UUID `json:"user_id"`
 }
 
-func (v Vault) CreateTokenPair(userID ID, provider Provider, jti ID, roles map[Role]ID) (TokenPair, error) {
+func (v Vault) CreateTokenPair(userID uuid.UUID, provider Provider, jti uuid.UUID, roles map[Role]uuid.UUID) (TokenPair, error) {
 	accessToken, err := v.CreateAccessToken(userID, provider, roles)
 	if err != nil {
 		return TokenPair{}, fmt.Errorf("failed to create access token: %w", err)
@@ -704,7 +685,7 @@ func UpsertEnvKey(filename string, key string, value string) error {
 
 	found := false
 	var lines []string
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 
 		if strings.HasPrefix(trimmed, key+"=") {
@@ -767,21 +748,17 @@ func LoadOrCreateAsymmetricKey(val string) (paseto.V4AsymmetricSecretKey, error)
 	return key, nil
 }
 
-func Getenv(key string, defaultValue string) string {
+func MustParseEnv[T any](key string, parser func(string) (T, error), defaultValue T) T {
 	value, exists := os.LookupEnv(key)
 	if !exists || value == "" {
 		return defaultValue
 	}
-	return value
-}
 
-// GetenvAndParse parses extracted value of an environment variable and returns a default in case of an error.
-func GetenvAndParse[T any](key string, parser func(string) (T, error), defaultValue T) T {
-	value, exists := os.LookupEnv(key)
 	parsed, err := parser(value)
-	if !exists || value == "" || err != nil {
-		return defaultValue
+	if err != nil {
+		panic(fmt.Errorf("failed to parse environment variable %q: %w", key, err))
 	}
+
 	return parsed
 }
 

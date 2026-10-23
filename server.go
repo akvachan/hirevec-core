@@ -9,72 +9,87 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	"golang.org/x/oauth2"
 )
 
 type APIConfig struct {
-	ServerBaseURL               *url.URL
-	RequestReadTimeout          time.Duration
-	RequestWriteTimeout         time.Duration
-	GracePeriod                 time.Duration
-	UseGoogleSSO                bool
-	UseAppleSSO                 bool
-	TEIBaseURL                  *url.URL
-	TEIAPIKey                   string
-	EmbeddingsModel             string
-	RerankerModel               string
+	ServerURL           *url.URL
+	RequestReadTimeout  time.Duration
+	RequestWriteTimeout time.Duration
+	GracePeriod         time.Duration
+
+	LlamaCppURL             string
+	LlamaCppAPIKey          string
+	LlamaCppEmbeddingsModel string
+	LlamaCppEmbeddingsDim   uint32
+	LlamaCppRerankerModel   string
+
 	UseEmbeddings               bool
 	UseReranker                 bool
 	EmbeddingsJobFrequency      time.Duration
 	RecommendationsJobFrequency time.Duration
+
+	DevelopmentMode                 bool
+	DevelopmentModeDropTablesOnExit bool
 }
 
 type EmbeddingEntity struct {
 	Embedding []float32 `json:"embedding"`
+	Index     int       `json:"index"`
+}
+
+type EmbeddingData struct {
+	Index     int       `json:"index"`
+	Embedding []float32 `json:"embedding"`
 }
 
 type EmbeddingsResponse struct {
-	Data []EmbeddingEntity `json:"data"`
+	Object string          `json:"object"`
+	Data   []EmbeddingData `json:"data"`
 }
 
 type EmbeddingsRequest struct {
-	Input []string `json:"input"`
-	Model string   `json:"model"`
+	Model          string   `json:"model"`
+	Input          []string `json:"input"`
+	EncodingFormat string   `json:"encoding_format,omitempty"`
 }
 
-func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, error) {
+func CreateEmbeddings(c AIConfig, input []string) ([]EmbeddingEntity, error) {
 	requestBody, err := json.Marshal(EmbeddingsRequest{
-		Input: input,
-		Model: aiConfig.EmbeddingsModel,
+		Model:          c.LlamaCppEmbeddingsModel,
+		Input:          input,
+		EncodingFormat: "float",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal embeddings request: %w", err)
 	}
 
-	reader := bytes.NewReader(requestBody)
-	request, err := http.NewRequest(http.MethodPost, aiConfig.TEIBaseURL, reader)
+	request, err := http.NewRequest(http.MethodPost, c.LlamaCppEmbeddingsURL, bytes.NewReader(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to init new request: %w", err)
 	}
 
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+aiConfig.TEIAPIKey)
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+c.LlamaCppAPIKey)
 
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -87,7 +102,11 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 	}()
 
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("embedding endpoint returned %d", response.StatusCode)
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return nil, fmt.Errorf("embedding endpoint returned %d, but server failed to read response body: %w", response.StatusCode, err)
+		}
+		return nil, fmt.Errorf("embedding endpoint returned %d: %s", response.StatusCode, body)
 	}
 
 	var parsed EmbeddingsResponse
@@ -103,11 +122,23 @@ func CreateEmbeddings(aiConfig AIConfig, input []string) ([]EmbeddingEntity, err
 		)
 	}
 
-	return parsed.Data, nil
-}
+	entities := make([]EmbeddingEntity, len(parsed.Data))
+	for _, data := range parsed.Data {
+		if data.Index < 0 || data.Index >= len(entities) {
+			return nil, fmt.Errorf(
+				"embedding index out of range (got %d, expected between 0 and %d)",
+				data.Index,
+				len(entities)-1,
+			)
+		}
+		if len(data.Embedding) == 0 {
+			return nil, fmt.Errorf("empty embedding at index %d", data.Index)
+		}
+		entities[data.Index] = EmbeddingEntity{Embedding: data.Embedding, Index: data.Index}
+	}
 
-//go:embed migrations/*
-var EmbeddedStatic embed.FS
+	return entities, nil
+}
 
 var (
 	RegexHTMLTag = regexp.MustCompile(`(?s)<[^>]*>`)
@@ -120,35 +151,28 @@ const DefaultEmbeddingsBatchSize = 64
 func (a *API) RunEmbeddingsJob(c AIConfig) error {
 	slog.Debug("running embeddings job")
 
-	// TODO: Test this store method, rethink it once more
-	// https://github.com/akvachan/hirevec-core/issues/21
-	ids, texts, err := a.Store.FetchPendingEmbeddingsMetadata(DefaultEmbeddingsBatchSize)
+	ids, texts, err := a.Store.FetchPendingEmbeddings(DefaultEmbeddingsBatchSize)
 	if err != nil {
-		return fmt.Errorf("failed to fetch pending emebeddings metadata: %w")
+		return fmt.Errorf("failed to fetch pending embeddings: %w", err)
 	}
 	if len(ids) == 0 {
 		slog.Debug("empty pending embeddings metadata, skipping run...")
 		return nil
 	}
 
-	// TODO: Test this store method, rethink it once more
-	// https://github.com/akvachan/hirevec-core/issues/21
 	batchOut, err := CreateEmbeddings(c, texts)
 	if err != nil {
-		// TODO: Test this store method, rethink it once more
-		// https://github.com/akvachan/hirevec-core/issues/21
-		if err := a.Store.MarkEmbeddingsStatus(ids, EmbeddingStatusPending); err != nil {
+		if err := a.Store.MarkEmbeddingsStatus(ids, EmbeddingStatusFailed); err != nil {
 			return fmt.Errorf("failed to mark embeddings status: %w", err)
 		}
+		return fmt.Errorf("failed to create embeddings: %w", err)
 	}
 
-	tx, err := a.Store.DB.Begin()
+	tx, err := a.Store.Database.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 
-	// TODO: Test this store method, rethink it once more
-	// https://github.com/akvachan/hirevec-core/issues/21
 	if err := a.Store.UpsertEmbeddingsTx(tx, ids, batchOut); err != nil {
 		if err := tx.Rollback(); err != nil {
 			slog.Error("failed to rollback transaction", "err", err)
@@ -158,37 +182,121 @@ func (a *API) RunEmbeddingsJob(c AIConfig) error {
 		return fmt.Errorf("failed to upsert embeddings: %w", err)
 	}
 
-	// TODO: Test this store method, rethink it once more
-	// https://github.com/akvachan/hirevec-core/issues/21
 	if err := a.Store.MarkEmbeddingsStatusTx(tx, ids, EmbeddingStatusDone); err != nil {
 		if err := tx.Rollback(); err != nil {
 			slog.Error("failed to rollback transaction", "err", err)
 			return fmt.Errorf("failed to rollback transaction: %w", err)
 		}
-		slog.Error("failed to mark ebeddings status", "err", err)
-		return fmt.Errorf("failed to mark ebeddings status: %w", err)
+		slog.Error("failed to mark embeddings status", "err", err)
+		return fmt.Errorf("failed to mark embeddings status: %w", err)
 	}
 
 	return tx.Commit()
 }
 
 type AIConfig struct {
-	UseEmbeddings   bool
-	UseReranker     bool
-	TEIBaseURL      string
-	TEIAPIKey       string
-	EmbeddingsModel string
-	RerankerModel   string
+	UseEmbeddings bool
+	UseReranker   bool
+
+	LlamaCppRerankURL       string
+	LlamaCppEmbeddingsURL   string
+	LlamaCppAPIKey          string
+	LlamaCppEmbeddingsModel string
+	LlamaCppEmbeddingsDim   uint32
+	LlamaCppRerankerModel   string
 }
 
-func Rerank(c AIConfig, candidateID ID, positions []ID) ([]ID, error) {
-	return nil, nil
+type RerankRequest struct {
+	Model string   `json:"model"`
+	Query string   `json:"query"`
+	Texts []string `json:"texts"`
+}
+
+type RerankResult struct {
+	Index int     `json:"index"`
+	Score float32 `json:"score"`
+}
+
+func CreateRerank(c AIConfig, candidateAbout string, positionsTexts []string, positionsIDs []uuid.UUID) ([]uuid.UUID, error) {
+	requestBody, err := json.Marshal(RerankRequest{
+		Model: c.LlamaCppRerankerModel,
+		Query: candidateAbout,
+		Texts: positionsTexts,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal rerank request: %w", err)
+	}
+
+	request, err := http.NewRequest(http.MethodPost, c.LlamaCppRerankURL, bytes.NewReader(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to init new request: %w", err)
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+c.LlamaCppAPIKey)
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			slog.Error("failed to close response body", "err", err)
+		}
+	}()
+
+	if response.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			return nil, fmt.Errorf("rerank endpoint returned %d, but server failed to read response body: %w", response.StatusCode, err)
+		}
+		return nil, fmt.Errorf("rerank endpoint returned %d: %s", response.StatusCode, body)
+	}
+
+	var results []RerankResult
+	if err := json.NewDecoder(response.Body).Decode(&results); err != nil {
+		return nil, fmt.Errorf("failed to decode response body: %w", err)
+	}
+
+	if len(results) != len(positionsIDs) {
+		return nil, fmt.Errorf(
+			"rerank count mismatch (got %d, expected %d)",
+			len(results),
+			len(positionsIDs),
+		)
+	}
+
+	ranked := make([]uuid.UUID, len(results))
+	for i, result := range results {
+		ranked[i] = positionsIDs[result.Index]
+	}
+
+	return ranked, nil
+}
+
+func (a *API) Rerank(c AIConfig, candidateID uuid.UUID, positionsIDs []uuid.UUID) ([]uuid.UUID, error) {
+	if len(positionsIDs) == 0 {
+		return positionsIDs, nil
+	}
+
+	candidate, err := a.Store.GetCandidate(candidateID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get candidate: %w", err)
+	}
+
+	positionsTexts, err := a.Store.GetPositionsTexts(positionsIDs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get position texts: %w", err)
+	}
+
+	return CreateRerank(c, candidate.About, positionsTexts, positionsIDs)
 }
 
 const (
-	DefaultCandidatesBatchSize       = 32
-	DefaultRecommendationsDailyLimit = 32
-	DefaultTopPositions              = 128
+	DefaultCandidatesBatchSize       uint16 = 32
+	DefaultRecommendationsDailyLimit int    = 32
+	DefaultTopPositions              uint16 = 128
 )
 
 func (a *API) RunRecommendationsJob(c AIConfig) error {
@@ -207,7 +315,7 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 	}
 
 	for i := range len(candidateIDs) {
-		var positionIDs []ID
+		var positionIDs []uuid.UUID
 
 		if c.UseEmbeddings {
 			positionIDs, err = a.Store.GetPositionsForCandidateViaEmbeddings(candidateIDs[i], DefaultTopPositions)
@@ -232,12 +340,11 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		}
 
 		if len(positionIDs) == 0 {
-			slog.Debug("positions list is empty, skipping candidate...", "candidateID", candidateIDs[i])
 			continue
 		}
 
 		if c.UseReranker {
-			positionIDs, err = Rerank(c, candidateIDs[i], positionIDs)
+			positionIDs, err = a.Rerank(c, candidateIDs[i], positionIDs)
 			if err != nil {
 				slog.Error(
 					"failed to rerank",
@@ -248,9 +355,9 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 			}
 		}
 
-		limit := min(len(positionIDs), int(DefaultRecommendationsDailyLimit))
-		for i := range limit {
-			if _, err := a.Store.CreateRecommendation(positionIDs[i], candidateIDs[i]); err != nil {
+		limit := min(len(positionIDs), DefaultRecommendationsDailyLimit)
+		for j := range limit {
+			if _, err := a.Store.CreateRecommendation(positionIDs[j], candidateIDs[i]); err != nil {
 				return fmt.Errorf("failed to create recommendation: %w", err)
 			}
 		}
@@ -278,14 +385,14 @@ func NewAPI(ctx context.Context, c APIConfig, s Store, v Vault) *API {
 	slog.Debug("initializing server")
 
 	api := API{
-		BaseURL: c.ServerBaseURL,
+		BaseURL: c.ServerURL,
 		Store:   s,
 		Vault:   v,
 		Mux:     http.NewServeMux(),
 	}
 
 	api.Server = http.Server{
-		Addr:         c.ServerBaseURL.Host,
+		Addr:         c.ServerURL.Host,
 		ReadTimeout:  c.RequestReadTimeout,
 		WriteTimeout: c.RequestWriteTimeout,
 		ErrorLog:     slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
@@ -303,15 +410,15 @@ var ErrFailedShutdownServer = errors.New("failed to shutdown server")
 func (a *API) WaitAndShutdown(ctx context.Context, errCh chan error, gracePeriod time.Duration) error {
 	select {
 	case <-ctx.Done():
-		slog.Info("shutdown signal received")
+		slog.Debug("shutdown signal received", "err", ctx.Err())
 	case <-errCh:
 		return ErrFailedShutdownServer
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), gracePeriod)
+	shutdownCtx, cancel := context.WithTimeout(ctx, gracePeriod)
 	defer cancel()
 
-	slog.Info("starting graceful shutdown", "timeout", gracePeriod)
+	slog.Debug("starting graceful shutdown", "timeout", gracePeriod)
 	if err := a.Server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("failed to gracefully shutdown, forcing close", "err", err)
 		if err := a.Server.Close(); err != nil {
@@ -319,7 +426,7 @@ func (a *API) WaitAndShutdown(ctx context.Context, errCh chan error, gracePeriod
 		}
 		return ErrFailedShutdownServer
 	}
-	slog.Info("HTTP server shutdown complete")
+	slog.Info("server shutdown")
 
 	return nil
 }
@@ -347,16 +454,31 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 	}()
 	slog.Info("server ready", "addr", api.Server.Addr)
 
+	var rerankURL, embeddingsURL string
+	rerankURL, err = url.JoinPath(c.LlamaCppURL, "v1/rerank")
+	if err != nil {
+		return fmt.Errorf("failed to form rerank URL: %w", err)
+	}
+
+	embeddingsURL, err = url.JoinPath(c.LlamaCppURL, "v1/embeddings")
+	if err != nil {
+		return fmt.Errorf("failed to form embeddings URL: %w", err)
+	}
+
 	aiConfig := AIConfig{
-		UseEmbeddings:   c.UseEmbeddings,
-		UseReranker:     c.UseReranker,
-		TEIBaseURL:      c.TEIBaseURL.Host,
-		TEIAPIKey:       c.TEIAPIKey,
-		EmbeddingsModel: c.EmbeddingsModel,
-		RerankerModel:   c.RerankerModel,
+		UseEmbeddings: c.UseEmbeddings,
+		UseReranker:   c.UseReranker,
+
+		LlamaCppRerankURL:       rerankURL,
+		LlamaCppEmbeddingsURL:   embeddingsURL,
+		LlamaCppAPIKey:          c.LlamaCppAPIKey,
+		LlamaCppEmbeddingsModel: c.LlamaCppEmbeddingsModel,
+		LlamaCppEmbeddingsDim:   c.LlamaCppEmbeddingsDim,
+		LlamaCppRerankerModel:   c.LlamaCppRerankerModel,
 	}
 
 	if c.UseEmbeddings {
+		slog.Debug("using embeddings")
 		go func() {
 			for range time.Tick(c.EmbeddingsJobFrequency) {
 				if err := api.RunEmbeddingsJob(aiConfig); err != nil {
@@ -379,6 +501,13 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 		return fmt.Errorf("failed to wait and shutdown: %w", err)
 	}
 
+	if c.DevelopmentMode && c.DevelopmentModeDropTablesOnExit {
+		if err := s.DropTables(); err != nil {
+			slog.Error("failed to drop tables", "err", err, "development_mode", c.DevelopmentMode)
+		}
+		slog.Debug("dropped tables on exit", "development_mode", c.DevelopmentMode)
+	}
+
 	return nil
 }
 
@@ -399,16 +528,23 @@ func (rw *ResponseWriter) WriteHeader(code int) {
 type ProblemType string
 
 type ProblemSource struct {
-	Pointer   string `json:"pointer,omitempty"`
+	// Pointer is a field within the body
+	Pointer string `json:"pointer,omitempty"`
+
+	// Parameter is a query parameter within a URL
 	Parameter string `json:"parameter,omitempty"`
-	Header    string `json:"header,omitempty"`
-	Cookie    string `json:"cookie,omitempty"`
+
+	// Header is an HTTP header
+	Header string `json:"header,omitempty"`
+
+	// Cookie is an HTTP cookie
+	Cookie string `json:"cookie,omitempty"`
 }
 
 type Problem struct {
 	Type   ProblemType   `json:"type,omitempty"`
 	Detail string        `json:"detail,omitempty"`
-	Source ProblemSource `json:"source,omitempty"`
+	Source ProblemSource `json:"source"`
 }
 
 func JSON(w http.ResponseWriter, responseBody any, status int) {
@@ -433,8 +569,8 @@ type Middleware func(http.HandlerFunc) http.HandlerFunc
 
 func MiddlewareChain(handler http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
 	wrapped := handler
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		wrapped = middlewares[i](wrapped)
+	for _, middleware := range slices.Backward(middlewares) {
+		wrapped = middleware(wrapped)
 	}
 	return wrapped
 }
@@ -467,7 +603,6 @@ const (
 	MaxPageSize     = 128
 )
 
-// TODO: Validate cursor format as well
 func GetPageFromQuery(r *http.Request) Page {
 	p := Page{
 		Cursor: r.URL.Query().Get("cursor"),
@@ -478,6 +613,7 @@ func GetPageFromQuery(r *http.Request) Page {
 			p.Limit = min(parsed, MaxPageSize)
 		}
 	}
+
 	return p
 }
 
@@ -631,6 +767,7 @@ const (
 	RouteCandidate       Route = "/candidates/{id}"
 	RouteCandidates      Route = "/candidates"
 	RouteLocations       Route = "/locations"
+	RouteLocation        Route = "/locations/{id}"
 	RouteMatches         Route = "/matches"
 	RoutePosition        Route = "/positions/{id}"
 	RoutePositions       Route = "/positions"
@@ -907,6 +1044,14 @@ func (a *API) RegisterRoutes() {
 		Route:   RouteLocations,
 		Handler: a.HandlerSearchLocations(),
 	})
+
+	// TODO: Document the route in openapi.json
+	// https://github.com/akvachan/hirevec-core/issues/33
+	a.PublicRoute(RouteConfig{
+		Method:  MethodGet,
+		Route:   RouteLocation,
+		Handler: a.HandlerGetLocation(),
+	})
 }
 
 const (
@@ -921,8 +1066,6 @@ type RequestBodyRefresh struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerRefresh() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := DecodeRequestBody[RequestBodyRefresh](r)
@@ -1044,8 +1187,6 @@ const (
 	ProblemTypeInvalidCredentials ProblemType = "urn:hirevec:invalid-credentials"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := DecodeRequestBody[RequestBodyLoginViaEmail](r)
@@ -1085,7 +1226,7 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 			return
 
 		case errors.Is(err, ErrUserNoRole):
-			accessToken, err := a.Vault.CreateAccessToken(user.ID, user.Provider, map[Role]ID{})
+			accessToken, err := a.Vault.CreateAccessToken(user.ID, user.Provider, map[Role]uuid.UUID{})
 			if err != nil {
 				slog.Error("failed to create access token", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1129,8 +1270,6 @@ func (a *API) HandlerLoginViaEmail() http.HandlerFunc {
 
 const ProblemTypeInvalidProvider ProblemType = "urn:hirevec:invalid-provider"
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerLoginViaProvider() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provider := Provider(r.PathValue("provider"))
@@ -1204,8 +1343,6 @@ const (
 	ProblemTypeUnverifiedEmail       ProblemType = "urn:hirevec:unverified-email"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerSSOCallback() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), a.Vault.StateTokenExpiration)
@@ -1292,6 +1429,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeIDTokenRequired,
 					Detail: "id_token is required",
+					Source: ProblemSource{Pointer: "id_token"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -1313,6 +1451,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeIDTokenRequired,
 					Detail: "id_token is required",
+					Source: ProblemSource{Pointer: "id_token"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -1342,6 +1481,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidIDToken,
 				Detail: "Invalid id_token",
+				Source: ProblemSource{Pointer: "id_token"},
 			}, http.StatusBadRequest)
 			return
 
@@ -1349,6 +1489,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeFailedParseClaims,
 				Detail: "Failed to parse claims",
+				Source: ProblemSource{Pointer: "id_token"},
 			}, http.StatusBadRequest)
 			return
 
@@ -1381,12 +1522,14 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidUserFullNameFormat,
 					Detail: ErrorMessageUserFullNameWrongSize,
+					Source: ProblemSource{Pointer: "id_token"},
 				}, http.StatusBadRequest)
 				return
 			case errors.Is(err, ErrTextForbiddenChars):
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidUserFullNameFormat,
 					Detail: ErrorMessageUserFullNameForbiddenChars,
+					Source: ProblemSource{Pointer: "id_token"},
 				}, http.StatusBadRequest)
 				return
 			case err != nil:
@@ -1402,7 +1545,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 				return
 			}
 
-			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ID{})
+			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]uuid.UUID{})
 			if err != nil {
 				slog.Error("failed to create access token", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1414,7 +1557,7 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 			return
 
 		case errors.Is(err, ErrUserNoRole):
-			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]ID{})
+			accessToken, err := a.Vault.CreateAccessToken(userID, idToken.Provider, map[Role]uuid.UUID{})
 			if err != nil {
 				slog.Error("failed to create access token", "err", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -1447,7 +1590,6 @@ func (a *API) HandlerSSOCallback() http.HandlerFunc {
 
 		w.Header().Set("Cache-Control", "no-store")
 		JSON(w, tokenPair, http.StatusOK)
-		return
 	}
 }
 
@@ -1470,8 +1612,8 @@ var (
 	ErrInvalidExperienceDates = errors.New("started_at must not be after ended_at")
 )
 
-// TODO: Return an array of errors instead of one by one.
 func NormalizeAndValidateUserFullName(name string) (string, error) {
+	// TODO: Return an array of errors instead of one by one.
 	name = strings.TrimSpace(name)
 	name = strings.Join(strings.Fields(name), " ")
 	if len(name) < DefaultUserFullNameMinLength {
@@ -1660,8 +1802,6 @@ func (a *API) AddNextLink(w http.ResponseWriter, route Route, nextPage Page) err
 	return nil
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -1767,16 +1907,25 @@ func (a *API) HandlerGetRecommendations() http.HandlerFunc {
 	}
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
+const ProblemTypeInvalidRecommendationID ProblemType = "urn:hirevec:invalid-recommendation-id"
+
 func (a *API) HandlerGetRecommendation() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		recommendationIDStr := r.PathValue("id")
-		recommendationID := ID(recommendationIDStr)
-		if recommendationID == "" {
+		if recommendationIDStr == "" {
 			JSON(w, Problem{
 				Type:   ProblemTypePositionIDRequired,
 				Detail: "Recommendation ID is required",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		recommendationID, err := uuid.Parse(recommendationIDStr)
+		if err != nil {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRecommendationID,
+				Detail: "Invalid recommendation ID",
 				Source: ProblemSource{Parameter: "id"},
 			}, http.StatusBadRequest)
 			return
@@ -1802,7 +1951,7 @@ func (a *API) HandlerGetRecommendation() http.HandlerFunc {
 }
 
 type RequestCreateReaction struct {
-	RecommendationID ID           `json:"recommendation_id"`
+	RecommendationID uuid.UUID    `json:"recommendation_id"`
 	ReactionType     ReactionType `json:"reaction_type"`
 }
 
@@ -1813,8 +1962,6 @@ const (
 	ProblemTypeInvalidReactionType      ProblemType = "urn:hirevec:invalid-reaction-type"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerCreateReaction() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -1839,7 +1986,7 @@ func (a *API) HandlerCreateReaction() http.HandlerFunc {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		if body.RecommendationID == "" {
+		if body.RecommendationID == uuid.Nil() {
 			JSON(w, Problem{
 				Type:   ProblemTypeRecommendationIDRequired,
 				Detail: "Recommendation ID is required",
@@ -1856,49 +2003,66 @@ func (a *API) HandlerCreateReaction() http.HandlerFunc {
 			return
 		}
 
-		var reactorType ReactorType
-		var reactorID ID
 		if isCandidate {
-			reactorType = ReactorTypeCandidate
-			reactorID = candidateID
+			err = a.Store.CreateCandidateReaction(body.RecommendationID, candidateID, body.ReactionType)
+			switch {
+			case errors.Is(err, ErrReactionAlreadyExists):
+				JSON(w, Problem{
+					Type:   ProblemTypeReactionExists,
+					Detail: "Reaction already exists; reactions are immutable",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusConflict)
+				return
+			case errors.Is(err, ErrRecommendationNotFound):
+				JSON(w, Problem{
+					Type:   ProblemTypeRecommendationNotFound,
+					Detail: "Recommendation not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
+				return
+			case errors.Is(err, ErrUnauthorizedReactor):
+				JSON(w, Problem{
+					Type:   ProblemTypeForbidden,
+					Detail: "You do not have access to this resource",
+				}, http.StatusForbidden)
+				return
+			case err != nil:
+				slog.Error("failed to record reaction", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 		} else if isRecruiter {
-			reactorType = ReactorTypeRecruiter
-			reactorID = recruiterID
-		}
-
-		err = a.Store.CreateReaction(body.RecommendationID, reactorType, reactorID, body.ReactionType)
-		switch {
-		case errors.Is(err, ErrReactionAlreadyExists):
-			JSON(w, Problem{
-				Type:   ProblemTypeReactionExists,
-				Detail: "Reaction already exists; reactions are immutable",
-				Source: ProblemSource{Parameter: "id"},
-			}, http.StatusConflict)
-			return
-		case errors.Is(err, ErrRecommendationNotFound):
-			JSON(w, Problem{
-				Type:   ProblemTypeRecommendationNotFound,
-				Detail: "Recommendation not found",
-				Source: ProblemSource{Parameter: "id"},
-			}, http.StatusNotFound)
-			return
-		case errors.Is(err, ErrUnauthorizedReactor):
-			JSON(w, Problem{
-				Type:   ProblemTypeForbidden,
-				Detail: "You do not have access to this resource",
-			}, http.StatusForbidden)
-			return
-		case err != nil:
-			slog.Error("failed to record reaction", "err", err)
-			w.WriteHeader(http.StatusInternalServerError)
+			err = a.Store.CreateRecruiterReaction(body.RecommendationID, recruiterID, body.ReactionType)
+			switch {
+			case errors.Is(err, ErrReactionAlreadyExists):
+				JSON(w, Problem{
+					Type:   ProblemTypeReactionExists,
+					Detail: "Reaction already exists; reactions are immutable",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusConflict)
+				return
+			case errors.Is(err, ErrRecommendationNotFound):
+				JSON(w, Problem{
+					Type:   ProblemTypeRecommendationNotFound,
+					Detail: "Recommendation not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
+				return
+			case errors.Is(err, ErrUnauthorizedReactor):
+				JSON(w, Problem{
+					Type:   ProblemTypeForbidden,
+					Detail: "You do not have access to this resource",
+				}, http.StatusForbidden)
+				return
+			case err != nil:
+				slog.Error("failed to record reaction", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 		}
 
 		w.WriteHeader(http.StatusCreated)
 	}
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetReactions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -1993,8 +2157,6 @@ func (a *API) HandlerGetReactions() http.HandlerFunc {
 	}
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetMatches() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2144,8 +2306,6 @@ const (
 	ProblemTypeUserAlreadyExists         ProblemType = "urn:hirevec:user-exists"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerCreateUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := DecodeRequestBody[RequestBodyCreateUser](r)
@@ -2257,7 +2417,7 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeUserAlreadyExists,
 				Detail: "User with the provided email already exists",
-				Source: ProblemSource{Pointer: "data/email"},
+				Source: ProblemSource{Pointer: "email"},
 			}, http.StatusConflict)
 			return
 		}
@@ -2290,7 +2450,7 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 			return
 		}
 
-		tokenPair, err := a.Vault.CreateTokenPair(userID, ProviderEmail, jti, map[Role]ID{})
+		tokenPair, err := a.Vault.CreateTokenPair(userID, ProviderEmail, jti, map[Role]uuid.UUID{})
 		if err != nil {
 			slog.Error("failed to create token pair", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -2304,8 +2464,6 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 
 const ProblemTypeRecruiterExists ProblemType = "urn:hirevec:recruiter-exists"
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerCreateRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2320,7 +2478,7 @@ func (a *API) HandlerCreateRecruiter() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeRecruiterExists,
 					Detail: "Recruiter already exists",
-					Source: ProblemSource{Pointer: "data/user_id"},
+					Source: ProblemSource{Pointer: "user_id"},
 				}, http.StatusConflict)
 				return
 			}
@@ -2350,9 +2508,7 @@ func (a *API) HandlerCreateRecruiter() http.HandlerFunc {
 
 var RegexHasTags = regexp.MustCompile(`<[^>]*>`)
 
-const (
-	DefaultCandidateAboutMaxLength = 1024
-)
+const DefaultCandidateAboutMaxLength = 1024
 
 func NormalizeAndValidateCandidateAbout(about string) (string, error) {
 	about = strings.TrimSpace(about)
@@ -2362,11 +2518,6 @@ func NormalizeAndValidateCandidateAbout(about string) (string, error) {
 	}
 	return html.EscapeString(about), nil
 }
-
-const (
-	DefaultExperienceTitleMaxLength = 128
-	DefaultExperienceTextMaxLength  = 1024
-)
 
 type RequestBodyCandidatePrefs struct {
 	PrefRemote      *bool   `json:"pref_remote"`
@@ -2398,6 +2549,8 @@ type RequestBodyCreateCandidate struct {
 	RequestBodyCandidatePrefs
 }
 
+const DefaultExperienceTitleMaxLength = 128
+
 func NormalizeAndValidateCandidateExperienceTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)
 	title = RegexHasTags.ReplaceAllString(title, "")
@@ -2411,7 +2564,9 @@ func NormalizeAndValidateCandidateExperienceTitle(title string) (string, error) 
 	return html.EscapeString(title), nil
 }
 
-func NormalizeAndValidateOptionalExperienceText(text *string) (*string, error) {
+const DefaultCustomTextMaxLength = 1024
+
+func NormalizeAndValidateCustomText(text *string) (*string, error) {
 	if text == nil {
 		return nil, nil
 	}
@@ -2421,14 +2576,14 @@ func NormalizeAndValidateOptionalExperienceText(text *string) (*string, error) {
 	if normalized == "" {
 		return nil, nil
 	}
-	if len(normalized) > DefaultExperienceTextMaxLength {
+	if len(normalized) > DefaultCustomTextMaxLength {
 		return nil, ErrTextTooLong
 	}
 
 	return &normalized, nil
 }
 
-func ValidatePrefLocationID(locationID int) error {
+func ValidateLocationID(locationID int) error {
 	if locationID < 1 {
 		return ErrInvalidPrefLocationID
 	}
@@ -2453,19 +2608,19 @@ func NormalizeAndValidateCandidateExperiences(experiences []RequestBodyCandidate
 			return nil, fmt.Errorf("%w: experiences/%v/started_at", ErrInvalidExperienceDates, i)
 		}
 
-		description, err := NormalizeAndValidateOptionalExperienceText(experience.Description)
+		description, err := NormalizeAndValidateCustomText(experience.Description)
 		if err != nil {
 			return nil, fmt.Errorf("%w: experiences/%v/description", err, i)
 		}
 
-		company, err := NormalizeAndValidateOptionalExperienceText(experience.Company)
+		company, err := NormalizeAndValidateCustomText(experience.Company)
 		if err != nil {
 			return nil, fmt.Errorf("%w: experiences/%v/company", err, i)
 		}
 
 		skills := []*string{experience.Skill1, experience.Skill2, experience.Skill3, experience.Skill4, experience.Skill5}
 		for j, skill := range skills {
-			if skill, err = NormalizeAndValidateOptionalExperienceText(skill); err != nil {
+			if skill, err = NormalizeAndValidateCustomText(skill); err != nil {
 				return nil, fmt.Errorf("%w: experiences/%v/skill_%v", err, i, j+1)
 			}
 			skills[j] = skill
@@ -2496,8 +2651,6 @@ const (
 	ProblemTypeInvalidCandidateExperienceFormat ProblemType = "urn:hirevec:invalid-candidate-experience-format"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2521,7 +2674,7 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidCandidateAboutFormat,
 				Detail: "About must be up to 1024 characters",
-				Source: ProblemSource{Pointer: "data/about"},
+				Source: ProblemSource{Pointer: "about"},
 			}, http.StatusBadRequest)
 			return
 		}
@@ -2536,6 +2689,7 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidCandidateExperienceFormat,
 				Detail: err.Error(),
+				Source: ProblemSource{Pointer: "experiences"},
 			}, http.StatusBadRequest)
 			return
 		}
@@ -2555,7 +2709,7 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_title_1 must be between 1 and 128 characters",
-					Source: ProblemSource{Pointer: "data/pref_title_1"},
+					Source: ProblemSource{Pointer: "pref_title_1"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -2572,7 +2726,7 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_title_2 must be between 1 and 128 characters",
-					Source: ProblemSource{Pointer: "data/pref_title_2"},
+					Source: ProblemSource{Pointer: "pref_title_2"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -2589,7 +2743,7 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_title_3 must be between 1 and 128 characters",
-					Source: ProblemSource{Pointer: "data/pref_title_3"},
+					Source: ProblemSource{Pointer: "pref_title_3"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -2602,33 +2756,33 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 		}
 
 		if body.PrefLocation1ID != nil {
-			if err := ValidatePrefLocationID(*body.PrefLocation1ID); err != nil {
+			if err := ValidateLocationID(*body.PrefLocation1ID); err != nil {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_location_1_id must be a positive number",
-					Source: ProblemSource{Pointer: "data/pref_location_1_id"},
+					Source: ProblemSource{Pointer: "pref_location_1_id"},
 				}, http.StatusBadRequest)
 				return
 			}
 			candidate.PrefLocation1ID = body.PrefLocation1ID
 		}
 		if body.PrefLocation2ID != nil {
-			if err := ValidatePrefLocationID(*body.PrefLocation2ID); err != nil {
+			if err := ValidateLocationID(*body.PrefLocation2ID); err != nil {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_location_2_id must be a positive number",
-					Source: ProblemSource{Pointer: "data/pref_location_2_id"},
+					Source: ProblemSource{Pointer: "pref_location_2_id"},
 				}, http.StatusBadRequest)
 				return
 			}
 			candidate.PrefLocation2ID = body.PrefLocation2ID
 		}
 		if body.PrefLocation3ID != nil {
-			if err := ValidatePrefLocationID(*body.PrefLocation3ID); err != nil {
+			if err := ValidateLocationID(*body.PrefLocation3ID); err != nil {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_location_3_id must be a positive number",
-					Source: ProblemSource{Pointer: "data/pref_location_3_id"},
+					Source: ProblemSource{Pointer: "pref_location_3_id"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -2640,7 +2794,7 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateAlreadyExists,
 					Detail: "Candidate already exists",
-					Source: ProblemSource{Pointer: "data/user_id"},
+					Source: ProblemSource{Pointer: "user_id"},
 				}, http.StatusConflict)
 				return
 			}
@@ -2674,8 +2828,6 @@ const (
 	ProblemTypeForbidden           ProblemType = "urn:hirevec:forbidden"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2685,11 +2837,20 @@ func (a *API) HandlerGetUser() http.HandlerFunc {
 			return
 		}
 
-		userID := ID(r.PathValue("id"))
+		userIDRaw := r.PathValue("id")
+		var userID uuid.UUID
 
 		// Infer userID from claims
-		if userID == "me" {
+		if userIDRaw == "me" {
 			userID = claims.UserID
+		}
+
+		if userID != claims.UserID {
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
+			return
 		}
 
 		user, err := a.Store.GetUser(userID)
@@ -2697,6 +2858,7 @@ func (a *API) HandlerGetUser() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeUserNotFound,
 				Detail: "User not found",
+				Source: ProblemSource{Parameter: "id"},
 			}, http.StatusNotFound)
 			return
 		}
@@ -2747,14 +2909,28 @@ const (
 	ProblemTypeInvalidUserUserNameFormat ProblemType = "urn:hirevec:invalid-user-user-name-format"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerPatchUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
 		if !ok {
 			slog.Error("failed to access claims")
 			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		userIDRaw := r.PathValue("id")
+		var userID uuid.UUID
+
+		// Infer userID from claims
+		if userIDRaw == "me" {
+			userID = claims.UserID
+		}
+
+		if userID != claims.UserID {
+			JSON(w, Problem{
+				Type:   ProblemTypeForbidden,
+				Detail: "You do not have access to this resource",
+			}, http.StatusForbidden)
 			return
 		}
 
@@ -2773,6 +2949,7 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeUserNotFound,
 					Detail: "User not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -2789,7 +2966,7 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidUserFullNameFormat,
 					Detail: ErrorMessageUserFullNameWrongSize,
-					Source: ProblemSource{Pointer: "data/full_name"},
+					Source: ProblemSource{Pointer: "full_name"},
 				}, http.StatusBadRequest)
 				return
 
@@ -2797,7 +2974,7 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidUserFullNameFormat,
 					Detail: ErrorMessageUserFullNameForbiddenChars,
-					Source: ProblemSource{Pointer: "data/full_name"},
+					Source: ProblemSource{Pointer: "full_name"},
 				}, http.StatusBadRequest)
 				return
 
@@ -2820,7 +2997,7 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidUserUserNameFormat,
 					Detail: ErrorMessageUserNameWrongSize,
-					Source: ProblemSource{Pointer: "data/user_name"},
+					Source: ProblemSource{Pointer: "user_name"},
 				}, http.StatusBadRequest)
 				return
 
@@ -2828,7 +3005,7 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidUserUserNameFormat,
 					Detail: ErrorMessageUserNameForbiddenChars,
-					Source: ProblemSource{Pointer: "data/user_name"},
+					Source: ProblemSource{Pointer: "user_name"},
 				}, http.StatusBadRequest)
 				return
 
@@ -2854,6 +3031,7 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeUserNotFound,
 					Detail: "User not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -2866,8 +3044,6 @@ func (a *API) HandlerPatchUser() http.HandlerFunc {
 	}
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerDeleteUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2877,8 +3053,22 @@ func (a *API) HandlerDeleteUser() http.HandlerFunc {
 			return
 		}
 
-		userIDStr := r.PathValue(("id"))
-		userID := ID(userIDStr)
+		userIDRaw := r.PathValue("id")
+		userID, err := uuid.Parse(userIDRaw)
+		if err != nil {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidRequestBody,
+				Detail: "Invalid id format",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		// Infer userID from claims
+		if userIDRaw == "me" {
+			userID = claims.UserID
+		}
+
 		if userID != claims.UserID {
 			JSON(w, Problem{
 				Type:   ProblemTypeForbidden,
@@ -2893,6 +3083,7 @@ func (a *API) HandlerDeleteUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeUserNotFound,
 					Detail: "User not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -2906,6 +3097,7 @@ func (a *API) HandlerDeleteUser() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeUserNotFound,
 					Detail: "User not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -2923,14 +3115,13 @@ const (
 	ProblemTypeCandidateNotFound   ProblemType = "urn:hirevec:candidate-not-found"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		candidateID := ID(r.PathValue("id"))
+		candidateIDRaw := r.PathValue("id")
+		var candidateID uuid.UUID
 
 		// Infer candidateID from claims
-		if candidateID == "me" {
+		if candidateIDRaw == "me" {
 			claims, ok := GetClaims(r)
 			if !ok {
 				slog.Error("failed to access claims")
@@ -2946,7 +3137,15 @@ func (a *API) HandlerGetCandidate() http.HandlerFunc {
 				}, http.StatusForbidden)
 				return
 			}
+
 			candidateID = claimsCandidateID
+			if candidateID != claims.UserID {
+				JSON(w, Problem{
+					Type:   ProblemTypeForbidden,
+					Detail: "You do not have access to this resource",
+				}, http.StatusForbidden)
+				return
+			}
 		}
 
 		candidate, err := a.Store.GetCandidate(candidateID)
@@ -2955,6 +3154,7 @@ func (a *API) HandlerGetCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateNotFound,
 					Detail: "Candidate not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -2988,8 +3188,6 @@ type RequestBodyPatchCandidate struct {
 	RequestBodyCandidatePrefs
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -2999,7 +3197,7 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 			return
 		}
 
-		candidateID, ok := claims.Roles[RoleCandidate]
+		candidateIDClaims, ok := claims.Roles[RoleCandidate]
 		if !ok {
 			JSON(w, Problem{
 				Type:   ProblemTypeMissingRequiredRole,
@@ -3008,15 +3206,17 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 			return
 		}
 
-		urlCandidateIDStr := r.PathValue("id")
-		urlCandidateID := ID(urlCandidateIDStr)
+		candidateIDRaw := r.PathValue("id")
+		var candidateID uuid.UUID
 
 		// Infer candidateID from claims
-		if urlCandidateID == "me" {
-			urlCandidateID = candidateID
+		if candidateIDRaw == "me" {
+			candidateID = candidateIDClaims
 		}
 
-		if urlCandidateID != candidateID {
+		// TODO: Evaluate whether this is safe in terms of security or not.
+		// Maybe we should just return a 404 here.
+		if candidateID != candidateIDClaims {
 			JSON(w, Problem{
 				Type:   ProblemTypeForbidden,
 				Detail: "You do not have access to this resource",
@@ -3040,17 +3240,19 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidateExperienceFormat,
 					Detail: err.Error(),
+					Source: ProblemSource{Pointer: "experiences"},
 				}, http.StatusBadRequest)
 				return
 			}
 		}
 
-		candidate, err := a.Store.GetCandidate(candidateID)
+		candidate, err := a.Store.GetCandidate(candidateIDClaims)
 		if err != nil {
 			if errors.Is(err, ErrCandidateNotFound) {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateNotFound,
 					Detail: "Candidate not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -3066,7 +3268,7 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidateAboutFormat,
 					Detail: "About must be up to 1024 characters",
-					Source: ProblemSource{Pointer: "data/about"},
+					Source: ProblemSource{Pointer: "about"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3095,7 +3297,7 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_title_1 must be between 1 and 128 characters",
-					Source: ProblemSource{Pointer: "data/pref_title_1"},
+					Source: ProblemSource{Pointer: "pref_title_1"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3115,7 +3317,7 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_title_2 must be between 1 and 128 characters",
-					Source: ProblemSource{Pointer: "data/pref_title_2"},
+					Source: ProblemSource{Pointer: "pref_title_2"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3135,7 +3337,7 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_title_3 must be between 1 and 128 characters",
-					Source: ProblemSource{Pointer: "data/pref_title_3"},
+					Source: ProblemSource{Pointer: "pref_title_3"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3151,11 +3353,11 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 		}
 
 		if body.PrefLocation1ID != nil {
-			if err := ValidatePrefLocationID(*body.PrefLocation1ID); err != nil {
+			if err := ValidateLocationID(*body.PrefLocation1ID); err != nil {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_location_1_id must be a positive number",
-					Source: ProblemSource{Pointer: "data/pref_location_1_id"},
+					Source: ProblemSource{Pointer: "pref_location_1_id"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3165,11 +3367,11 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 			}
 		}
 		if body.PrefLocation2ID != nil {
-			if err := ValidatePrefLocationID(*body.PrefLocation2ID); err != nil {
+			if err := ValidateLocationID(*body.PrefLocation2ID); err != nil {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_location_2_id must be a positive number",
-					Source: ProblemSource{Pointer: "data/pref_location_2_id"},
+					Source: ProblemSource{Pointer: "pref_location_2_id"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3179,11 +3381,11 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 			}
 		}
 		if body.PrefLocation3ID != nil {
-			if err := ValidatePrefLocationID(*body.PrefLocation3ID); err != nil {
+			if err := ValidateLocationID(*body.PrefLocation3ID); err != nil {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidCandidatePrefsFormat,
 					Detail: "pref_location_3_id must be a positive number",
-					Source: ProblemSource{Pointer: "data/pref_location_3_id"},
+					Source: ProblemSource{Pointer: "pref_location_3_id"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3207,6 +3409,7 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateNotFound,
 					Detail: "Candidate not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -3219,8 +3422,8 @@ func (a *API) HandlerPatchCandidate() http.HandlerFunc {
 	}
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
+const ProblemTypeInvalidCandidateID ProblemType = "urn:hirevec:invalid-candidate-id"
+
 func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3230,7 +3433,7 @@ func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 			return
 		}
 
-		candidateID, ok := claims.Roles[RoleCandidate]
+		claimsCandidateID, ok := claims.Roles[RoleCandidate]
 		if !ok {
 			JSON(w, Problem{
 				Type:   ProblemTypeMissingRequiredRole,
@@ -3239,9 +3442,23 @@ func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 			return
 		}
 
-		urlCandidateIDStr := r.PathValue("id")
-		urlCandidateID := ID(urlCandidateIDStr)
-		if urlCandidateID != candidateID {
+		urlCandidateIDRaw := r.PathValue("id")
+		candidateID, err := uuid.Parse(urlCandidateIDRaw)
+		if err != nil {
+			JSON(w, Problem{
+				Type:   ProblemTypeInvalidCandidateID,
+				Detail: "Invalid candidate ID",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		// Infer candidateID from claims
+		if urlCandidateIDRaw == "me" {
+			candidateID = claimsCandidateID
+		}
+
+		if candidateID != claimsCandidateID {
 			JSON(w, Problem{
 				Type:   ProblemTypeForbidden,
 				Detail: "You do not have access to this resource",
@@ -3254,6 +3471,7 @@ func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateNotFound,
 					Detail: "Candidate not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -3266,16 +3484,16 @@ func (a *API) HandlerDeleteCandidate() http.HandlerFunc {
 	}
 }
 
-const ProblemTypeRecruiterNotFound ProblemType = "urn:hirevec:recruiter-not-found"
+const (
+	ProblemTypeRecruiterNotFound  ProblemType = "urn:hirevec:recruiter-not-found"
+	ProblemTypeInvalidRecruiterID ProblemType = "urn:hirevec:invalid-recruiter-id"
+)
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		recruiterID := ID(r.PathValue("id"))
-
-		// Infer candidateID from claims
-		if recruiterID == "me" {
+		var recruiterID uuid.UUID
+		urlRecruiterIDRaw := r.PathValue("id")
+		if urlRecruiterIDRaw == "me" {
 			claims, ok := GetClaims(r)
 			if !ok {
 				slog.Error("failed to access claims")
@@ -3283,7 +3501,7 @@ func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 				return
 			}
 
-			claimsRecruiterID, ok := claims.Roles[RoleRecruiter]
+			recruiterID, ok = claims.Roles[RoleRecruiter]
 			if !ok {
 				JSON(w, Problem{
 					Type:   ProblemTypeMissingRequiredRole,
@@ -3291,7 +3509,17 @@ func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 				}, http.StatusForbidden)
 				return
 			}
-			recruiterID = claimsRecruiterID
+		} else {
+			var err error
+			recruiterID, err = uuid.Parse(urlRecruiterIDRaw)
+			if err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidRecruiterID,
+					Detail: "Invalid recruiter ID",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusBadRequest)
+				return
+			}
 		}
 
 		recruiter, err := a.Store.GetRecruiter(recruiterID)
@@ -3300,6 +3528,7 @@ func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeRecruiterNotFound,
 					Detail: "Recruiter not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -3312,8 +3541,6 @@ func (a *API) HandlerGetRecruiter() http.HandlerFunc {
 	}
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerDeleteRecruiter() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3323,7 +3550,7 @@ func (a *API) HandlerDeleteRecruiter() http.HandlerFunc {
 			return
 		}
 
-		recruiterID, ok := claims.Roles[RoleRecruiter]
+		claimsRecruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
 			JSON(w, Problem{
 				Type:   ProblemTypeMissingRequiredRole,
@@ -3332,11 +3559,37 @@ func (a *API) HandlerDeleteRecruiter() http.HandlerFunc {
 			return
 		}
 
-		if err := a.Store.DeleteRecruiter(recruiterID); err != nil {
+		urlRecruiterIDRaw := r.PathValue("id")
+		var recruiterID uuid.UUID
+		if urlRecruiterIDRaw == "me" {
+			recruiterID = claimsRecruiterID
+		} else {
+			var err error
+			recruiterID, err = uuid.Parse(urlRecruiterIDRaw)
+			if err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidRecruiterID,
+					Detail: "Invalid recruiter ID",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusBadRequest)
+				return
+			}
+
+			if recruiterID != claimsRecruiterID {
+				JSON(w, Problem{
+					Type:   ProblemTypeForbidden,
+					Detail: "You do not have access to this resource",
+				}, http.StatusForbidden)
+				return
+			}
+		}
+
+		if err := a.Store.DeleteRecruiter(claimsRecruiterID); err != nil {
 			if errors.Is(err, ErrRecruiterNotFound) {
 				JSON(w, Problem{
 					Type:   ProblemTypeRecruiterNotFound,
 					Detail: "Recruiter not found",
+					Source: ProblemSource{Parameter: "id"},
 				}, http.StatusNotFound)
 				return
 			}
@@ -3349,7 +3602,7 @@ func (a *API) HandlerDeleteRecruiter() http.HandlerFunc {
 	}
 }
 
-var RegexUrl = regexp.MustCompile(`https?://|www\.`)
+var RegexURL = regexp.MustCompile(`https?://|www\.`)
 
 const (
 	DefaultPositionTitleMinLength = 4
@@ -3367,7 +3620,7 @@ func NormalizeAndValidatePositionTitle(title string) (string, error) {
 	if len(title) > DefaultPositionTitleMaxLength {
 		return "", ErrTextTooLong
 	}
-	if _, err := url.ParseRequestURI(title); err == nil || RegexUrl.MatchString(title) {
+	if _, err := url.ParseRequestURI(title); err == nil || RegexURL.MatchString(title) {
 		return "", ErrPositionTitleHasURL
 	}
 	return title, nil
@@ -3405,20 +3658,28 @@ func NormalizeAndValidatePositionCompanyName(company string) (string, error) {
 }
 
 type RequestBodyCreatePosition struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Company     string `json:"company"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	Company     string  `json:"company"`
+	IsRemote    *bool   `json:"is_remote"`
+	LocationID  *int    `json:"location_id"`
+	Skill1      *string `json:"skill_1"`
+	Skill2      *string `json:"skill_2"`
+	Skill3      *string `json:"skill_3"`
+	Skill4      *string `json:"skill_4"`
+	Skill5      *string `json:"skill_5"`
 }
 
 const (
 	ProblemTypeInvalidPositionTitleFormat       ProblemType = "urn:hirevec:invalid-position-title-format"
 	ProblemTypeInvalidPositionDescriptionFormat ProblemType = "urn:hirevec:invalid-position-description-format"
 	ProblemTypeInvalidPositionCompanyFormat     ProblemType = "urn:hirevec:invalid-position-company-format"
+	ProblemTypePositionIsRemoteRequired         ProblemType = "urn:hirevec:position-is-remote-required"
+	ProblemTypeInvalidPositionLocationID        ProblemType = "urn:hirevec:invalid-position-location-id"
+	ProblemTypeInvalidPositionSkillFormat       ProblemType = "urn:hirevec:invalid-position-skill-format"
 	ProblemTypePositionExists                   ProblemType = "urn:hirevec:position-exists"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerCreatePosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3452,7 +3713,7 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidPositionTitleFormat,
 				Detail: "Title must be between 4 and 64 characters",
-				Source: ProblemSource{Pointer: "data/title"},
+				Source: ProblemSource{Pointer: "title"},
 			}, http.StatusBadRequest)
 			return
 
@@ -3460,7 +3721,7 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidPositionTitleFormat,
 				Detail: "Title cannot contain a URL",
-				Source: ProblemSource{Pointer: "data/title"},
+				Source: ProblemSource{Pointer: "title"},
 			}, http.StatusBadRequest)
 			return
 
@@ -3475,7 +3736,7 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidPositionDescriptionFormat,
 				Detail: "Description must be up to 2048 characters",
-				Source: ProblemSource{Pointer: "data/description"},
+				Source: ProblemSource{Pointer: "description"},
 			}, http.StatusBadRequest)
 			return
 		}
@@ -3490,7 +3751,7 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidPositionCompanyFormat,
 				Detail: "Company name must be between 2 and 512 characters",
-				Source: ProblemSource{Pointer: "data/company"},
+				Source: ProblemSource{Pointer: "company"},
 			}, http.StatusBadRequest)
 			return
 		}
@@ -3500,7 +3761,59 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			return
 		}
 
-		if _, err = a.Store.CreatePosition(recruiterID, title, description, company, true); err != nil {
+		if body.IsRemote == nil {
+			JSON(w, Problem{
+				Type:   ProblemTypePositionIsRemoteRequired,
+				Detail: "is_remote is required",
+				Source: ProblemSource{Pointer: "is_remote"},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		if body.LocationID != nil {
+			if err := ValidateLocationID(*body.LocationID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionLocationID,
+					Detail: "location_id must be a positive number",
+					Source: ProblemSource{Pointer: "location_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+		}
+
+		skills := []*string{body.Skill1, body.Skill2, body.Skill3, body.Skill4, body.Skill5}
+		for i := range skills {
+			skill, err := NormalizeAndValidateCustomText(skills[i])
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionSkillFormat,
+					Detail: "Skill must be up to 1024 characters",
+					Source: ProblemSource{Pointer: fmt.Sprintf("skill_%d", i+1)},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate skill", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			skills[i] = skill
+		}
+
+		if _, err = a.Store.CreatePosition(Position{
+			RecruiterID: recruiterID,
+			Title:       title,
+			Description: description,
+			Company:     company,
+			IsRemote:    *body.IsRemote,
+			LocationID:  body.LocationID,
+			Skill1:      skills[0],
+			Skill2:      skills[1],
+			Skill3:      skills[2],
+			Skill4:      skills[3],
+			Skill5:      skills[4],
+			IsActive:    true,
+		}); err != nil {
 			if errors.Is(err, ErrPositionAlreadyExists) {
 				JSON(w, Problem{
 					Type:   ProblemTypePositionExists,
@@ -3517,8 +3830,6 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 	}
 }
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerGetPositions() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := GetClaims(r)
@@ -3552,8 +3863,6 @@ func (a *API) HandlerGetPositions() http.HandlerFunc {
 
 const ProblemTypeInvalidLocationCursor ProblemType = "urn:hirevec:invalid-location-cursor"
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
 func (a *API) HandlerSearchLocations() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query().Get("q")
@@ -3580,20 +3889,55 @@ func (a *API) HandlerSearchLocations() http.HandlerFunc {
 }
 
 const (
-	ProblemTypePositionIDRequired ProblemType = "urn:hirevec:position-id-required"
-	ProblemTypePositionNotFound   ProblemType = "urn:hirevec:position-not-found"
+	ProblemTypeLocationIDRequired ProblemType = "urn:hirevec:location-id-required"
+	ProblemTypeLocationNotFound   ProblemType = "urn:hirevec:location-not-found"
 )
 
-// TODO: Write integration tests for this handler
-// https://github.com/akvachan/hirevec-core/issues/34
+func (a *API) HandlerGetLocation() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		locationIDStr := r.PathValue("id")
+		locationID, err := strconv.Atoi(locationIDStr)
+		if err != nil || locationID < 0 {
+			JSON(w, Problem{
+				Type:   ProblemTypeLocationIDRequired,
+				Detail: "Location ID must be a positive number",
+				Source: ProblemSource{Parameter: "id"},
+			}, http.StatusBadRequest)
+			return
+		}
+
+		location, err := a.Store.GetLocation(locationID)
+		if err != nil {
+			if errors.Is(err, ErrLocationNotFound) {
+				JSON(w, Problem{
+					Type:   ProblemTypeLocationNotFound,
+					Detail: "Location not found",
+					Source: ProblemSource{Parameter: "id"},
+				}, http.StatusNotFound)
+				return
+			}
+			slog.Error("failed to fetch location", "err", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		JSON(w, location, http.StatusOK)
+	}
+}
+
+const (
+	ProblemTypePositionIDRequired ProblemType = "urn:hirevec:position-id-required"
+	ProblemTypePositionNotFound   ProblemType = "urn:hirevec:position-not-found"
+	ProblemTypeInvalidPositionID  ProblemType = "urn:hirevec:invalid-position-id"
+)
+
 func (a *API) HandlerGetPosition() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		positionIDStr := r.PathValue("id")
-		positionID := ID(positionIDStr)
-		if positionID == "" {
+		positionID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
 			JSON(w, Problem{
-				Type:   ProblemTypePositionIDRequired,
-				Detail: "Position ID is required",
+				Type:   ProblemTypeInvalidPositionID,
+				Detail: "Invalid position ID",
 				Source: ProblemSource{Parameter: "id"},
 			}, http.StatusBadRequest)
 			return
@@ -3622,6 +3966,13 @@ type RequestBodyPatchPosition struct {
 	Title       *string `json:"title"`
 	Description *string `json:"description"`
 	Company     *string `json:"company"`
+	IsRemote    *bool   `json:"is_remote"`
+	LocationID  *int    `json:"location_id"`
+	Skill1      *string `json:"skill_1"`
+	Skill2      *string `json:"skill_2"`
+	Skill3      *string `json:"skill_3"`
+	Skill4      *string `json:"skill_4"`
+	Skill5      *string `json:"skill_5"`
 	IsActive    *bool   `json:"is_active"`
 }
 
@@ -3637,18 +3988,17 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 		recruiterID, ok := claims.Roles[RoleRecruiter]
 		if !ok {
 			JSON(w, Problem{
-				Type:   ProblemTypeForbidden,
+				Type:   ProblemTypeMissingRequiredRole,
 				Detail: "Missing required role: recruiter",
 			}, http.StatusForbidden)
 			return
 		}
 
-		positionIDStr := r.PathValue("id")
-		positionID := ID(positionIDStr)
-		if positionID == "" {
+		positionID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
 			JSON(w, Problem{
-				Type:   ProblemTypePositionIDRequired,
-				Detail: "Position ID is required",
+				Type:   ProblemTypeInvalidPositionID,
+				Detail: "Invalid position ID",
 				Source: ProblemSource{Parameter: "id"},
 			}, http.StatusBadRequest)
 			return
@@ -3694,7 +4044,7 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidPositionTitleFormat,
 					Detail: "Title must be between 4 and 64 characters",
-					Source: ProblemSource{Pointer: "data/title"},
+					Source: ProblemSource{Pointer: "title"},
 				}, http.StatusBadRequest)
 				return
 
@@ -3702,7 +4052,7 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidPositionTitleFormat,
 					Detail: "Title cannot contain a URL",
-					Source: ProblemSource{Pointer: "data/title"},
+					Source: ProblemSource{Pointer: "title"},
 				}, http.StatusBadRequest)
 				return
 
@@ -3724,7 +4074,7 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidPositionDescriptionFormat,
 					Detail: "Description must be up to 2048 characters",
-					Source: ProblemSource{Pointer: "data/description"},
+					Source: ProblemSource{Pointer: "description"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3745,7 +4095,7 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 				JSON(w, Problem{
 					Type:   ProblemTypeInvalidPositionCompanyFormat,
 					Detail: "Company name must be between 2 and 512 characters",
-					Source: ProblemSource{Pointer: "data/company"},
+					Source: ProblemSource{Pointer: "company"},
 				}, http.StatusBadRequest)
 				return
 			}
@@ -3756,6 +4106,133 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 			}
 			if position.Company != company {
 				position.Company = company
+				changed = true
+			}
+		}
+
+		if body.IsRemote != nil {
+			if position.IsRemote != *body.IsRemote {
+				position.IsRemote = *body.IsRemote
+				changed = true
+			}
+		}
+
+		if body.LocationID != nil {
+			if err := ValidateLocationID(*body.LocationID); err != nil {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionLocationID,
+					Detail: "location_id must be a positive number",
+					Source: ProblemSource{Pointer: "location_id"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if position.LocationID == nil || *position.LocationID != *body.LocationID {
+				position.LocationID = body.LocationID
+				changed = true
+			}
+		}
+
+		if body.Skill1 != nil {
+			skill, err := NormalizeAndValidateCustomText(body.Skill1)
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionSkillFormat,
+					Detail: "Skill must be up to 1024 characters",
+					Source: ProblemSource{Pointer: "skill_1"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate skill_1", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if position.Skill1 == nil || skill == nil || *position.Skill1 != *skill {
+				position.Skill1 = skill
+				changed = true
+			}
+		}
+
+		if body.Skill2 != nil {
+			skill, err := NormalizeAndValidateCustomText(body.Skill2)
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionSkillFormat,
+					Detail: "Skill must be up to 1024 characters",
+					Source: ProblemSource{Pointer: "skill_2"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate skill_2", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if position.Skill2 == nil || skill == nil || *position.Skill2 != *skill {
+				position.Skill2 = skill
+				changed = true
+			}
+		}
+
+		if body.Skill3 != nil {
+			skill, err := NormalizeAndValidateCustomText(body.Skill3)
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionSkillFormat,
+					Detail: "Skill must be up to 1024 characters",
+					Source: ProblemSource{Pointer: "skill_3"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate skill_3", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if position.Skill3 == nil || skill == nil || *position.Skill3 != *skill {
+				position.Skill3 = skill
+				changed = true
+			}
+		}
+
+		if body.Skill4 != nil {
+			skill, err := NormalizeAndValidateCustomText(body.Skill4)
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionSkillFormat,
+					Detail: "Skill must be up to 1024 characters",
+					Source: ProblemSource{Pointer: "skill_4"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate skill_4", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if position.Skill4 == nil || skill == nil || *position.Skill4 != *skill {
+				position.Skill4 = skill
+				changed = true
+			}
+		}
+
+		if body.Skill5 != nil {
+			skill, err := NormalizeAndValidateCustomText(body.Skill5)
+			if errors.Is(err, ErrTextTooLong) {
+				JSON(w, Problem{
+					Type:   ProblemTypeInvalidPositionSkillFormat,
+					Detail: "Skill must be up to 1024 characters",
+					Source: ProblemSource{Pointer: "skill_5"},
+				}, http.StatusBadRequest)
+				return
+			}
+			if err != nil {
+				slog.Error("failed to validate skill_5", "err", err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if position.Skill5 == nil || skill == nil || *position.Skill5 != *skill {
+				position.Skill5 = skill
 				changed = true
 			}
 		}
@@ -3772,13 +4249,7 @@ func (a *API) HandlerPatchPosition() http.HandlerFunc {
 			return
 		}
 
-		if err = a.Store.UpdatePosition(
-			position.ID,
-			position.Title,
-			position.Description,
-			position.Company,
-			position.IsActive,
-		); err != nil {
+		if err = a.Store.UpdatePosition(position); err != nil {
 			if errors.Is(err, ErrPositionNotFound) {
 				JSON(w, Problem{
 					Type:   ProblemTypePositionNotFound,
@@ -3814,12 +4285,11 @@ func (a *API) HandlerDeletePosition() http.HandlerFunc {
 			return
 		}
 
-		positionIDStr := r.PathValue("id")
-		positionID := ID(positionIDStr)
-		if positionID == "" {
+		positionID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
 			JSON(w, Problem{
-				Type:   ProblemTypePositionIDRequired,
-				Detail: "Position ID is required",
+				Type:   ProblemTypeInvalidPositionID,
+				Detail: "Invalid position ID",
 				Source: ProblemSource{Parameter: "id"},
 			}, http.StatusBadRequest)
 			return

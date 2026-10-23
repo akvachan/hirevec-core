@@ -21,8 +21,14 @@ const (
 	DefaultLogLevel = slog.LevelWarn
 )
 
-func InitLogger(level slog.Level) {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+func InitLogger(level slog.Level, json bool) error {
+	if json {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+	} else {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
+	}
+
+	return nil
 }
 
 var ErrUnknownLogLevel = errors.New("unknown log level")
@@ -42,52 +48,65 @@ func ParseLogLevel(value string) (slog.Level, error) {
 	}
 }
 
-func ParseInt(value string) (int, error) {
-	parsedValue, err := strconv.ParseInt(value, 10, 64)
-	return int(parsedValue), fmt.Errorf("failed to parse int: %w", err)
+func ParseUint(value string) (uint32, error) {
+	parsedValue, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse int: %w", err)
+	}
+	return uint32(parsedValue), nil
 }
 
 type AppConfig struct {
-	ServerBaseURL               *url.URL
-	LogLevel                    slog.Level
-	RequestReadTimeout          time.Duration
-	RequestWriteTimeout         time.Duration
-	GracePeriod                 time.Duration
+	LogLevel slog.Level
+	LogJSON  bool
+
+	ServerBaseURL       *url.URL
+	RequestReadTimeout  time.Duration
+	RequestWriteTimeout time.Duration
+	GracePeriod         time.Duration
+
+	SymmetricKey  string
+	AsymmetricKey string
+
+	PostgreSQLURL *url.URL
+
+	LlamaCppURL             *url.URL
+	LlamaCppAPIKey          string
+	LlamaCppEmbeddingsModel string
+	LlamaCppEmbeddingsDim   uint32
+	LlamaCppRerankerModel   string
+
 	EmbeddingsJobFrequency      time.Duration
 	RecommendationsJobFrequency time.Duration
-	SymmetricKey                string
-	AsymmetricKey               string
-	AppleClientID               string
-	AppleClientSecret           string
-	GoogleClientID              string
-	GoogleClientSecret          string
-	PostgreSQLDatabaseURL       *url.URL
-	TEIAPIKey                   string
-	TEIBaseURL                  *url.URL
-	DevMode                     bool
+
+	DevelopmentMode                  bool
+	DevelopmentModeDropTablesOnExit  bool
+	DevelopmentModeTokensNeverExpire bool
 }
 
 func RunApp(c AppConfig) error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	InitLogger(c.LogLevel)
+	if err := InitLogger(c.LogLevel, c.LogJSON); err != nil {
+		return fmt.Errorf("failed to init logger: %w", err)
+	}
 
-	useGoogleSSO := (c.GoogleClientID != "" || c.GoogleClientSecret != "")
-	useAppleSSO := (c.AppleClientID != "" || c.AppleClientSecret != "")
+	if c.DevelopmentMode {
+		slog.Warn("development mode activated")
+		if c.DevelopmentModeDropTablesOnExit {
+			slog.Warn("dropping tables on exit", "development_mode", c.DevelopmentMode)
+		}
+	}
 
 	vault, err := NewVault(
 		ctx,
 		VaultConfig{
-			ServerBaseURL:      c.ServerBaseURL,
-			SymmetricKey:       c.SymmetricKey,
-			AsymmetricKey:      c.AsymmetricKey,
-			UseGoogleSSO:       useGoogleSSO,
-			UseAppleSSO:        useAppleSSO,
-			GoogleClientID:     c.GoogleClientID,
-			GoogleClientSecret: c.GoogleClientSecret,
-			AppleClientID:      c.AppleClientID,
-			AppleClientSecret:  c.AppleClientSecret,
+			ServerBaseURL:                    c.ServerBaseURL,
+			SymmetricKey:                     c.SymmetricKey,
+			AsymmetricKey:                    c.AsymmetricKey,
+			DevelopmentMode:                  c.DevelopmentMode,
+			DevelopmentModeTokensNeverExpire: c.DevelopmentModeTokensNeverExpire,
 		},
 	)
 	if err != nil {
@@ -95,35 +114,53 @@ func RunApp(c AppConfig) error {
 	}
 
 	dbProvider := DatabaseProviderSQLite
-	if c.PostgreSQLDatabaseURL.String() != "" {
+	if c.PostgreSQLURL.String() != "" {
 		dbProvider = DatabaseProviderPostgreSQL
 	}
 
 	store, err := NewStore(StoreConfig{
 		DatabaseProvider:      dbProvider,
-		PostgreSQLDatabaseURL: c.PostgreSQLDatabaseURL.String(),
-		DevMode:               c.DevMode,
+		PostgreSQLDatabaseURL: c.PostgreSQLURL.String(),
+
+		LlamaCppEmbeddingsDim: c.LlamaCppEmbeddingsDim,
+
+		DevelopmentMode:                 c.DevelopmentMode,
+		DevelopmentModeDropTablesOnExit: c.DevelopmentModeDropTablesOnExit,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to init store: %w", err)
 	}
 
-	teiBaseURL := c.TEIBaseURL.String()
+	useLlamaCpp := false
+	if c.LlamaCppURL.String() != "" {
+		if c.LlamaCppAPIKey != "" {
+			useLlamaCpp = true
+		} else {
+			slog.Warn("refusing to use llama-cpp server due to missing API key")
+		}
+	}
+
 	return RunAPI(
 		ctx,
 		APIConfig{
-			ServerBaseURL:               c.ServerBaseURL,
-			RequestReadTimeout:          c.RequestReadTimeout,
-			RequestWriteTimeout:         c.RequestWriteTimeout,
-			GracePeriod:                 c.GracePeriod,
-			UseGoogleSSO:                useGoogleSSO,
-			UseAppleSSO:                 useAppleSSO,
-			TEIBaseURL:                  c.TEIBaseURL,
-			TEIAPIKey:                   c.TEIAPIKey,
-			UseEmbeddings:               (dbProvider != DatabaseProviderSQLite) && (teiBaseURL != "" && c.TEIAPIKey != ""),
-			UseReranker:                 (teiBaseURL != "" && c.TEIAPIKey != ""),
+			ServerURL:           c.ServerBaseURL,
+			RequestReadTimeout:  c.RequestReadTimeout,
+			RequestWriteTimeout: c.RequestWriteTimeout,
+			GracePeriod:         c.GracePeriod,
+
+			LlamaCppURL:             c.LlamaCppURL.String(),
+			LlamaCppAPIKey:          c.LlamaCppAPIKey,
+			LlamaCppRerankerModel:   c.LlamaCppRerankerModel,
+			LlamaCppEmbeddingsDim:   c.LlamaCppEmbeddingsDim,
+			LlamaCppEmbeddingsModel: c.LlamaCppEmbeddingsModel,
+
+			UseEmbeddings:               (dbProvider != DatabaseProviderSQLite) && useLlamaCpp,
+			UseReranker:                 useLlamaCpp,
 			EmbeddingsJobFrequency:      c.EmbeddingsJobFrequency,
 			RecommendationsJobFrequency: c.RecommendationsJobFrequency,
+
+			DevelopmentMode:                 c.DevelopmentMode,
+			DevelopmentModeDropTablesOnExit: c.DevelopmentModeDropTablesOnExit,
 		},
 		store,
 		vault,

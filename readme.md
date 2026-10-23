@@ -14,39 +14,40 @@ go run cmd/hvserver/main.go
 
 ### Recommendation Engine
 
-The recommendation engine currently only employs a content-based approach.
+The recommendation engine currently only employs a content-based approach. There are currently two stages:
 
-#### Model Features
+1. Filter
 
-| Variable        | Meaning                       |
-| --------------- | ----------------------------- |
-| $`S_{bm25}`$    | Normalized BM25/FTS score     |
-| $`S_{embed}`$   | Embedding cosine similarity   |
-| $`S_{rerank}`$  | Reranker score                |
-| $`S_{skills}`$  | Skills overlap                |
-| $`S_{title}`$   | Previous-title similarity     |
-| $`S_{yoe}`$     | Years-of-experience match     |
-| $`S_{company}`$ | Worked for company before     |
-| $`H_{loc}`$     | Location match (0/1)          |
-| $`H_{mode}`$    | Work mode match (0/1)         |
-| $`H_{lang}`$    | Language match (0/1)          |
-| $`\alpha`$      | 1 if reranker enabled, else 0 |
-| $`\beta`$       | BM25/embedding mixture weight |
+Either via database-powered text search or vector embeddings, compare position text to a candidate profile.
 
-$`Score=\left(0.8\left(\alpha S_{rerank}+(1-\alpha)\left(\beta S_{embed}+(1-\beta)S_{bm25}\right)\right)+0.2\left(0.6S_{skills}+0.25S_{title}+0.1S_{yoe}+0.05S_{company}\right)\right)\times\left(0.2+0.8\left(0.4H_{loc}+0.3H_{mode}+0.3H_{lang}\right)\right)`$
+2. Rerank (Optional)
+
+One can enable a reranker to reduce the pool of candidates further and establish a better ranking, this can be done regradless of which database you use.
 
 ## Server Features
 
 All currently available server settings are demonstrated in [./.example.env](./.example.env).
-You can define them in a `.env` file of a current working directory or via environment variables.
+You can configure them in a `.env` file of a current working directory or via environment variables.
 
-### Checklist
+### TODOs
 
-- [x] Developers can enable development mode (pre-ingested demo data via `dev-ingest.sql`).
-- [ ] Developers can enable PostgreSQL.
-- [ ] Developers can enable TEI (embeddings and reranker worker).
-- [ ] Developers can enable SMTP relay for resetting user password (e-mail users).
-- [ ] Developers can enable SSO with Google and Apple.
+- [ ] Integrate candidate_experiences and `positions.skill_*` into FTS.
+- [ ] Read locations from CSV (country, city, state).
+- [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
+- [ ] Create golden dataset of recommendations per each scenario.
+- [ ] Evaluate recommendation engine based on Recall, Precision and F1 in all 4 mode mixtures (FTS, FTS-Reranker, Embeddings, Embeddings-Reranker).
+- [ ] Enable and test SMTP relay.
+- [ ] Implement password reset.
+- [ ] Implement passwordless login via email.
+- [ ] Implement 2FA via email.
+- [ ] Enable and test Google and Apple SSO.
+- [ ] Implement basic chatting via WebSocket: `golang.org/x/net/websocket`.
+- [ ] Enable hyperlink or PDF-based candidate profile creation.
+- [ ] Enable hyperlink-based position creation.
+- [ ] Implement content moderation with decision models.
+- [ ] Add AI chat as chat member.
+- [ ] Implement separate `position_benefits` table for positions.
+- [ ] Add `salary` and `currency` fields to the positions.
 
 ## Misc
 
@@ -57,12 +58,14 @@ air \
   --build.cmd "go build -o bin/app cmd/hvserver/main.go" \
   --build.entrypoint "./bin/app" \
   --build.include_ext "go,sql,env,json" \
-  --misc.clean_on_exit true \
-  --log.main_only true \
-  --tmp_dir "bin" \
-  --misc.clean_on_exit true \
-  --log.silent true \
-  --screen.clear_on_rebuild true \
+  --build.kill_delay "50000000000" \
+  --build.log "server.log" \
+  --build.send_interrupt true \
   --color never \
+  --log.main_only true \
+  --log.silent true \
+  --misc.clean_on_exit true \
+  --screen.clear_on_rebuild true \
   --screen.keep_scroll false \
+  --tmp_dir "bin"
 ```
