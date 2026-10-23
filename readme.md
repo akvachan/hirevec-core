@@ -18,24 +18,24 @@ The recommendation engine currently only employs a content-based approach. There
 
 1. Filter
 
-Either via database-powered text search or vector embeddings, compare position text to a candidate profile.
+   Either via database-powered text search or vector embeddings, compare position text to a candidate profile.
 
 2. Rerank (Optional)
 
-One can enable a reranker to reduce the pool of candidates further and establish a better ranking, this can be done regradless of which database you use.
+   One can enable a reranker to reduce the pool of candidates further and establish a better ranking, this can be done regradless of which database you use.
 
 ## Server Features
 
 All currently available server settings are demonstrated in [./.example.env](./.example.env).
 You can configure them in a `.env` file of a current working directory or via environment variables.
 
-### TODOs
+## TODOs
 
-- [ ] Integrate candidate_experiences and `positions.skill_*` into FTS.
+- [ ] Integrate candidate*experiences and `positions.skill*\*` into FTS.
 - [ ] Read locations from CSV (country, city, state).
 - [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
 - [ ] Create golden dataset of recommendations per each scenario.
-- [ ] Evaluate recommendation engine based on Recall, Precision and F1 in all 4 mode mixtures (FTS, FTS-Reranker, Embeddings, Embeddings-Reranker).
+- [ ] Evaluate recommendation engine based on Recall, Precision and F1 in all 4 mode mixtures.
 - [ ] Enable and test SMTP relay.
 - [ ] Implement password reset.
 - [ ] Implement passwordless login via email.
