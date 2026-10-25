@@ -5,7 +5,7 @@ info:
 
 http:
   method: POST
-  url: localhost:8888/login
+  url: "{{server_url}}/login"
   body:
     type: json
     data: |-
@@ -14,6 +14,37 @@ http:
         "password": "test"
       }
   auth: inherit
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: "OK"
+      headers:
+        - name: Cache-Control
+          value: "no-store"
+      body:
+        type: json
+        data: |-
+          {
+            "access_token": "v4.public.eyJhdWQiOiJoaXJldmVjLmNvbSIsImV4cCI6IjIwMjYtMTAtMDRUMTA6NDM6NThaIiwiaXNzIjoiaGlyZXZlYy5jb20iLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSIsInN1YiI6IjAxOTljMGEzLTdjMWItN2Q1ZS05ZjJhLTNiNmM4ZDFlNGY3YSJ9",
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "refresh_token": "v4.local.CQUT9HnkAMKj_-c88BhsncRV9UJ5JZiItplycs5cnTBoBKRRLe0WKlXuzE9DpUHa2X",
+            "scope": "role:candidate",
+            "user_id": "0199c0a3-7c1b-7d5e-9f2a-3b6c8d1e4f7a"
+          }
+  - name: Invalid credentials
+    response:
+      status: 401
+      statusText: "Unauthorized"
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:invalid-credentials",
+            "detail": "Invalid credentials"
+          }
 
 settings:
   encodeUrl: true

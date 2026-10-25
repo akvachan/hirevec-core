@@ -1,0 +1,51 @@
+info:
+  name: PatchUser
+  type: http
+  seq: 6
+
+http:
+  method: PATCH
+  url: "{{server_url}}/users/:id"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: me
+      type: path
+      description: user ID in UUID format or "me"
+  body:
+    type: json
+    data: |-
+      {
+        "full_name": "Alex Chen",
+        "user_name": "alex_chen"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 204
+      statusText: No Content
+  - name: Invalid user name
+    response:
+      status: 400
+      statusText: Bad Request
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:invalid-user-user-name-format",
+            "detail": "user_name can only contain underscores, latin characters and numbers",
+            "source": {
+              "pointer": "user_name"
+            }
+          }

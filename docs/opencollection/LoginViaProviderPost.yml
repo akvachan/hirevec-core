@@ -1,0 +1,44 @@
+info:
+  name: LoginViaProviderPost
+  type: http
+  seq: 28
+
+http:
+  method: POST
+  url: "{{server_url}}/login/:provider"
+  params:
+    - name: provider
+      value: google
+      type: path
+      description: SSO provider, can be either "google" or "apple"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 301
+      statusText: Found
+      headers:
+        - name: Location
+          value: https://accounts.google.com/o/oauth2/auth?client_id=...&state=...
+  - name: Invalid provider
+    response:
+      status: 400
+      statusText: Bad Request
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:invalid-provider",
+            "detail": "Provider must be google or apple",
+            "source": {
+              "parameter": "provider"
+            }
+          }

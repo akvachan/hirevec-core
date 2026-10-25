@@ -1,0 +1,50 @@
+info:
+  name: GetLocation
+  type: http
+  seq: 26
+
+http:
+  method: GET
+  url: "{{server_url}}/locations/:id"
+  params:
+    - name: id
+      value: "1"
+      type: path
+      description: location id integer
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: OK
+      body:
+        type: json
+        data: |-
+          {
+            "id": 1,
+            "country": "United States",
+            "city": "San Francisco",
+            "state": "California"
+          }
+  - name: Location not found
+    response:
+      status: 404
+      statusText: Not Found
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:location-not-found",
+            "detail": "Location not found",
+            "source": {
+              "parameter": "id"
+            }
+          }

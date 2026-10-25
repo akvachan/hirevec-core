@@ -1,0 +1,41 @@
+info:
+  name: DeleteUser
+  type: http
+  seq: 7
+
+http:
+  method: DELETE
+  url: "{{server_url}}/users/:id"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: me
+      type: path
+      description: user ID in UUID format or "me"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 204
+      statusText: No Content
+  - name: Forbidden
+    response:
+      status: 403
+      statusText: Forbidden
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:forbidden",
+            "detail": "You do not have access to this resource"
+          }

@@ -1,0 +1,63 @@
+info:
+  name: SSOCallback
+  type: http
+  seq: 29
+
+http:
+  method: GET
+  url: "{{server_url}}/callback/:provider?state={{state}}&code={{authorization_code}}"
+  params:
+    - name: state
+      value: "{{state}}"
+      type: query
+      description: OIDC state token
+    - name: code
+      value: "{{authorization_code}}"
+      type: query
+      description: OIDC authorization code
+    - name: provider
+      value: google
+      type: path
+      description: SSO provider, can be either "google" or "apple"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: OK
+      headers:
+        - name: Cache-Control
+          value: no-store
+      body:
+        type: json
+        data: |-
+          {
+            "access_token": "v4.public.eyJhdWQiOiJoaXJldmVjLmNvbSIsImV4cCI6IjIwMjYtMTAtMDRUMTA6NDM6NThaIiwiaXNzIjoiaGlyZXZlYy5jb20iLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSIsInN1YiI6IjAxOTljMGEzLTdjMWItN2Q1ZS05ZjJhLTNiNmM4ZDFlNGY3YSJ9",
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "refresh_token": "v4.local.CQUT9HnkAMKj_-c88BhsncRV9UJ5JZiItplycs5cnTBoBKRRLe0WKlXuzE9DpUHa2X",
+            "scope": "role:candidate",
+            "user_id": "0199c0a3-7c1b-7d5e-9f2a-3b6c8d1e4f7a"
+          }
+  - name: Invalid state
+    response:
+      status: 400
+      statusText: Bad Request
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:invalid-state",
+            "detail": "Invalid state",
+            "source": {
+              "parameter": "state"
+            }
+          }

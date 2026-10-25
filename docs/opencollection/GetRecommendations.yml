@@ -1,0 +1,72 @@
+info:
+  name: GetRecommendations
+  type: http
+  seq: 20
+
+http:
+  method: GET
+  url: "{{server_url}}/recommendations?role=candidate&include_reacted=false&limit=32"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: role
+      value: candidate
+      type: query
+      description: Role filter, can be "candidate" or "recruiter"
+    - name: include_reacted
+      value: "false"
+      type: query
+      description: filter out recommendations that the user already reacted to, can be 1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False
+    - name: limit
+      value: "32"
+      type: query
+      description: page limit, 32 by default, maximum page size is 128
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: OK
+      headers:
+        - name: Link
+          value: <localhost:8888/recommendations?cursor=0195d1e2-3f4a-7b5c-8d6e-9f0a1b2c3d40&limit=32>; rel="next"
+      body:
+        type: json
+        data: |-
+          [
+            {
+              "recommendation_id": "0195d1e2-3f4a-7b5c-8d6e-9f0a1b2c3d40",
+              "position_id": "0194bf5a-1d2e-7c3b-9a4f-5e6d7c8b9a10",
+              "position_title": "Backend Engineer",
+              "position_company": "Example Corp",
+              "position_description": "We are looking for a backend engineer to build hiring infrastructure.",
+              "position_is_remote": false,
+              "position_location": {
+                "id": 1,
+                "country": "United States",
+                "city": "San Francisco",
+                "state": "California"
+              },
+              "position_skills": ["Go", "PostgreSQL"]
+            }
+          ]
+  - name: Missing required role
+    response:
+      status: 403
+      statusText: Forbidden
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:missing-required-role",
+            "detail": "Missing one of required roles: recruiter, candidate"
+          }

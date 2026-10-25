@@ -1,0 +1,62 @@
+info:
+  name: GetPositions
+  type: http
+  seq: 16
+
+http:
+  method: GET
+  url: "{{server_url}}/positions?limit=32"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: limit
+      value: "32"
+      type: query
+      description: Page limit, 32 by default, maximum page size is 128
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: OK
+      headers:
+        - name: Link
+          value: <localhost:8888/positions?cursor=0194bf5a-1d2e-7c3b-9a4f-5e6d7c8b9a10&limit=32>; rel="next"
+      body:
+        type: json
+        data: |-
+          [{
+            "id": "0194bf5a-1d2e-7c3b-9a4f-5e6d7c8b9a10",
+            "recruiter_id": "018f6b1a-2c4e-7a3b-8d5f-9e6b2a1c3d40",
+            "title": "Backend Engineer",
+            "description": "We are looking for a backend engineer to build hiring infrastructure.",
+            "company": "Example Corp",
+            "is_remote": false,
+            "location_id": 1,
+            "skill_1": "Go",
+            "skill_2": "PostgreSQL",
+            "skill_3": null,
+            "skill_4": null,
+            "skill_5": null,
+            "is_active": true
+          }]
+  - name: Missing required role
+    response:
+      status: 403
+      statusText: Forbidden
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:missing-required-role",
+            "detail": "Missing required role: recruiter"
+          }

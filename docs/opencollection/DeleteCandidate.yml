@@ -1,0 +1,41 @@
+info:
+  name: DeleteCandidate
+  type: http
+  seq: 14
+
+http:
+  method: DELETE
+  url: "{{server_url}}/candidates/:id"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: me
+      type: path
+      description: candidate ID in UUID format or "me"
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 204
+      statusText: No Content
+  - name: Missing required role
+    response:
+      status: 403
+      statusText: Forbidden
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:missing-required-role",
+            "detail": "Missing required role: candidate"
+          }

@@ -1,0 +1,46 @@
+info:
+  name: CreateReaction
+  type: http
+  seq: 22
+
+http:
+  method: POST
+  url: "{{server_url}}/reactions"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  body:
+    type: json
+    data: |-
+      {
+        "recommendation_id": "{{recommendation_id}}",
+        "reaction_type": "positive"
+      }
+  auth: inherit
+
+examples:
+  - name: Success
+    response:
+      status: 201
+      statusText: "Created"
+  - name: Reaction already exists
+    response:
+      status: 409
+      statusText: "Conflict"
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:reaction-exists",
+            "detail": "Reaction already exists; reactions are immutable",
+            "source": {
+              "parameter": "id"
+            }
+          }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

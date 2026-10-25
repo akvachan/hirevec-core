@@ -5,8 +5,18 @@ info:
 
 http:
   method: GET
-  url: localhost:8888/health
+  url: "{{server_url}}/health"
   auth: inherit
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {"status": "ok"}
 
 settings:
   encodeUrl: true

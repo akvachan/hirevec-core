@@ -1,0 +1,62 @@
+info:
+  name: GetPosition
+  type: http
+  seq: 17
+
+http:
+  method: GET
+  url: "{{server_url}}/positions/:id"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: b1031c0c-2367-400b-9eb5-79cf9bca423e
+      type: path
+      description: position ID in UUID format
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: OK
+      body:
+        type: json
+        data: |-
+          {
+            "id": "0194bf5a-1d2e-7c3b-9a4f-5e6d7c8b9a10",
+            "recruiter_id": "018f6b1a-2c4e-7a3b-8d5f-9e6b2a1c3d40",
+            "title": "Backend Engineer",
+            "description": "We are looking for a backend engineer to build hiring infrastructure.",
+            "company": "Example Corp",
+            "is_remote": false,
+            "location_id": 1,
+            "skill_1": "Go",
+            "skill_2": "PostgreSQL",
+            "skill_3": null,
+            "skill_4": null,
+            "skill_5": null,
+            "is_active": true
+          }
+  - name: Position not found
+    response:
+      status: 404
+      statusText: Not Found
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:position-not-found",
+            "detail": "Position not found",
+            "source": {
+              "parameter": "id"
+            }
+          }

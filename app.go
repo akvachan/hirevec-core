@@ -68,7 +68,7 @@ type AppConfig struct {
 	LogLevel slog.Level
 	LogJSON  bool
 
-	ServerBaseURL       *url.URL
+	ServerURL           *url.URL
 	RequestReadTimeout  time.Duration
 	RequestWriteTimeout time.Duration
 	GracePeriod         time.Duration
@@ -118,7 +118,7 @@ func RunApp(c AppConfig) error {
 	vault, err := NewVault(
 		ctx,
 		VaultConfig{
-			ServerBaseURL:                    c.ServerBaseURL,
+			ServerURL:                        c.ServerURL,
 			SymmetricKey:                     c.SymmetricKey,
 			AsymmetricKey:                    c.AsymmetricKey,
 			DevelopmentMode:                  c.DevelopmentMode,
@@ -163,7 +163,7 @@ func RunApp(c AppConfig) error {
 	return RunAPI(
 		ctx,
 		APIConfig{
-			ServerURL:           c.ServerBaseURL,
+			ServerURL:           c.ServerURL,
 			RequestReadTimeout:  c.RequestReadTimeout,
 			RequestWriteTimeout: c.RequestWriteTimeout,
 			GracePeriod:         c.GracePeriod,

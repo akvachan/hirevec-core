@@ -2068,7 +2068,7 @@ type Location struct {
 	ID      int     `json:"id"`
 	Country string  `json:"country"`
 	City    string  `json:"city"`
-	State   *string `json:"state"`
+	State   *string `json:"state,omitempty"`
 }
 
 type Position struct {
@@ -2078,12 +2078,12 @@ type Position struct {
 	Description string    `json:"description"`
 	Company     string    `json:"company"`
 	IsRemote    bool      `json:"is_remote"`
-	LocationID  *int      `json:"location_id"`
-	Skill1      *string   `json:"skill_1"`
-	Skill2      *string   `json:"skill_2"`
-	Skill3      *string   `json:"skill_3"`
-	Skill4      *string   `json:"skill_4"`
-	Skill5      *string   `json:"skill_5"`
+	LocationID  *int      `json:"location_id,omitempty"`
+	Skill1      *string   `json:"skill_1,omitempty"`
+	Skill2      *string   `json:"skill_2,omitempty"`
+	Skill3      *string   `json:"skill_3,omitempty"`
+	Skill4      *string   `json:"skill_4,omitempty"`
+	Skill5      *string   `json:"skill_5,omitempty"`
 	IsActive    bool      `json:"is_active"`
 }
 
@@ -2166,13 +2166,13 @@ type Candidate struct {
 	ID                uuid.UUID `json:"id"`
 	UserID            uuid.UUID `json:"user_id"`
 	About             string    `json:"about"`
-	PrefRemote        *bool     `json:"pref_remote"`
-	PrefTitle1        *string   `json:"pref_title_1"`
-	PrefTitle2        *string   `json:"pref_title_2"`
-	PrefTitle3        *string   `json:"pref_title_3"`
-	PrefLocation1ID   *int      `json:"pref_location_1_id"`
-	PrefLocation2ID   *int      `json:"pref_location_2_id"`
-	PrefLocation3ID   *int      `json:"pref_location_3_id"`
+	PrefRemote        *bool     `json:"pref_remote,omitempty"`
+	PrefTitle1        *string   `json:"pref_title_1,omitempty"`
+	PrefTitle2        *string   `json:"pref_title_2,omitempty"`
+	PrefTitle3        *string   `json:"pref_title_3,omitempty"`
+	PrefLocation1ID   *int      `json:"pref_location_1_id,omitempty"`
+	PrefLocation2ID   *int      `json:"pref_location_2_id,omitempty"`
+	PrefLocation3ID   *int      `json:"pref_location_3_id,omitempty"`
 	LastRecommendedAt time.Time `json:"last_recommended_at"`
 }
 
@@ -2212,14 +2212,14 @@ type CandidateExperience struct {
 	Title          string         `json:"title"`
 	StartedAt      time.Time      `json:"started_at"`
 	EndedAt        time.Time      `json:"ended_at"`
-	Description    *string        `json:"description"`
-	Company        *string        `json:"company"`
+	Description    *string        `json:"description,omitempty"`
+	Company        *string        `json:"company,omitempty"`
 	ExperienceType ExperienceType `json:"experience_type"`
-	Skill1         *string        `json:"skill_1"`
-	Skill2         *string        `json:"skill_2"`
-	Skill3         *string        `json:"skill_3"`
-	Skill4         *string        `json:"skill_4"`
-	Skill5         *string        `json:"skill_5"`
+	Skill1         *string        `json:"skill_1,omitempty"`
+	Skill2         *string        `json:"skill_2,omitempty"`
+	Skill3         *string        `json:"skill_3,omitempty"`
+	Skill4         *string        `json:"skill_4,omitempty"`
+	Skill5         *string        `json:"skill_5,omitempty"`
 }
 
 func CreateCandidateExperiences(tx *sql.Tx, candidateID uuid.UUID, experiences []CandidateExperience) error {

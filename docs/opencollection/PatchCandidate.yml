@@ -1,0 +1,51 @@
+info:
+  name: PatchCandidate
+  type: http
+  seq: 13
+
+http:
+  method: PATCH
+  url: "{{server_url}}/candidates/:id"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: me
+      type: path
+      description: candidate ID in UUID format or "me"
+  body:
+    type: json
+    data: |-
+      {
+        "about": "Backend engineer with a focus on search infrastructure.",
+        "pref_remote": true
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 204
+      statusText: No Content
+  - name: About too long
+    response:
+      status: 400
+      statusText: Bad Request
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:invalid-candidate-about-format",
+            "detail": "About must be up to 1024 characters",
+            "source": {
+              "pointer": "about"
+            }
+          }

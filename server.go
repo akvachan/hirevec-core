@@ -344,11 +344,11 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 }
 
 type API struct {
-	BaseURL *url.URL
-	Store   Store
-	Vault   Vault
-	Server  http.Server
-	Mux     *http.ServeMux
+	ServerURL *url.URL
+	Store     Store
+	Vault     Vault
+	Server    http.Server
+	Mux       *http.ServeMux
 }
 
 const (
@@ -361,10 +361,10 @@ func NewAPI(ctx context.Context, c APIConfig, s Store, v Vault) *API {
 	slog.Debug("initializing server")
 
 	api := API{
-		BaseURL: c.ServerURL,
-		Store:   s,
-		Vault:   v,
-		Mux:     http.NewServeMux(),
+		ServerURL: c.ServerURL,
+		Store:     s,
+		Vault:     v,
+		Mux:       http.NewServeMux(),
 	}
 
 	api.Server = http.Server{
@@ -1765,7 +1765,7 @@ func (a *API) AddNextLink(w http.ResponseWriter, route Route, nextPage Page) err
 		return ErrZeroLimit
 	}
 
-	u := a.BaseURL.JoinPath(string(route))
+	u := a.ServerURL.JoinPath(string(route))
 
 	query := url.Values{}
 	query.Set("cursor", nextPage.Cursor)

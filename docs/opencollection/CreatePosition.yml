@@ -1,0 +1,48 @@
+info:
+  name: CreatePosition
+  type: http
+  seq: 15
+
+http:
+  method: POST
+  url: "{{server_url}}/positions"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  body:
+    type: json
+    data: |-
+      {
+        "title": "Backend Engineer",
+        "description": "We are looking for a backend engineer to build hiring infrastructure.",
+        "company": "Example Corp",
+        "is_remote": false,
+        "location_id": 1,
+        "skill_1": "Go",
+        "skill_2": "PostgreSQL"
+      }
+  auth: inherit
+
+examples:
+  - name: Success
+    response:
+      status: 201
+      statusText: "Created"
+  - name: Position already exists
+    response:
+      status: 409
+      statusText: "Conflict"
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:position-exists",
+            "detail": "Position with the same title, description and company already exists"
+          }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true

@@ -99,7 +99,7 @@ type OIDCConfig struct {
 }
 
 type VaultConfig struct {
-	ServerBaseURL                    *url.URL
+	ServerURL                        *url.URL
 	SymmetricKey                     string
 	AsymmetricKey                    string
 	UseGoogleSSO                     bool
@@ -178,7 +178,7 @@ func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 			OAuth2Config: &oauth2.Config{
 				ClientID:     c.GoogleClientID,
 				ClientSecret: c.GoogleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, callbackURL),
+				RedirectURL:  fmt.Sprintf("%s%s", c.ServerURL, callbackURL),
 				Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
 				Endpoint:     googleProvider.Endpoint(),
 			},
@@ -200,7 +200,7 @@ func NewVault(ctx context.Context, c VaultConfig) (Vault, error) {
 			OAuth2Config: &oauth2.Config{
 				ClientID:     c.AppleClientID,
 				ClientSecret: c.AppleClientSecret,
-				RedirectURL:  fmt.Sprintf("%s%s", c.ServerBaseURL, callbackURL),
+				RedirectURL:  fmt.Sprintf("%s%s", c.ServerURL, callbackURL),
 				Scopes:       []string{oidc.ScopeOpenID, "name", "email"},
 				Endpoint:     appleProvider.Endpoint(),
 			},

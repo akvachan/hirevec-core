@@ -5,15 +5,49 @@ info:
 
 http:
   method: POST
-  url: localhost:8888/refresh
+  url: "{{server_url}}/refresh"
   body:
     type: json
     data: |-
       {
-        "refresh_token": "v4.local.-CQUT9HnkAMKj_-c88BhsncRV9UJ5JZiItplycs5cnTBoBKRRLe0WKlXuzE9DpUHa2Xz2LIOmBFzkIcpbkihl4gveT1-GesDhUt3DGOx2PFe1X7136VPsV115CekYQvg9buES1yYF1lQaA7H4CNEhevmUJqv4zevUVVHq9gx5-LFzKO1wYFajqRgs7cTs6KrrZUsEwX9swGG5ymbD_2DK2yoUkUKewaPYFJt-KdMbfWinMBmUo5aKzsu0XhtSElLj1_f1aOPX01JjI4sm8HSJRKsqfQ-5j5G5ys7ekJkv5uCaBbc0vzF9QmN6aD1FsptjP1diGjr13cjhoZjs3XVZDOVYNYgXtku-YzIL65Vf6k-1U7LJDHSjdbvdw",
+        "refresh_token": "{{refresh_token}}",
         "grant_type": "refresh_token"
       }
   auth: inherit
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: "OK"
+      headers:
+        - name: Cache-Control
+          value: "no-store"
+      body:
+        type: json
+        data: |-
+          {
+            "access_token": "v4.public.eyJhdWQiOiJoaXJldmVjLmNvbSIsImV4cCI6IjIwMjYtMTAtMDRUMTA6NDM6NThaIiwiaXNzIjoiaGlyZXZlYy5jb20iLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSIsInN1YiI6IjAxOTljMGEzLTdjMWItN2Q1ZS05ZjJhLTNiNmM4ZDFlNGY3YSJ9",
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "refresh_token": "v4.local.CQUT9HnkAMKj_-c88BhsncRV9UJ5JZiItplycs5cnTBoBKRRLe0WKlXuzE9DpUHa2X",
+            "scope": "role:candidate",
+            "user_id": "0199c0a3-7c1b-7d5e-9f2a-3b6c8d1e4f7a"
+          }
+  - name: Invalid refresh token
+    response:
+      status: 400
+      statusText: "Bad Request"
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:invalid-refresh-token",
+            "detail": "Invalid refresh token",
+            "source": {
+              "pointer": "/refresh_token"
+            }
+          }
 
 settings:
   encodeUrl: true

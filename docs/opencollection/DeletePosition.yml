@@ -1,0 +1,44 @@
+info:
+  name: DeletePosition
+  type: http
+  seq: 19
+
+http:
+  method: DELETE
+  url: "{{server_url}}/positions/:id"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: b1031c0c-2367-400b-9eb5-79cf9bca423e
+      type: path
+      description: position ID in UUID format
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 204
+      statusText: No Content
+  - name: Position not found
+    response:
+      status: 404
+      statusText: Not Found
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:position-not-found",
+            "detail": "Position not found",
+            "source": {
+              "parameter": "id"
+            }
+          }

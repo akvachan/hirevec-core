@@ -5,14 +5,15 @@ info:
 
 http:
   method: GET
-  url: localhost:8888/users/me
+  url: "{{server_url}}/users/:id"
   headers:
     - name: Authorization
-      value: Bearer v4.public.eyJhdWQiOiJoaXJldmVjLmNvbSIsImNhbmRpZGF0ZV9pZCI6ImNhbl9kZW1vIiwiZXhwIjoiMjAyNi0xMC0wNFQxMDo0Mzo1OFoiLCJpYXQiOiIyMDI2LTEwLTA0VDEwOjEzOjU4WiIsImlzcyI6ImhpcmV2ZWMuY29tIiwibmJmIjoiMjAyNi0xMC0wNFQxMDoxMzo1OFoiLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSIsInN1YiI6InVzcl9kZW1vX2NhbmRpZGF0ZSJ9Lnm4g4Yv_3dVmXKxwZafiNgbsP60vNzxdwMS_HvlDPfscbAZHw7RMPqBnBcNEqAQPwJxSFytxVC1KXXZaXt3AA
-      description: Access Token
-  body:
-    type: json
-    data: ""
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: me
+      type: path
+      description: user ID in UUID format or "me"
   auth: inherit
 
 settings:
@@ -21,3 +22,30 @@ settings:
   followRedirects: true
   maxRedirects: 5
   forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: OK
+      body:
+        type: json
+        data: |-
+          {
+            "id": "0199c0a3-7c1b-7d5e-9f2a-3b6c8d1e4f7a",
+            "email": "alex.chen.demo@example.com",
+            "full_name": "Alex Chen",
+            "user_name": "clever_foxa1b2c3d4",
+            "updated_at": "2026-10-25T10:00:00Z"
+          }
+  - name: Forbidden
+    response:
+      status: 403
+      statusText: Forbidden
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:forbidden",
+            "detail": "You do not have access to this resource"
+          }

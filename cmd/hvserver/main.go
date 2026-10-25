@@ -28,7 +28,7 @@ func main() {
 		LogLevel: hirevec.MustParseEnv("HIREVEC_LOG_LEVEL", hirevec.ParseLogLevel, hirevec.DefaultLogLevel),
 		LogJSON:  hirevec.MustParseEnv("HIREVEC_LOG_JSON", strconv.ParseBool, false),
 
-		ServerBaseURL:       hirevec.MustParseEnv("HIREVEC_BASE_URL", url.Parse, &url.URL{Host: "localhost:8888"}),
+		ServerURL:           hirevec.MustParseEnv("HIREVEC_URL", url.Parse, &url.URL{Host: "localhost:8888"}),
 		RequestReadTimeout:  hirevec.MustParseEnv("HIREVEC_REQUEST_READ_TIMEOUT", time.ParseDuration, hirevec.DefaultRequestReadTimeout),
 		RequestWriteTimeout: hirevec.MustParseEnv("HIREVEC_REQUEST_WRITE_TIMEOUT", time.ParseDuration, hirevec.DefaultRequestWriteTimeout),
 		GracePeriod:         hirevec.MustParseEnv("HIREVEC_GRACE_PERIOD", time.ParseDuration, hirevec.DefaultGracePeriod),

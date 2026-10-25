@@ -33,6 +33,8 @@ You can configure them in a `.env` file of a current working directory or via en
 
 ## TODOs
 
+- Pre-launch:
+
 - [ ] Integrate `candidate_experiences` and `positions.skill*` into FTS.
 - [ ] Read locations from CSV (country, city, state).
 - [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
@@ -49,7 +51,6 @@ You can configure them in a `.env` file of a current working directory or via en
 - [ ] Enable hyperlink or PDF-based candidate profile creation.
 - [ ] Enable hyperlink-based position creation.
 - [ ] Implement content moderation with decision models.
-- [ ] Add AI chat as chat member.
 - [ ] Implement separate `position_benefits` table for positions.
 - [ ] Add mandatory `salary_min`, `salary_max`, `salary_currency`, `salary_frequency` fields to the `positions`.
 - [ ] Add mandatory `pref_salary_min`, `pref_salary_max`, `pref_salary_currency`, `pref_salary_frequency` fields to `candidates`.
@@ -59,11 +60,11 @@ You can configure them in a `.env` file of a current working directory or via en
 - [ ] Add optional `company_type` to `positions` as an enum.
 - [ ] Add optional `business_model` to `positions` as an enum.
 - [ ] Add optional `interview_type` to `positions` as an enum.
-- [ ] Add table `calendars`.
-- [ ] Integrate with Google Meet API for interviews via calendar invites.
-- [ ] Allow candidates and recruiters schedule interviews after confirming a match.
-- [ ] Synchronize calendar with Google and Apple calendars.
-- [ ] Implement role interviewer.
+
+Post-launch:
+
+- [ ] Create table `skills` and read skills CSV.
+- [ ] Create table `position_titles` and read job titles CSV.
 
 ## Misc
 

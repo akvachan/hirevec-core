@@ -1,0 +1,57 @@
+info:
+  name: SearchLocations
+  type: http
+  seq: 25
+
+http:
+  method: GET
+  url: "{{server_url}}/locations?q=San%20Francisco&limit=32"
+  params:
+    - name: q
+      value: San%20Francisco
+      type: query
+      description: URL-safe, percentage-encoded query string, can be country, city or state
+    - name: limit
+      value: "32"
+      type: query
+      description: page limit, 32 by default, maximum page size is 128
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 200
+      statusText: OK
+      headers:
+        - name: Link
+          value: <localhost:8888/locations?q=San%20Francisco&cursor=5&limit=32>; rel="next"
+      body:
+        type: json
+        data: |-
+          [{
+            "id": 1,
+            "country": "United States",
+            "city": "San Francisco",
+            "state": "California"
+          }]
+  - name: Invalid cursor
+    response:
+      status: 400
+      statusText: Bad Request
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:invalid-location-cursor",
+            "detail": "Invalid cursor; must be a positive integer",
+            "source": {
+              "parameter": "cursor"
+            }
+          }

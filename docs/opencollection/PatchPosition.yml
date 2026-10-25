@@ -1,0 +1,48 @@
+info:
+  name: PatchPosition
+  type: http
+  seq: 18
+
+http:
+  method: PATCH
+  url: "{{server_url}}/positions/:id"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  params:
+    - name: id
+      value: b1031c0c-2367-400b-9eb5-79cf9bca423e
+      type: path
+      description: position ID in UUID format
+  body:
+    type: json
+    data: |-
+      {
+        "title": "Senior Backend Engineer",
+        "is_active": true
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: Success
+    response:
+      status: 204
+      statusText: No Content
+  - name: Forbidden
+    response:
+      status: 403
+      statusText: Forbidden
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:forbidden",
+            "detail": "You do not have access to this resource"
+          }

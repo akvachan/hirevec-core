@@ -1,0 +1,75 @@
+info:
+  name: CreateCandidate
+  type: http
+  seq: 11
+
+http:
+  method: POST
+  url: "{{server_url}}/candidates"
+  headers:
+    - name: Authorization
+      value: Bearer {{access_token}}
+  body:
+    type: json
+    data: |-
+      {
+        "about": "Backend engineer passionate about distributed systems and databases.",
+        "experiences": [
+          {
+            "title": "Backend Engineer",
+            "started_at": "2021-06-01T00:00:00Z",
+            "ended_at": "2024-01-01T00:00:00Z",
+            "description": "Built ingestion pipelines and internal tooling.",
+            "company": "Example Corp",
+            "experience_type": "work",
+            "skill_1": "Go",
+            "skill_2": "PostgreSQL"
+          }
+        ],
+        "pref_remote": true,
+        "pref_title_1": "Backend Engineer",
+        "pref_title_2": "Software Engineer",
+        "pref_location_1_id": 1,
+        "pref_location_2_id": 2
+      }
+  auth: inherit
+
+examples:
+  - name: Success
+    response:
+      status: 201
+      statusText: "Created"
+      headers:
+        - name: Cache-Control
+          value: "no-store"
+      body:
+        type: json
+        data: |-
+          {
+            "access_token": "v4.public.eyJhdWQiOiJoaXJldmVjLmNvbSIsImV4cCI6IjIwMjYtMTAtMDRUMTA6NDM6NThaIiwiaXNzIjoiaGlyZXZlYy5jb20iLCJwcm92aWRlciI6ImVtYWlsIiwic2NvcGUiOiJyb2xlOmNhbmRpZGF0ZSIsInN1YiI6IjAxOTljMGEzLTdjMWItN2Q1ZS05ZjJhLTNiNmM4ZDFlNGY3YSJ9",
+            "token_type": "Bearer",
+            "expires_in": 1800,
+            "scope": "role:candidate",
+            "user_id": "0199c0a3-7c1b-7d5e-9f2a-3b6c8d1e4f7a"
+          }
+  - name: Candidate already exists
+    response:
+      status: 409
+      statusText: "Conflict"
+      body:
+        type: json
+        data: |-
+          {
+            "type": "urn:hirevec:candiate-already-exists",
+            "detail": "Candidate already exists",
+            "source": {
+              "pointer": "user_id"
+            }
+          }
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
