@@ -762,7 +762,7 @@ func MustParseEnv[T any](key string, parser func(string) (T, error), defaultValu
 	return parsed
 }
 
-func Loadenv(path string) error {
+func LoadEnv(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("failed to open file %s: %w", path, err)

@@ -5,6 +5,7 @@ package main
 
 import (
 	"log/slog"
+	"net/mail"
 	"net/url"
 	"os"
 	"strconv"
@@ -19,7 +20,7 @@ func main() {
 		hirevec.MustParseEnv("HIREVEC_LOG_JSON", strconv.ParseBool, false),
 	)
 
-	if err := hirevec.Loadenv(".env"); err != nil {
+	if err := hirevec.LoadEnv(".env"); err != nil {
 		slog.Warn("could not load .env, using system environment", "err", err)
 	}
 
@@ -40,7 +41,7 @@ func main() {
 		LlamaCppURL:             hirevec.MustParseEnv("HIREVEC_LLAMACPP_URL", url.Parse, &url.URL{Host: ""}),
 		LlamaCppAPIKey:          os.Getenv("HIREVEC_LLAMACPP_API_KEY"),
 		LlamaCppEmbeddingsModel: os.Getenv("HIREVEC_LLAMACPP_EMBEDDINGS_MODEL"),
-		LlamaCppEmbeddingsDim:   hirevec.MustParseEnv("HIREVEC_LLAMACPP_EMBEDDINGS_DIM", hirevec.ParseUint, 768),
+		LlamaCppEmbeddingsDim:   hirevec.MustParseEnv("HIREVEC_LLAMACPP_EMBEDDINGS_DIM", hirevec.ParseEmbeddingsDim, 768),
 		LlamaCppRerankerModel:   os.Getenv("HIREVEC_LLAMACPP_RERANKER_MODEL"),
 
 		EmbeddingsJobFrequency:      hirevec.MustParseEnv("HIREVEC_EMBEDDINGS_JOB_FREQUENCY", time.ParseDuration, hirevec.DefaultEmbeddingsJobFrequency),
@@ -49,6 +50,10 @@ func main() {
 		DevelopmentMode:                  hirevec.MustParseEnv("HIREVEC_DEVELOPMENT_MODE", strconv.ParseBool, false),
 		DevelopmentModeDropTablesOnExit:  hirevec.MustParseEnv("HIREVEC_DEVELOPMENT_MODE_DROP_TABLES_ON_EXIT", strconv.ParseBool, false),
 		DevelopmentModeTokensNeverExpire: hirevec.MustParseEnv("HIREVEC_DEVELOPMENT_MODE_TOKENS_NEVER_EXPIRE", strconv.ParseBool, false),
+		DevelopmentModeUserFullName:      hirevec.MustParseEnv("HIREVEC_DEVELOPMENT_MODE_USER_FULL_NAME", hirevec.NormalizeAndValidateUserFullName, "Alex Chen"),
+		DevelopmentModeUserName:          hirevec.MustParseEnv("HIREVEC_DEVELOPMENT_MODE_USER_NAME", hirevec.NormalizeAndValidateUserName, "alexchen"),
+		DevelopmentModeUserEmail:         hirevec.MustParseEnv("HIREVEC_DEVELOPMENT_MODE_USER_EMAIL", mail.ParseAddress, &mail.Address{Address: "alex.chen@example.com"}),
+		DevelopmentModeUserPassword:      hirevec.MustParseEnv("HIREVEC_DEVELOPMENT_MODE_USER_PASSWORD", hirevec.ParseUserPassword, ""),
 	}); err != nil {
 		slog.Error(
 			"failed to run app",

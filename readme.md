@@ -12,7 +12,9 @@ Start server with:
 go run cmd/hvserver/main.go
 ```
 
-### Recommendation Engine
+If you want to have some development data:
+
+## Recommendation Engine
 
 The recommendation engine currently only employs a content-based approach. There are currently two stages:
 
@@ -36,18 +38,32 @@ You can configure them in a `.env` file of a current working directory or via en
 - [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
 - [ ] Create golden dataset of recommendations per each scenario.
 - [ ] Evaluate recommendation engine based on Recall, Precision and F1 in all 4 mode mixtures.
+- [ ] Implement continuous monitoring and evaluation.
 - [ ] Enable and test SMTP relay.
 - [ ] Implement password reset.
 - [ ] Implement passwordless login via email.
 - [ ] Implement 2FA via email.
 - [ ] Enable and test Google and Apple SSO.
 - [ ] Implement basic chatting via WebSocket: `golang.org/x/net/websocket`.
+- [ ] Implement group 1-to-many group chats where one candidate may talk to multiple recruiters.
 - [ ] Enable hyperlink or PDF-based candidate profile creation.
 - [ ] Enable hyperlink-based position creation.
 - [ ] Implement content moderation with decision models.
 - [ ] Add AI chat as chat member.
 - [ ] Implement separate `position_benefits` table for positions.
-- [ ] Add `salary` and `currency` fields to the positions.
+- [ ] Add mandatory `salary_min`, `salary_max`, `salary_currency`, `salary_frequency` fields to the `positions`.
+- [ ] Add mandatory `pref_salary_min`, `pref_salary_max`, `pref_salary_currency`, `pref_salary_frequency` fields to `candidates`.
+- [ ] Add optional `language_1`, `language_2`, `language_3` fields to `positions`.
+- [ ] Add optional `pref_language_1`, `pref_language_2`, `pref_language_3` fields to `candidates`.
+- [ ] Add optional `employees_count` to `positions` as an enum.
+- [ ] Add optional `company_type` to `positions` as an enum.
+- [ ] Add optional `business_model` to `positions` as an enum.
+- [ ] Add optional `interview_type` to `positions` as an enum.
+- [ ] Add table `calendars`.
+- [ ] Integrate with Google Meet API for interviews via calendar invites.
+- [ ] Allow candidates and recruiters schedule interviews after confirming a match.
+- [ ] Synchronize calendar with Google and Apple calendars.
+- [ ] Implement role interviewer.
 
 ## Misc
 

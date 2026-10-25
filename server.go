@@ -115,21 +115,13 @@ func CreateEmbeddings(c AIConfig, input []string) ([]EmbeddingEntity, error) {
 	}
 
 	if len(parsed.Data) != len(input) {
-		return nil, fmt.Errorf(
-			"embedding count mismatch (got %d, expected %d)",
-			len(parsed.Data),
-			len(input),
-		)
+		return nil, fmt.Errorf("embedding count mismatch (got %d, expected %d)", len(parsed.Data), len(input))
 	}
 
 	entities := make([]EmbeddingEntity, len(parsed.Data))
 	for _, data := range parsed.Data {
 		if data.Index < 0 || data.Index >= len(entities) {
-			return nil, fmt.Errorf(
-				"embedding index out of range (got %d, expected between 0 and %d)",
-				data.Index,
-				len(entities)-1,
-			)
+			return nil, fmt.Errorf("embedding index out of range (got %d, expected between 0 and %d)", data.Index, len(entities)-1)
 		}
 		if len(data.Embedding) == 0 {
 			return nil, fmt.Errorf("empty embedding at index %d", data.Index)
@@ -160,7 +152,7 @@ func (a *API) RunEmbeddingsJob(c AIConfig) error {
 		return nil
 	}
 
-	batchOut, err := CreateEmbeddings(c, texts)
+	embeddings, err := CreateEmbeddings(c, texts)
 	if err != nil {
 		if err := a.Store.MarkEmbeddingsStatus(ids, EmbeddingStatusFailed); err != nil {
 			return fmt.Errorf("failed to mark embeddings status: %w", err)
@@ -173,7 +165,7 @@ func (a *API) RunEmbeddingsJob(c AIConfig) error {
 		return fmt.Errorf("failed to start transaction: %w", err)
 	}
 
-	if err := a.Store.UpsertEmbeddingsTx(tx, ids, batchOut); err != nil {
+	if err := a.Store.UpsertEmbeddingsTx(tx, ids, embeddings); err != nil {
 		if err := tx.Rollback(); err != nil {
 			slog.Error("failed to rollback transaction", "err", err)
 			return fmt.Errorf("failed to rollback transaction: %w", err)
@@ -260,11 +252,7 @@ func CreateRerank(c AIConfig, candidateAbout string, positionsTexts []string, po
 	}
 
 	if len(results) != len(positionsIDs) {
-		return nil, fmt.Errorf(
-			"rerank count mismatch (got %d, expected %d)",
-			len(results),
-			len(positionsIDs),
-		)
+		return nil, fmt.Errorf("rerank count mismatch (got %d, expected %d)", len(results), len(positionsIDs))
 	}
 
 	ranked := make([]uuid.UUID, len(results))
@@ -320,21 +308,13 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		if c.UseEmbeddings {
 			positionIDs, err = a.Store.GetPositionsForCandidateViaEmbeddings(candidateIDs[i], DefaultTopPositions)
 			if err != nil {
-				slog.Error(
-					"failed to find similar positions via embeddings",
-					"candidateID", candidateIDs[i],
-					"err", err,
-				)
+				slog.Error("failed to find similar positions via embeddings", "candidateID", candidateIDs[i], "err", err)
 				continue
 			}
 		} else {
 			positionIDs, err = a.Store.GetPositionsForCandidateViaFTS(candidateIDs[i], DefaultTopPositions)
 			if err != nil {
-				slog.Error(
-					"failed to find similar positions via FTS",
-					"candidateID", candidateIDs[i],
-					"err", err,
-				)
+				slog.Error("failed to find similar positions via FTS", "candidateID", candidateIDs[i], "err", err)
 				continue
 			}
 		}
@@ -346,11 +326,7 @@ func (a *API) RunRecommendationsJob(c AIConfig) error {
 		if c.UseReranker {
 			positionIDs, err = a.Rerank(c, candidateIDs[i], positionIDs)
 			if err != nil {
-				slog.Error(
-					"failed to rerank",
-					"candidateID", candidateIDs[i],
-					"err", err,
-				)
+				slog.Error("failed to rerank", "candidateID", candidateIDs[i], "err", err)
 				continue
 			}
 		}
@@ -503,7 +479,7 @@ func RunAPI(ctx context.Context, c APIConfig, s Store, v Vault) error {
 
 	if c.DevelopmentMode && c.DevelopmentModeDropTablesOnExit {
 		if err := s.DropTables(); err != nil {
-			slog.Error("failed to drop tables", "err", err, "development_mode", c.DevelopmentMode)
+			slog.Error("failed to drop tables", "development_mode", c.DevelopmentMode, "err", err)
 		}
 		slog.Debug("dropped tables on exit", "development_mode", c.DevelopmentMode)
 	}
@@ -1614,7 +1590,6 @@ var (
 
 func NormalizeAndValidateUserFullName(name string) (string, error) {
 	// TODO: Return an array of errors instead of one by one.
-	name = strings.TrimSpace(name)
 	name = strings.Join(strings.Fields(name), " ")
 	if len(name) < DefaultUserFullNameMinLength {
 		return "", ErrTextTooShort
@@ -2264,18 +2239,20 @@ const (
 )
 
 var (
-	ErrPasswordHasNoUpper   = errors.New("password has no upper letter")
+	ErrPasswordTooShort     = errors.New("password is too short")
+	ErrPasswordTooLong      = errors.New("password is too long")
+	ErrPasswordHasNoUpper   = errors.New("password has no uppercase letter")
 	ErrPasswordHasNoDigit   = errors.New("password has no digit")
 	ErrPasswordHasNoSpecial = errors.New("password has no special character")
-	ErrPasswordHasNoLower   = errors.New("password has no lower letter")
+	ErrPasswordHasNoLower   = errors.New("password has no lowercase letter")
 )
 
 func ValidateUserPassword(password string) error {
 	if len(password) < DefaultUserPasswordMinLength {
-		return ErrTextTooShort
+		return ErrPasswordTooShort
 	}
 	if len(password) > DefaultUserPasswordMaxLength {
-		return ErrTextTooLong
+		return ErrPasswordTooLong
 	}
 	if !RegexPasswordHasLower.MatchString(password) {
 		return ErrPasswordHasNoLower
@@ -2337,10 +2314,10 @@ func (a *API) HandlerCreateUser() http.HandlerFunc {
 		}
 
 		switch err = ValidateUserPassword(body.Password); {
-		case errors.Is(err, ErrTextTooShort), errors.Is(err, ErrTextTooLong):
+		case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooShort):
 			JSON(w, Problem{
 				Type:   ProblemTypeInvalidUserPasswordFormat,
-				Detail: "Password must be between 8 and 128 characters",
+				Detail: fmt.Sprintf("Password must be between %d and %d characters", DefaultUserPasswordMinLength, DefaultUserPasswordMaxLength),
 				Source: ProblemSource{Pointer: "/password"},
 			}, http.StatusBadRequest)
 			return

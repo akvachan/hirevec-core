@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/mail"
 	"net/url"
 	"os"
 	"os/signal"
@@ -48,12 +49,19 @@ func ParseLogLevel(value string) (slog.Level, error) {
 	}
 }
 
-func ParseUint(value string) (uint32, error) {
+func ParseEmbeddingsDim(value string) (uint32, error) {
 	parsedValue, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse int: %w", err)
+		return 0, fmt.Errorf("failed to parse embeddings dim: %w", err)
 	}
 	return uint32(parsedValue), nil
+}
+
+func ParseUserPassword(value string) (string, error) {
+	if err := ValidateUserPassword(value); err != nil {
+		return "", fmt.Errorf("failed to parse user password: %w", err)
+	}
+	return value, nil
 }
 
 type AppConfig struct {
@@ -82,6 +90,10 @@ type AppConfig struct {
 	DevelopmentMode                  bool
 	DevelopmentModeDropTablesOnExit  bool
 	DevelopmentModeTokensNeverExpire bool
+	DevelopmentModeUserFullName      string
+	DevelopmentModeUserName          string
+	DevelopmentModeUserEmail         *mail.Address
+	DevelopmentModeUserPassword      string
 }
 
 func RunApp(c AppConfig) error {
@@ -96,6 +108,10 @@ func RunApp(c AppConfig) error {
 		slog.Warn("development mode activated")
 		if c.DevelopmentModeDropTablesOnExit {
 			slog.Warn("dropping tables on exit", "development_mode", c.DevelopmentMode)
+		}
+
+		if c.DevelopmentModeUserPassword == "" {
+			return fmt.Errorf("failed to proceed in development mode without user password")
 		}
 	}
 
@@ -120,12 +136,16 @@ func RunApp(c AppConfig) error {
 
 	store, err := NewStore(StoreConfig{
 		DatabaseProvider:      dbProvider,
-		PostgreSQLDatabaseURL: c.PostgreSQLURL.String(),
+		PostgreSQLDatabaseURL: c.PostgreSQLURL,
 
 		LlamaCppEmbeddingsDim: c.LlamaCppEmbeddingsDim,
 
 		DevelopmentMode:                 c.DevelopmentMode,
 		DevelopmentModeDropTablesOnExit: c.DevelopmentModeDropTablesOnExit,
+		DevelopmentModeUserFullName:     c.DevelopmentModeUserFullName,
+		DevelopmentModeUserName:         c.DevelopmentModeUserName,
+		DevelopmentModeUserEmail:        c.DevelopmentModeUserEmail,
+		DevelopmentModeUserPassword:     c.DevelopmentModeUserPassword,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to init store: %w", err)

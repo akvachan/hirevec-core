@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -31,22 +33,27 @@ const (
 
 type StoreConfig struct {
 	DatabaseProvider      DatabaseProvider
-	PostgreSQLDatabaseURL string
+	PostgreSQLDatabaseURL *url.URL
 
 	LlamaCppEmbeddingsDim uint32
 
 	DevelopmentMode                 bool
 	DevelopmentModeDropTablesOnExit bool
+	DevelopmentModeUserFullName     string
+	DevelopmentModeUserName         string
+	DevelopmentModeUserEmail        *mail.Address
+	DevelopmentModeUserPassword     string
 }
 
 var ErrMissingDatabaseURL = errors.New("database URL is not set")
 
-func ConnectPostgreSQL(url string) (*sql.DB, error) {
-	if url == "" {
+func ConnectPostgreSQL(databaseURL *url.URL) (*sql.DB, error) {
+	urlStr := databaseURL.String()
+	if urlStr == "" {
 		return nil, ErrMissingDatabaseURL
 	}
 
-	db, err := sql.Open("pgx", url)
+	db, err := sql.Open("pgx", urlStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -276,14 +283,36 @@ create table if not exists matches (
 commit;
 `
 
-// IngestDemoData populates the database with demo data for development.
-// Safe to run multiple times.
-func (s Store) IngestDemoData() error {
-	candidateEmail := "alex.chen.demo@example.com"
+type DevelopmentDataConfig struct {
+	UserFullName string
+	UserName     string
+	UserEmail    *mail.Address
+	UserPassword string
+}
 
-	exists, err := s.UserExistsByEmail(candidateEmail, ProviderEmail)
+func (s Store) IngestDevelopmentData(c DevelopmentDataConfig) error {
+	if err := ValidateUserPassword(c.UserPassword); err != nil {
+		return fmt.Errorf("failed to process user password: %w", err)
+	}
+
+	userFullName := "Alex Chen"
+	if c.UserFullName != "" {
+		userFullName = c.UserFullName
+	}
+
+	userName := "alexchen"
+	if c.UserName != "" {
+		userName = c.UserName
+	}
+
+	userEmail := "alex.chen@example.com"
+	if c.UserEmail != nil {
+		userEmail = c.UserEmail.Address
+	}
+
+	exists, err := s.UserExistsByEmail(userEmail, ProviderEmail)
 	if err != nil {
-		return fmt.Errorf("failed to check for existing demo data: %w", err)
+		return fmt.Errorf("failed to check for existing development data: %w", err)
 	}
 	if exists {
 		return nil
@@ -295,17 +324,17 @@ func (s Store) IngestDemoData() error {
 		values (1, $1, $2)
 		on conflict do nothing
 	`, "United States", "San Francisco"); err != nil {
-		return fmt.Errorf("failed to create demo location: %w", err)
+		return fmt.Errorf("failed to create development location: %w", err)
 	}
 
-	passwordHash, err := HashPassword("test")
+	passwordHash, err := HashPassword(c.UserPassword)
 	if err != nil {
-		return fmt.Errorf("failed to hash demo password: %w", err)
+		return fmt.Errorf("failed to hash development password: %w", err)
 	}
 
-	candidateUserID, err := s.CreateUser(ProviderEmail, "", candidateEmail, "Alex Chen", "alexchen", passwordHash)
+	candidateUserID, err := s.CreateUser(ProviderEmail, "", userEmail, userFullName, userName, passwordHash)
 	if err != nil {
-		return fmt.Errorf("failed to create demo candidate user: %w", err)
+		return fmt.Errorf("failed to create development candidate user: %w", err)
 	}
 
 	candidateID, err := s.CreateCandidate(
@@ -349,34 +378,34 @@ func (s Store) IngestDemoData() error {
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create demo candidate: %w", err)
+		return fmt.Errorf("failed to create development candidate: %w", err)
 	}
 
 	recruiter1UserID, err := s.CreateUser(ProviderEmail, "", "sarah@nova.io", "Sarah Williams", "sarahrecruits", passwordHash)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recruiter user: %w", err)
+		return fmt.Errorf("failed to create development recruiter user: %w", err)
 	}
 	recruiter1ID, err := s.CreateRecruiter(recruiter1UserID)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recruiter: %w", err)
+		return fmt.Errorf("failed to create development recruiter: %w", err)
 	}
 
 	recruiter2UserID, err := s.CreateUser(ProviderEmail, "", "michael@brightlabs.io", "Michael Rodriguez", "michaeltalent", passwordHash)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recruiter user: %w", err)
+		return fmt.Errorf("failed to create development recruiter user: %w", err)
 	}
 	recruiter2ID, err := s.CreateRecruiter(recruiter2UserID)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recruiter: %w", err)
+		return fmt.Errorf("failed to create development recruiter: %w", err)
 	}
 
 	recruiter3UserID, err := s.CreateUser(ProviderEmail, "", "emily@cloudforge.io", "Emily Johnson", "emilyhires", passwordHash)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recruiter user: %w", err)
+		return fmt.Errorf("failed to create development recruiter user: %w", err)
 	}
 	recruiter3ID, err := s.CreateRecruiter(recruiter3UserID)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recruiter: %w", err)
+		return fmt.Errorf("failed to create development recruiter: %w", err)
 	}
 
 	position1ID, err := s.CreatePosition(Position{
@@ -388,7 +417,7 @@ func (s Store) IngestDemoData() error {
 		IsActive:    true,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create demo position: %w", err)
+		return fmt.Errorf("failed to create development position: %w", err)
 	}
 
 	position2ID, err := s.CreatePosition(Position{
@@ -399,7 +428,7 @@ func (s Store) IngestDemoData() error {
 		IsActive:    true,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create demo position: %w", err)
+		return fmt.Errorf("failed to create development position: %w", err)
 	}
 
 	position3ID, err := s.CreatePosition(Position{
@@ -410,7 +439,7 @@ func (s Store) IngestDemoData() error {
 		IsActive:    true,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create demo position: %w", err)
+		return fmt.Errorf("failed to create development position: %w", err)
 	}
 
 	// Positions 4 and 5 are intentionally left without recommendations so the
@@ -423,7 +452,7 @@ func (s Store) IngestDemoData() error {
 		IsRemote:    true,
 		IsActive:    true,
 	}); err != nil {
-		return fmt.Errorf("failed to create demo position: %w", err)
+		return fmt.Errorf("failed to create development position: %w", err)
 	}
 
 	if _, err = s.CreatePosition(Position{
@@ -434,32 +463,32 @@ func (s Store) IngestDemoData() error {
 		IsRemote:    true,
 		IsActive:    true,
 	}); err != nil {
-		return fmt.Errorf("failed to create demo position: %w", err)
+		return fmt.Errorf("failed to create development position: %w", err)
 	}
 
 	recommendation1ID, err := s.CreateRecommendation(position1ID, candidateID)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recommendation: %w", err)
+		return fmt.Errorf("failed to create development recommendation: %w", err)
 	}
 
 	recommendation2ID, err := s.CreateRecommendation(position2ID, candidateID)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recommendation: %w", err)
+		return fmt.Errorf("failed to create development recommendation: %w", err)
 	}
 
 	recommendation3ID, err := s.CreateRecommendation(position3ID, candidateID)
 	if err != nil {
-		return fmt.Errorf("failed to create demo recommendation: %w", err)
+		return fmt.Errorf("failed to create development recommendation: %w", err)
 	}
 
 	if err := s.CreateRecruiterReaction(recommendation1ID, recruiter1ID, ReactionTypePositive); err != nil {
-		return fmt.Errorf("failed to create demo recruiter reaction: %w", err)
+		return fmt.Errorf("failed to create development recruiter reaction: %w", err)
 	}
 	if err := s.CreateRecruiterReaction(recommendation2ID, recruiter2ID, ReactionTypePositive); err != nil {
-		return fmt.Errorf("failed to create demo recruiter reaction: %w", err)
+		return fmt.Errorf("failed to create development recruiter reaction: %w", err)
 	}
 	if err := s.CreateRecruiterReaction(recommendation3ID, recruiter3ID, ReactionTypePositive); err != nil {
-		return fmt.Errorf("failed to create demo recruiter reaction: %w", err)
+		return fmt.Errorf("failed to create development recruiter reaction: %w", err)
 	}
 
 	return nil
@@ -579,7 +608,6 @@ func NewStore(c StoreConfig) (Store, error) {
 
 		slog.Debug("creating embeddings schema")
 		if _, err := s.Database.Exec(
-			// c.EmbeddingsDim is validated via ParseUint
 			fmt.Sprintf(`
 				create table if not exists embeddings (
 					id bigserial primary key,
@@ -627,15 +655,18 @@ func NewStore(c StoreConfig) (Store, error) {
 	s.DatabaseProvider = c.DatabaseProvider
 
 	if c.DevelopmentMode {
-		slog.Debug("ingesting demo data", "development_mode", c.DevelopmentMode)
-		if err := s.IngestDemoData(); err != nil {
+		slog.Debug("ingesting development data", "development_mode", c.DevelopmentMode)
+		if err := s.IngestDevelopmentData(DevelopmentDataConfig{
+			UserEmail:    c.DevelopmentModeUserEmail,
+			UserPassword: c.DevelopmentModeUserPassword,
+		}); err != nil {
 			if c.DevelopmentModeDropTablesOnExit {
 				if err := s.DropTables(); err != nil {
 					slog.Error("failed to drop tables", "err", err, "development_mode", c.DevelopmentMode)
 				}
 				slog.Debug("dropped tables on exit", "development_mode", c.DevelopmentMode)
 			}
-			return Store{}, fmt.Errorf("failed to ingest demo data: %w", err)
+			return Store{}, fmt.Errorf("failed to ingest development data: %w", err)
 		}
 	}
 
