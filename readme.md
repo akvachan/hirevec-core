@@ -33,8 +33,6 @@ You can configure them in a `.env` file of a current working directory or via en
 
 ## TODOs
 
-- Pre-launch:
-
 - [ ] Integrate `candidate_experiences` and `positions.skill*` into FTS.
 - [ ] Read locations from CSV (country, city, state).
 - [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
@@ -60,9 +58,6 @@ You can configure them in a `.env` file of a current working directory or via en
 - [ ] Add optional `company_type` to `positions` as an enum.
 - [ ] Add optional `business_model` to `positions` as an enum.
 - [ ] Add optional `interview_type` to `positions` as an enum.
-
-Post-launch:
-
 - [ ] Create table `skills` and read skills CSV.
 - [ ] Create table `position_titles` and read job titles CSV.
 
