@@ -12,8 +12,6 @@ Start server with:
 go run cmd/hvserver/main.go
 ```
 
-If you want to have some development data:
-
 ## Recommendation Engine
 
 The recommendation engine currently only employs a content-based approach. There are currently two stages:
