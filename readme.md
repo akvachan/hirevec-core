@@ -29,38 +29,6 @@ The recommendation engine currently only employs a content-based approach. There
 All currently available server settings are demonstrated in [./.example.env](./.example.env).
 You can configure them in a `.env` file of a current working directory or via environment variables.
 
-## TODOs
-
-- [ ] Enable `HIREVEC_EMBEDDINGS_COLD_START` boolean.
-- [ ] Integrate `candidate_experiences` and `positions.skill*` into FTS.
-- [ ] Read locations from CSV (country, city, state).
-- [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
-- [ ] Create golden dataset of recommendations per each scenario.
-- [ ] Evaluate recommendation engine based on Recall, Precision and F1 in all 4 mode mixtures.
-- [ ] Implement continuous monitoring and evaluation.
-- [ ] Implement real-time filtering.
-- [ ] Enable and test SMTP relay.
-- [ ] Implement password reset.
-- [ ] Implement passwordless login via email.
-- [ ] Implement 2FA via email.
-- [ ] Enable and test Google and Apple SSO.
-- [ ] Implement basic chatting via WebSocket: `golang.org/x/net/websocket`.
-- [ ] Implement group 1-to-many group chats where one candidate may talk to multiple recruiters.
-- [ ] Enable hyperlink or PDF-based candidate profile creation.
-- [ ] Enable hyperlink-based position creation.
-- [ ] Implement content moderation with decision models.
-- [ ] Implement separate `position_benefits` table for positions.
-- [ ] Add mandatory `salary_min`, `salary_max`, `salary_currency`, `salary_frequency` fields to the `positions`.
-- [ ] Add mandatory `pref_salary_min`, `pref_salary_max`, `pref_salary_currency`, `pref_salary_frequency` fields to `candidates`.
-- [ ] Add optional `language_1`, `language_2`, `language_3` fields to `positions`.
-- [ ] Add optional `pref_language_1`, `pref_language_2`, `pref_language_3` fields to `candidates`.
-- [ ] Add optional `employees_count` to `positions` as an enum.
-- [ ] Add optional `company_type` to `positions` as an enum.
-- [ ] Add optional `business_model` to `positions` as an enum.
-- [ ] Add optional `interview_type` to `positions` as an enum.
-- [ ] Create table `skills` and read skills CSV.
-- [ ] Create table `position_titles` and read job titles CSV.
-
 ## Misc
 
 ### Hot-reload server
