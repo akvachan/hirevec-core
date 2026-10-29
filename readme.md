@@ -31,7 +31,6 @@ You can configure them in a `.env` file of a current working directory or via en
 
 ## TODOs
 
-- [ ] Implement path for the cold-start.
 - [ ] Enable `HIREVEC_EMBEDDINGS_COLD_START` boolean.
 - [ ] Integrate `candidate_experiences` and `positions.skill*` into FTS.
 - [ ] Read locations from CSV (country, city, state).

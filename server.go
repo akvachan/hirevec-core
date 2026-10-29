@@ -285,6 +285,7 @@ const (
 	DefaultCandidatesBatchSize       uint16 = 32
 	DefaultRecommendationsDailyLimit int    = 32
 	DefaultTopPositions              uint16 = 128
+	DefaultTopCandidates             uint16 = 128
 )
 
 func (a *API) RunRecommendationsJob(c AIConfig) error {
@@ -2766,7 +2767,8 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 			candidate.PrefLocation3ID = body.PrefLocation3ID
 		}
 
-		if _, err = a.Store.CreateCandidate(candidate, experiences); err != nil {
+		candidateID, err := a.Store.CreateCandidate(candidate, experiences)
+		if err != nil {
 			if errors.Is(err, ErrCandidateAlreadyExists) {
 				JSON(w, Problem{
 					Type:   ProblemTypeCandidateAlreadyExists,
@@ -2778,6 +2780,20 @@ func (a *API) HandlerCreateCandidate() http.HandlerFunc {
 			slog.Error("failed to create candidate", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+
+		// Create cold-start recommendations
+		positionIDs, err := a.Store.GetPositionsForCandidateViaFTS(candidateID, DefaultTopPositions)
+		if err != nil {
+			slog.Error("failed to find positions for candidate via FTS", "candidateID", candidateID, "err", err)
+		} else {
+			limit := min(len(positionIDs), DefaultRecommendationsDailyLimit)
+			for i := range limit {
+				if _, err := a.Store.CreateRecommendation(positionIDs[i], candidateID); err != nil && !errors.Is(err, ErrRecommendationAlreadyExists) {
+					slog.Error("failed to create cold start recommendation", "candidateID", candidateID, "err", err)
+					break
+				}
+			}
 		}
 
 		roles, err := a.Store.GetUserRoles(claims.UserID, claims.Provider)
@@ -3777,7 +3793,7 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			skills[i] = skill
 		}
 
-		if _, err = a.Store.CreatePosition(Position{
+		positionID, err := a.Store.CreatePosition(Position{
 			RecruiterID: recruiterID,
 			Title:       title,
 			Description: description,
@@ -3790,7 +3806,8 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			Skill4:      skills[3],
 			Skill5:      skills[4],
 			IsActive:    true,
-		}); err != nil {
+		})
+		if err != nil {
 			if errors.Is(err, ErrPositionAlreadyExists) {
 				JSON(w, Problem{
 					Type:   ProblemTypePositionExists,
@@ -3801,6 +3818,20 @@ func (a *API) HandlerCreatePosition() http.HandlerFunc {
 			slog.Error("failed to create position", "err", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
+		}
+
+		// Create cold-start recommendations
+		candidateIDs, err := a.Store.GetCandidatesForPositionViaFTS(positionID, DefaultTopCandidates)
+		if err != nil {
+			slog.Error("failed to find candidates for position via FTS", "positionID", positionID, "err", err)
+		} else {
+			limit := min(len(candidateIDs), DefaultRecommendationsDailyLimit)
+			for i := range limit {
+				if _, err := a.Store.CreateRecommendation(positionID, candidateIDs[i]); err != nil && !errors.Is(err, ErrRecommendationAlreadyExists) {
+					slog.Error("failed to create cold start recommendation", "positionID", positionID, "err", err)
+					break
+				}
+			}
 		}
 
 		w.WriteHeader(http.StatusCreated)
