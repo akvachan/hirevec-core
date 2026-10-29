@@ -31,12 +31,15 @@ You can configure them in a `.env` file of a current working directory or via en
 
 ## TODOs
 
+- [ ] Implement path for the cold-start.
+- [ ] Enable `HIREVEC_EMBEDDINGS_COLD_START` boolean.
 - [ ] Integrate `candidate_experiences` and `positions.skill*` into FTS.
 - [ ] Read locations from CSV (country, city, state).
 - [ ] Read positions and candidates from CSV (introduce 10 different CSV-scenarios).
 - [ ] Create golden dataset of recommendations per each scenario.
 - [ ] Evaluate recommendation engine based on Recall, Precision and F1 in all 4 mode mixtures.
 - [ ] Implement continuous monitoring and evaluation.
+- [ ] Implement real-time filtering.
 - [ ] Enable and test SMTP relay.
 - [ ] Implement password reset.
 - [ ] Implement passwordless login via email.

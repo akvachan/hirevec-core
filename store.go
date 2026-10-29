@@ -1130,6 +1130,7 @@ func (s Store) GetRecommendationsForCandidate(candidateID uuid.UUID, page Page, 
 			p.skill_1, p.skill_2, p.skill_3, p.skill_4, p.skill_5
 		from recommendations r
 		join positions p on p.id = r.position_id
+		join candidates c on c.id = $1
 		left join locations l on l.id = p.location_id
 		where r.candidate_id = $1
 				and p.is_active = 1
@@ -1140,6 +1141,13 @@ func (s Store) GetRecommendationsForCandidate(candidateID uuid.UUID, page Page, 
 						where cr.recommendation_id = r.id
 							and cr.candidate_id = $1
 				))
+				and (c.pref_remote is null or not c.pref_remote or p.is_remote = 1)
+				and (
+						c.pref_location_1_id is null and c.pref_location_2_id is null and c.pref_location_3_id is null
+						or p.is_remote = 1
+						or p.location_id is null
+						or p.location_id in (c.pref_location_1_id, c.pref_location_2_id, c.pref_location_3_id)
+				)
 		order by r.id desc
 		limit $3
 	`, candidateID, page.Cursor, page.Limit+1, excludeReacted)
@@ -1743,20 +1751,6 @@ func (s Store) MarkEmbeddingsStatusTx(tx *sql.Tx, entityIDs []uuid.UUID, status 
 }
 
 func (s Store) GetPositionsForCandidateViaEmbeddings(candidateID uuid.UUID, topPositions uint16) ([]uuid.UUID, error) {
-	var prefRemote *bool
-	var prefLocation1ID, prefLocation2ID, prefLocation3ID *int
-	err := s.Database.QueryRow(`
-		select pref_remote, pref_location_1_id, pref_location_2_id, pref_location_3_id
-		from candidates
-		where id = $1
-	`, candidateID).Scan(&prefRemote, &prefLocation1ID, &prefLocation2ID, &prefLocation3ID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return []uuid.UUID{}, ErrCandidateNotFound
-		}
-		return nil, fmt.Errorf("failed to scan: %w", err)
-	}
-
 	rows, err := s.Database.Query(`
 		with candidate as (
 				select embedding
@@ -1779,16 +1773,9 @@ func (s Store) GetPositionsForCandidateViaEmbeddings(candidateID uuid.UUID, topP
 						where r.position_id = p.id
 							and r.candidate_id = $1
 				)
-				and ($3::boolean is null or not $3::boolean or p.is_remote = 1)
-				and (
-						$4::int is null and $5::int is null and $6::int is null
-						or p.is_remote = 1
-						or p.location_id is null
-						or p.location_id in ($4, $5, $6)
-				)
 		order by e.embedding <=> c.embedding
 		limit $2
-	`, candidateID, topPositions, prefRemote, prefLocation1ID, prefLocation2ID, prefLocation3ID)
+	`, candidateID, topPositions)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query: %w", err)
 	}
@@ -3211,13 +3198,11 @@ var ErrEmptyCandidateProfile = errors.New("candidate profile is empty")
 
 func (s Store) GetPositionsForCandidateViaFTS(candidateID uuid.UUID, topPositions uint16) ([]uuid.UUID, error) {
 	var candidateAbout string
-	var prefRemote *bool
-	var prefLocation1ID, prefLocation2ID, prefLocation3ID *int
 	err := s.Database.QueryRow(`
-		select about, pref_remote, pref_location_1_id, pref_location_2_id, pref_location_3_id
+		select about
 		from candidates
 		where id = $1
-	`, candidateID).Scan(&candidateAbout, &prefRemote, &prefLocation1ID, &prefLocation2ID, &prefLocation3ID)
+	`, candidateID).Scan(&candidateAbout)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return []uuid.UUID{}, ErrCandidateNotFound
@@ -3240,17 +3225,10 @@ func (s Store) GetPositionsForCandidateViaFTS(candidateID uuid.UUID, topPosition
 							where r.position_id = positions.id
 								and r.candidate_id = $2
 					)
-					and ($4::boolean is null or not $4::boolean or positions.is_remote = 1)
-					and (
-							$5::int is null and $6::int is null and $7::int is null
-							or positions.is_remote = 1
-							or positions.location_id is null
-							or positions.location_id in ($5, $6, $7)
-					)
 			order by ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) desc
 			limit $3
 		`
-		args = []any{BuildTextSearchTerms(candidateAbout, false), candidateID, topPositions, prefRemote, prefLocation1ID, prefLocation2ID, prefLocation3ID}
+		args = []any{BuildTextSearchTerms(candidateAbout, false), candidateID, topPositions}
 
 	case DatabaseProviderSQLite:
 		query = `
@@ -3265,17 +3243,10 @@ func (s Store) GetPositionsForCandidateViaFTS(candidateID uuid.UUID, topPosition
 							where r.position_id = p.id
 								and r.candidate_id = $2
 					)
-					and ($4 is null or not $4 or p.is_remote = 1)
-					and (
-							$5 is null and $6 is null and $7 is null
-							or p.is_remote = 1
-							or p.location_id is null
-							or p.location_id in ($5, $6, $7)
-					)
 			order by bm25(positions_fts) asc
 			limit $3
 		`
-		args = []any{BuildTextSearchTerms(candidateAbout, true), candidateID, topPositions, prefRemote, prefLocation1ID, prefLocation2ID, prefLocation3ID}
+		args = []any{BuildTextSearchTerms(candidateAbout, true), candidateID, topPositions}
 
 	default:
 		return nil, ErrUnsupportedDatabaseProvider
