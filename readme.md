@@ -26,7 +26,7 @@ The recommendation engine currently only employs a content-based approach. There
 
 ## Server Features
 
-All currently available server settings are demonstrated in [./.example.env](./.example.env).
+All currently available server settings are demonstrated in [.example.env](./.example.env).
 You can configure them in a `.env` file of a current working directory or via environment variables.
 
 ## Misc
