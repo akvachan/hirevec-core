@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/bits"
 	"math/rand"
 	"os"
@@ -35,7 +36,9 @@ type Position struct {
 }
 
 func WritePositionsJSONL(positions []Position, path string) {
+	logger.Debug("writing positions", "path", path, "count", len(positions))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	file, err := os.Create(path)
@@ -86,7 +89,9 @@ type Candidate struct {
 }
 
 func WriteCandidatesJSONL(candidates []Candidate, path string) {
+	logger.Debug("writing candidates", "path", path, "count", len(candidates))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	file, err := os.Create(path)
@@ -119,7 +124,9 @@ type Recommendation struct {
 }
 
 func WriteRecommendationsJSONL(recommendations []Recommendation, path string) {
+	logger.Debug("writing recommendations", "path", path, "count", len(recommendations))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	file, err := os.Create(path)
@@ -145,8 +152,9 @@ type GenerationMethod struct {
 }
 
 type Meta struct {
-	Methods   []GenerationMethod `json:"methods"`
-	CreatedAt string             `json:"created_at"`
+	Methods     []GenerationMethod `json:"methods"`
+	CreatedAt   string             `json:"created_at"`
+	Description string             `json:"description"`
 }
 
 type Domain struct {
@@ -425,31 +433,73 @@ func main() {
 	nPositions := flag.Int("positions", 30000, "number of positions")
 	nCandidates := flag.Int("candidates", 100, "number of candidates")
 	top := flag.Int("top", 10, "top-N positions per candidate recommendation")
+	verbose := flag.Bool("verbose", false, "enable debug-level logging")
 	flag.Parse()
 
+	SetupLogger(*verbose)
+	start := time.Now()
+
 	if *nPositions < 1 || *nCandidates < 1 || *top < 1 {
+		logger.Error("invalid flags", "positions", *nPositions, "candidates", *nCandidates, "top", *top)
 		panic("positions, candidates and top must all be >= 1")
 	}
+	logger.Info("generating dataset",
+		"out", *out,
+		"seed", *seed,
+		"positions", *nPositions,
+		"candidates", *nCandidates,
+		"top", *top,
+	)
 
 	rng := rand.New(rand.NewSource(*seed))
 
+	stage := time.Now()
 	positions := GeneratePositions(rng, *nPositions)
+	logger.Info("positions generated", "count", len(positions), "duration", time.Since(stage))
+	stage = time.Now()
 	WritePositionsJSONL(positions, filepath.Join(*out, "positions.jsonl"))
+	logger.Info("positions written", "path", filepath.Join(*out, "positions.jsonl"), "duration", time.Since(stage))
 
+	stage = time.Now()
 	candidates := GenerateCandidates(rng, *nCandidates)
+	logger.Info("candidates generated", "count", len(candidates), "duration", time.Since(stage))
+	stage = time.Now()
 	WriteCandidatesJSONL(candidates, filepath.Join(*out, "candidates.jsonl"))
+	logger.Info("candidates written", "path", filepath.Join(*out, "candidates.jsonl"), "duration", time.Since(stage))
 
+	stage = time.Now()
 	recommendations := GenerateRecommendations(rng, positions, candidates, *top)
+	logger.Info("recommendations generated", "count", len(recommendations), "duration", time.Since(stage))
+	stage = time.Now()
 	WriteRecommendationsJSONL(recommendations, filepath.Join(*out, "recommendations.jsonl"))
+	logger.Info("recommendations written", "path", filepath.Join(*out, "recommendations.jsonl"), "duration", time.Since(stage))
 
+	stage = time.Now()
 	WriteJSON(filepath.Join(*out, "meta.json"), Meta{
-		Methods:   []GenerationMethod{{Type: "synthetic-template", Stage: 0, Model: ""}},
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Description: "Low-quality, high-variety dataset for basic recommendation engine tests and evaluations.",
+		Methods:     []GenerationMethod{{Type: "synthetic-template", Stage: 0, Model: ""}},
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
+	logger.Debug("meta written", "path", filepath.Join(*out, "meta.json"), "duration", time.Since(stage))
 
+	stage = time.Now()
 	if err := Validate(*out, *nPositions, *nCandidates); err != nil {
+		logger.Error("validation failed", "err", err)
 		panic(fmt.Errorf("failed to validate: %w", err))
 	}
+	logger.Info("validate finished", "duration", time.Since(stage))
+
+	logger.Info("dataset generation complete", "duration", time.Since(start).Round(time.Millisecond), "out", *out)
+}
+
+var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+func SetupLogger(verbose bool) {
+	level := slog.LevelInfo
+	if verbose {
+		level = slog.LevelDebug
+	}
+	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 }
 
 func GeneratePositions(rng *rand.Rand, n int) []Position {
@@ -457,17 +507,31 @@ func GeneratePositions(rng *rand.Rand, n int) []Position {
 	remainder := n % len(Domains)
 
 	var positions []Position
+	perDomainCounts := make(map[string]int, len(Domains))
 	for domainIndex, domain := range Domains {
 		quota := perDomain
 		if domainIndex < remainder {
 			quota++
 		}
+		perDomainCounts[domain.Name] = quota
 		for k := 0; k < quota; k++ {
 			positions = append(positions, NewPosition(rng, domainIndex, domain))
 		}
 	}
+	logger.Debug("positions per domain", "counts", perDomainCounts)
 
 	rng.Shuffle(len(positions), func(i, j int) { positions[i], positions[j] = positions[j], positions[i] })
+
+	remoteCount := 0
+	managerCount := 0
+	for _, p := range positions {
+		remoteCount += p.IsRemote
+		if strings.Contains(p.Title, "Manager") || strings.Contains(p.Title, "Supervisor") ||
+			strings.Contains(p.Title, "Principal") || strings.Contains(p.Title, "Head of") {
+			managerCount++
+		}
+	}
+	logger.Debug("position mix", "remote", remoteCount, "managers", managerCount)
 
 	return positions
 }
@@ -592,6 +656,11 @@ func GenerateCandidates(rng *rand.Rand, n int) []Candidate {
 		}
 		secondary := Pick(rng, eligible)
 		candidate := NewCandidate(rng, primary, secondary)
+		logger.Debug("candidate primary/secondary domains",
+			"index", i,
+			"primary", Domains[primary].Name,
+			"secondary", Domains[secondary].Name,
+		)
 		candidates = append(candidates, candidate)
 	}
 	return candidates
@@ -845,12 +914,23 @@ func GenerateRecommendations(rng *rand.Rand, positions []Position, candidates []
 	}
 
 	recommendations := make([]Recommendation, 0, len(candidates))
-	for _, candidateInfo := range candidates {
+	fastPathCount, fallbackCount := 0, 0
+	for ci, candidateInfo := range candidates {
 		candidateMask := SkillMaskOf(CandidateSkillList(candidateInfo)...)
 		needPrimaries := max(top-2, 0)
 		needSecondaries := min(2, top)
 		fastPath := domainCounts[candidateInfo.PrimaryIndex] >= needPrimaries &&
 			domainCounts[candidateInfo.SecondaryIndex] >= needSecondaries
+		if fastPath {
+			fastPathCount++
+		} else {
+			fallbackCount++
+			logger.Debug("degenerate domain sizes; using full sort fallback",
+				"candidate_index", ci,
+				"primary_positions", domainCounts[candidateInfo.PrimaryIndex],
+				"secondary_positions", domainCounts[candidateInfo.SecondaryIndex],
+			)
+		}
 
 		var pool []PositionScore
 		if fastPath {
@@ -981,7 +1061,14 @@ func GenerateRecommendations(rng *rand.Rand, positions []Position, candidates []
 			CandidateID: candidateInfo.ID,
 			Positions:   ranked,
 		})
+		if (ci+1)%100 == 0 {
+			logger.Debug("recommendations progress", "done", ci+1, "total", len(candidates))
+		}
 	}
+	logger.Debug("recommendation pool strategy",
+		"fast_path", fastPathCount,
+		"fallback", fallbackCount,
+	)
 	return recommendations
 }
 
@@ -1033,8 +1120,18 @@ func Validate(out string, wantPositions, wantCandidates int) error {
 		return fmt.Errorf("validation failed: recommendations: got %d, want %d", len(recommendations), len(candidates))
 	}
 
-	fmt.Printf("OK: %d positions, %d candidates, %d recommendation records (ranks 1..%d, ids unique, scores descending)\n",
-		len(positions), len(candidates), len(recommendations), MaxTopOf(recommendations))
+	logger.Info("validation passed",
+		"positions", len(positions),
+		"candidates", len(candidates),
+		"recommendations", len(recommendations),
+		"max_top", MaxTopOf(recommendations),
+	)
+	logger.Debug("checks performed",
+		"rank_sequence", "contiguous 1..N",
+		"ids", "unique across positions and candidates",
+		"scores", "descending per recommendation",
+		"references", "all recommendation IDs resolve",
+	)
 
 	return nil
 }
@@ -1051,6 +1148,7 @@ func MaxTopOf(recommendations []Recommendation) int {
 
 func WriteJSON(path string, v any) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
