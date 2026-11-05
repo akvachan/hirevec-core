@@ -2,7 +2,7 @@
 
 ## About Hirevec
 
-[Hirevec](https://hirevec.com) is a modern job recommendation engine that finds jobs and suitable candidates.
+Hirevec is a modern job recommendation engine that finds jobs and suitable candidates.
 
 ## Quick start
 
@@ -23,6 +23,31 @@ The recommendation engine currently only employs a content-based approach. There
 2. Rerank (Optional)
 
    One can enable a reranker to reduce the pool of candidates further and establish a better ranking, this can be done regradless of which database you use.
+
+## Evaluation
+
+### Pulling evaluation data
+
+```sh
+git lfs pull data/recommendations/evals/1/
+```
+
+### Reproducing evaluation data
+
+```sh
+go run cmd/genevals/main.go
+```
+
+or 
+
+```sh
+go run cmd/genevals/main.go \
+    --out data/recommendations/evals/1 \
+    --seed 42 \
+    --positions 30000 \
+    --candidates 100 \
+    --top 10
+```
 
 ## Server Features
 

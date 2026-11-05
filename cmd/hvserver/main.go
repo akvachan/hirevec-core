@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Arsenii Kvachan
 // SPDX-License-Identifier: Unlicense
 
+// Command hvserver runs the hirevec server.
 package main
 
 import (
