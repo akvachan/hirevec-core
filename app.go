@@ -174,7 +174,7 @@ func RunApp(c AppConfig) error {
 			LlamaCppEmbeddingsDim:   c.LlamaCppEmbeddingsDim,
 			LlamaCppEmbeddingsModel: c.LlamaCppEmbeddingsModel,
 
-			UseEmbeddings:               (dbProvider != DatabaseProviderSQLite) && useLlamaCpp,
+			UseEmbeddings:               useLlamaCpp,
 			UseReranker:                 useLlamaCpp,
 			EmbeddingsJobFrequency:      c.EmbeddingsJobFrequency,
 			RecommendationsJobFrequency: c.RecommendationsJobFrequency,

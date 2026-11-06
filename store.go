@@ -7,10 +7,12 @@ package hirevec
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/mail"
 	"net/url"
 	"strconv"
@@ -22,6 +24,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pgvector/pgvector-go"
 	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite/vec"
 )
 
 type DatabaseProvider string
@@ -570,6 +573,37 @@ end;
 commit;
 `
 
+const SQLVectorSQLite = `
+-- Vector search setup for SQLite via the sqlite-vec extension,
+-- which ships transpiled with modernc.org/sqlite and auto-registers
+-- on every connection through its dedicated import.
+
+begin transaction;
+
+create table if not exists embeddings (
+  id integer primary key,
+  entity_id text not null, -- UUID
+  entity_type text not null,
+  entity_text text not null,
+  embedding_status text not null,
+  embedding_updated_at timestamp not null, -- UTC, RFC3339
+  check (entity_type in ('candidate', 'position')),
+  check (embedding_status in ('done', 'pending', 'failed'))
+);
+
+create unique index if not exists idx_embeddings_entity_id
+on embeddings(entity_id);
+
+-- Vectors live in a vec0 virtual table, keyed by the same UUID as the
+-- metadata row above. Cosine distance matches the PostgreSQL <=> operator.
+create virtual table if not exists embeddings_vec using vec0(
+  entity_id text primary key,
+  embedding float[%d] distance_metric=cosine
+);
+
+commit;
+`
+
 type Store struct {
 	DatabaseProvider DatabaseProvider
 	Database         *sql.DB
@@ -638,6 +672,13 @@ func NewStore(c StoreConfig) (Store, error) {
 		slog.Debug("creating FTS schema")
 		if _, err := s.Database.Exec(SQLFTSSQlite); err != nil {
 			return Store{}, fmt.Errorf("failed to create FTS schema: %w", err)
+		}
+
+		slog.Debug("creating embeddings schema")
+		if _, err := s.Database.Exec(
+			fmt.Sprintf(SQLVectorSQLite, c.LlamaCppEmbeddingsDim),
+		); err != nil {
+			return Store{}, fmt.Errorf("failed to create embeddings schema: %w", err)
 		}
 
 	default:
@@ -1728,17 +1769,47 @@ func (s Store) FetchPendingEmbeddings(limit uint16) ([]uuid.UUID, []string, erro
 	return ids, texts, nil
 }
 
+func (s Store) markEmbeddingsStatusSQL(entityIDs []uuid.UUID, status EmbeddingStatus) (string, []any, error) {
+	switch s.DatabaseProvider {
+	case DatabaseProviderPostgreSQL:
+		return `
+			update embeddings
+			set embedding_status = $1,
+				embedding_updated_at = $2
+			where entity_id = any($3)
+		`, []any{status, CurrentTimestamp(0), entityIDs}, nil
+
+	case DatabaseProviderSQLite:
+		placeholders := make([]string, len(entityIDs))
+		args := make([]any, 0, len(entityIDs)+2)
+		args = append(args, status, CurrentTimestamp(0))
+		for i, entityID := range entityIDs {
+			placeholders[i] = fmt.Sprintf("$%d", i+3)
+			args = append(args, entityID)
+		}
+		return fmt.Sprintf(`
+			update embeddings
+			set embedding_status = $1,
+				embedding_updated_at = $2
+			where entity_id in (%s)
+		`, strings.Join(placeholders, ", ")), args, nil
+
+	default:
+		return "", nil, ErrUnsupportedDatabaseProvider
+	}
+}
+
 func (s Store) MarkEmbeddingsStatus(entityIDs []uuid.UUID, status EmbeddingStatus) error {
 	if len(entityIDs) == 0 {
 		return nil
 	}
 
-	if _, err := s.Database.Exec(`
-		update embeddings
-		set embedding_status = $1,
-			embedding_updated_at = $2
-		where entity_id = any($3)
-	`, status, CurrentTimestamp(0), entityIDs); err != nil {
+	query, args, err := s.markEmbeddingsStatusSQL(entityIDs, status)
+	if err != nil {
+		return err
+	}
+
+	if _, err := s.Database.Exec(query, args...); err != nil {
 		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
@@ -1750,12 +1821,12 @@ func (s Store) MarkEmbeddingsStatusTx(tx *sql.Tx, entityIDs []uuid.UUID, status 
 		return nil
 	}
 
-	if _, err := tx.Exec(`
-		update embeddings
-		set embedding_status = $1,
-			embedding_updated_at = $2
-		where entity_id = any($3)
-	`, status, CurrentTimestamp(0), entityIDs); err != nil {
+	query, args, err := s.markEmbeddingsStatusSQL(entityIDs, status)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(query, args...); err != nil {
 		return fmt.Errorf("failed to execute SQL: %w", err)
 	}
 
@@ -1763,31 +1834,74 @@ func (s Store) MarkEmbeddingsStatusTx(tx *sql.Tx, entityIDs []uuid.UUID, status 
 }
 
 func (s Store) GetPositionsForCandidateViaEmbeddings(candidateID uuid.UUID, topPositions uint16) ([]uuid.UUID, error) {
-	rows, err := s.Database.Query(`
-		with candidate as (
-				select embedding
-				from embeddings
-				where entity_id = $1
-						and entity_type = 'candidate'
-						and embedding_status = 'done'
-				limit 1
-		)
-		select p.id as position_id
-		from positions p
-		join embeddings e
-				on e.entity_id = p.id
-		cross join candidate c
-		where p.is_active = 1
-				and e.embedding_status = 'done'
-				and not exists (
-						select 1
-						from recommendations r
-						where r.position_id = p.id
-							and r.candidate_id = $1
-				)
-		order by e.embedding <=> c.embedding
-		limit $2
-	`, candidateID, topPositions)
+	var query string
+	var args []any
+	switch s.DatabaseProvider {
+	case DatabaseProviderPostgreSQL:
+		query = `
+			with candidate as (
+					select embedding
+					from embeddings
+					where entity_id = $1
+							and entity_type = 'candidate'
+							and embedding_status = 'done'
+					limit 1
+			)
+			select p.id as position_id
+			from positions p
+			join embeddings e
+					on e.entity_id = p.id
+			cross join candidate c
+			where p.is_active = 1
+					and e.embedding_status = 'done'
+					and not exists (
+							select 1
+							from recommendations r
+							where r.position_id = p.id
+								and r.candidate_id = $1
+					)
+			order by e.embedding <=> c.embedding
+			limit $2
+		`
+		args = []any{candidateID, topPositions}
+
+	case DatabaseProviderSQLite:
+		query = `
+			with candidate as (
+					select v.embedding as embedding
+					from embeddings_vec v
+					join embeddings e
+							on e.entity_id = v.entity_id
+					where v.entity_id = $1
+							and e.entity_type = 'candidate'
+							and e.embedding_status = 'done'
+					limit 1
+			)
+			select p.id as position_id
+			from positions p
+			join embeddings e
+					on e.entity_id = p.id
+			cross join candidate c
+			join embeddings_vec v
+					on v.entity_id = p.id
+			where p.is_active = 1
+					and e.embedding_status = 'done'
+					and not exists (
+							select 1
+							from recommendations r
+							where r.position_id = p.id
+								and r.candidate_id = $1
+					)
+			order by vec_distance_cosine(v.embedding, c.embedding)
+			limit $2
+		`
+		args = []any{candidateID, topPositions}
+
+	default:
+		return nil, ErrUnsupportedDatabaseProvider
+	}
+
+	rows, err := s.Database.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query: %w", err)
 	}
@@ -1959,6 +2073,14 @@ func (s Store) GetPositionsTexts(positionIDs []uuid.UUID) ([]string, error) {
 
 var ErrEmbeddingsCountConflict = errors.New("mismatch between count of embedding IDs and embeddings")
 
+func SQLiteVecBlob(vector []float32) []byte {
+	blob := make([]byte, 4*len(vector))
+	for i, value := range vector {
+		binary.LittleEndian.PutUint32(blob[i*4:], math.Float32bits(value))
+	}
+	return blob
+}
+
 func (s Store) UpsertEmbeddingsTx(tx *sql.Tx, embeddingIDs []uuid.UUID, embeddings []EmbeddingEntity) error {
 	if len(embeddingIDs) == 0 {
 		return nil
@@ -1967,27 +2089,51 @@ func (s Store) UpsertEmbeddingsTx(tx *sql.Tx, embeddingIDs []uuid.UUID, embeddin
 		return ErrEmbeddingsCountConflict
 	}
 
-	update, err := tx.Prepare(`
-		update embeddings
-		set embedding = $2
-		where entity_id = $1
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare statement: %w", err)
-	}
-	defer func() {
-		if err := update.Close(); err != nil {
-			slog.Error("failed to close update statement", "err", err)
+	switch s.DatabaseProvider {
+	case DatabaseProviderPostgreSQL:
+		update, err := tx.Prepare(`
+			update embeddings
+			set embedding = $2
+			where entity_id = $1
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare statement: %w", err)
 		}
-	}()
+		defer func() {
+			if err := update.Close(); err != nil {
+				slog.Error("failed to close update statement", "err", err)
+			}
+		}()
 
-	for i := range embeddingIDs {
-		if _, err := update.Exec(
-			embeddingIDs[i],
-			pgvector.NewVector(embeddings[i].Embedding),
-		); err != nil {
-			return fmt.Errorf("failed to execute statement: %w", err)
+		for i := range embeddingIDs {
+			if _, err := update.Exec(
+				embeddingIDs[i],
+				pgvector.NewVector(embeddings[i].Embedding),
+			); err != nil {
+				return fmt.Errorf("failed to execute statement: %w", err)
+			}
 		}
+
+	case DatabaseProviderSQLite:
+		for i := range embeddingIDs {
+			vector := SQLiteVecBlob(embeddings[i].Embedding)
+			if _, err := tx.Exec(`
+				delete from embeddings_vec
+				where entity_id = $1
+			`, embeddingIDs[i]); err != nil {
+				return fmt.Errorf("failed to delete stale vector: %w", err)
+			}
+
+			if _, err := tx.Exec(`
+				insert into embeddings_vec (entity_id, embedding)
+				values ($1, $2)
+			`, embeddingIDs[i], vector); err != nil {
+				return fmt.Errorf("failed to insert vector: %w", err)
+			}
+		}
+
+	default:
+		return ErrUnsupportedDatabaseProvider
 	}
 
 	return nil
@@ -2148,14 +2294,12 @@ func (s Store) CreatePosition(position Position) (uuid.UUID, error) {
 		return uuid.Nil(), ErrPositionAlreadyExists
 	}
 
-	if s.DatabaseProvider == DatabaseProviderPostgreSQL {
-		if err = s.UpsertPendingEmbedding(
-			position.ID,
-			EmbeddingEntityTypePosition,
-			BuildPositionText(position.Title, position.Description, position.Company, position.Skill1, position.Skill2, position.Skill3, position.Skill4, position.Skill5),
-		); err != nil {
-			return uuid.Nil(), fmt.Errorf("failed to create embedding metadata: %w", err)
-		}
+	if err := s.UpsertPendingEmbedding(
+		position.ID,
+		EmbeddingEntityTypePosition,
+		BuildPositionText(position.Title, position.Description, position.Company, position.Skill1, position.Skill2, position.Skill3, position.Skill4, position.Skill5),
+	); err != nil {
+		return uuid.Nil(), fmt.Errorf("failed to create embedding metadata: %w", err)
 	}
 
 	return position.ID, nil
@@ -2221,7 +2365,7 @@ type CandidateExperience struct {
 	Skill5         *string        `json:"skill_5,omitempty"`
 }
 
-func CreateCandidateExperiences(tx *sql.Tx, candidateID uuid.UUID, experiences []CandidateExperience) error {
+func (s Store) CreateCandidateExperiences(tx *sql.Tx, candidateID uuid.UUID, experiences []CandidateExperience) error {
 	for i := range experiences {
 		experiences[i].CandidateID = candidateID
 		if experiences[i].ID == uuid.Nil() {
@@ -2326,7 +2470,7 @@ func (s Store) CreateCandidate(candidate Candidate, experiences []CandidateExper
 		return uuid.Nil(), ErrCandidateAlreadyExists
 	}
 
-	if err = CreateCandidateExperiences(tx, candidate.ID, experiences); err != nil {
+	if err = s.CreateCandidateExperiences(tx, candidate.ID, experiences); err != nil {
 		return uuid.Nil(), fmt.Errorf("failed to insert candidate experiences: %w", err)
 	}
 
@@ -2334,14 +2478,12 @@ func (s Store) CreateCandidate(candidate Candidate, experiences []CandidateExper
 		return uuid.Nil(), fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	if s.DatabaseProvider == DatabaseProviderPostgreSQL {
-		if err = s.UpsertPendingEmbedding(
-			candidate.ID,
-			EmbeddingEntityTypeCandidate,
-			BuildCandidateText(candidate.About, experiences),
-		); err != nil {
-			return uuid.Nil(), fmt.Errorf("failed to create embedding metadata: %w", err)
-		}
+	if err = s.UpsertPendingEmbedding(
+		candidate.ID,
+		EmbeddingEntityTypeCandidate,
+		BuildCandidateText(candidate.About, experiences),
+	); err != nil {
+		return uuid.Nil(), fmt.Errorf("failed to create embedding metadata: %w", err)
 	}
 
 	return candidate.ID, nil
@@ -2363,6 +2505,7 @@ func (s Store) DropTables() error {
 		"locations",
 		"positions_fts",
 		"candidates_fts",
+		"embeddings_vec",
 		"embeddings",
 	} {
 		if _, err := s.Database.Exec(fmt.Sprintf("drop table if exists %s", table)); err != nil {
@@ -2713,7 +2856,7 @@ func (s Store) UpdateCandidate(candidate Candidate, experiences []CandidateExper
 			return fmt.Errorf("failed to execute SQL: %w", err)
 		}
 
-		if err = CreateCandidateExperiences(tx, candidate.ID, experiences); err != nil {
+		if err = s.CreateCandidateExperiences(tx, candidate.ID, experiences); err != nil {
 			return fmt.Errorf("failed to insert candidate experiences: %w", err)
 		}
 	}
@@ -2728,14 +2871,12 @@ func (s Store) UpdateCandidate(candidate Candidate, experiences []CandidateExper
 		}
 	}
 
-	if s.DatabaseProvider == DatabaseProviderPostgreSQL {
-		if err = s.UpsertPendingEmbedding(
-			candidate.ID,
-			EmbeddingEntityTypeCandidate,
-			BuildCandidateText(candidate.About, experiences),
-		); err != nil {
-			return fmt.Errorf("failed to upsert pending embedding: %w", err)
-		}
+	if err = s.UpsertPendingEmbedding(
+		candidate.ID,
+		EmbeddingEntityTypeCandidate,
+		BuildCandidateText(candidate.About, experiences),
+	); err != nil {
+		return fmt.Errorf("failed to upsert pending embedding: %w", err)
 	}
 
 	return nil
@@ -2760,18 +2901,16 @@ func (s Store) UpdateCandidateAndReturn(candidateID uuid.UUID, newAbout string) 
 		return Candidate{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
-	if s.DatabaseProvider == DatabaseProviderPostgreSQL {
-		experiences, err := s.GetCandidateExperiences(candidateID)
-		if err != nil {
-			return Candidate{}, fmt.Errorf("failed to get candidate experiences: %w", err)
-		}
-		if err := s.UpsertPendingEmbedding(
-			candidateID,
-			EmbeddingEntityTypeCandidate,
-			BuildCandidateText(newAbout, experiences),
-		); err != nil {
-			return Candidate{}, fmt.Errorf("failed to upsert pending embedding: %w", err)
-		}
+	experiences, err := s.GetCandidateExperiences(candidateID)
+	if err != nil {
+		return Candidate{}, fmt.Errorf("failed to get candidate experiences: %w", err)
+	}
+	if err := s.UpsertPendingEmbedding(
+		candidateID,
+		EmbeddingEntityTypeCandidate,
+		BuildCandidateText(newAbout, experiences),
+	); err != nil {
+		return Candidate{}, fmt.Errorf("failed to upsert pending embedding: %w", err)
 	}
 
 	return candidate, nil
@@ -3147,14 +3286,12 @@ func (s Store) UpdatePosition(position Position) error {
 		return ErrPositionNotFound
 	}
 
-	if s.DatabaseProvider == DatabaseProviderPostgreSQL {
-		if err := s.UpsertPendingEmbedding(
-			position.ID,
-			EmbeddingEntityTypePosition,
-			BuildPositionText(position.Title, position.Description, position.Company, position.Skill1, position.Skill2, position.Skill3, position.Skill4, position.Skill5),
-		); err != nil {
-			return fmt.Errorf("failed to upsert pending embedding: %w", err)
-		}
+	if err := s.UpsertPendingEmbedding(
+		position.ID,
+		EmbeddingEntityTypePosition,
+		BuildPositionText(position.Title, position.Description, position.Company, position.Skill1, position.Skill2, position.Skill3, position.Skill4, position.Skill5),
+	); err != nil {
+		return fmt.Errorf("failed to upsert pending embedding: %w", err)
 	}
 
 	return nil
