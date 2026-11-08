@@ -26,13 +26,13 @@ The recommendation engine currently only employs a content-based approach. There
 
 ## Evaluation
 
-### Pulling evaluation data
+### Pulling evaluation dataset
 
 ```sh
-git lfs pull data/recommendations/evals/1/
+git lfs pull data/evaluation_dataset/1/
 ```
 
-### Reproducing evaluation data
+### Synthesizing evaluation dataset
 
 ```sh
 go run cmd/genevals/main.go

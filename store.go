@@ -1769,7 +1769,7 @@ func (s Store) FetchPendingEmbeddings(limit uint16) ([]uuid.UUID, []string, erro
 	return ids, texts, nil
 }
 
-func (s Store) markEmbeddingsStatusSQL(entityIDs []uuid.UUID, status EmbeddingStatus) (string, []any, error) {
+func (s Store) MarkEmbeddingsStatusSQL(entityIDs []uuid.UUID, status EmbeddingStatus) (string, []any, error) {
 	switch s.DatabaseProvider {
 	case DatabaseProviderPostgreSQL:
 		return `
@@ -1804,7 +1804,7 @@ func (s Store) MarkEmbeddingsStatus(entityIDs []uuid.UUID, status EmbeddingStatu
 		return nil
 	}
 
-	query, args, err := s.markEmbeddingsStatusSQL(entityIDs, status)
+	query, args, err := s.MarkEmbeddingsStatusSQL(entityIDs, status)
 	if err != nil {
 		return err
 	}
@@ -1821,7 +1821,7 @@ func (s Store) MarkEmbeddingsStatusTx(tx *sql.Tx, entityIDs []uuid.UUID, status 
 		return nil
 	}
 
-	query, args, err := s.markEmbeddingsStatusSQL(entityIDs, status)
+	query, args, err := s.MarkEmbeddingsStatusSQL(entityIDs, status)
 	if err != nil {
 		return err
 	}

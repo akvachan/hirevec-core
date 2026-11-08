@@ -12,18 +12,93 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math/bits"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
-	"uuid"
+
+	"github.com/akvachan/hirevec-core"
 )
 
+func main() {
+	out := flag.String("out", "data/evaluation_dataset/1", "output directory for the dataset")
+	seed := flag.Int64("seed", 42, "RNG seed (deterministic output per seed)")
+	nPositions := flag.Int("positions", 30000, "number of positions")
+	nCandidates := flag.Int("candidates", 100, "number of candidates")
+	top := flag.Int("top", 10, "top-N positions per candidate recommendation")
+	flag.Parse()
+
+	slog.SetLogLoggerLevel(slog.LevelError)
+	hirevec.InitLogger(
+		hirevec.MustParseEnv("HIREVEC_LOG_LEVEL", hirevec.ParseLogLevel, slog.LevelInfo),
+		hirevec.MustParseEnv("HIREVEC_LOG_JSON", strconv.ParseBool, false),
+	)
+
+	start := time.Now()
+
+	if *nPositions < 1 || *nCandidates < 1 || *top < 1 {
+		slog.Error("invalid flags", "positions", *nPositions, "candidates", *nCandidates, "top", *top)
+		panic("positions, candidates and top must all be >= 1")
+	}
+	slog.Info(
+		"generating dataset",
+		"out", *out,
+		"seed", *seed,
+		"positions", *nPositions,
+		"candidates", *nCandidates,
+		"top", *top,
+	)
+
+	rng := rand.New(rand.NewSource(*seed))
+
+	stage := time.Now()
+	positions := GeneratePositions(rng, *nPositions)
+	slog.Info("positions generated", "count", len(positions), "duration", time.Since(stage))
+
+	stage = time.Now()
+	WritePositionsJSONL(positions, filepath.Join(*out, "positions.jsonl"))
+	slog.Info("positions written", "path", filepath.Join(*out, "positions.jsonl"), "duration", time.Since(stage))
+
+	stage = time.Now()
+	candidates := GenerateCandidates(rng, *nCandidates)
+	slog.Info("candidates generated", "count", len(candidates), "duration", time.Since(stage))
+
+	stage = time.Now()
+	WriteCandidatesJSONL(candidates, filepath.Join(*out, "candidates.jsonl"))
+	slog.Info("candidates written", "path", filepath.Join(*out, "candidates.jsonl"), "duration", time.Since(stage))
+
+	stage = time.Now()
+	recommendations := GenerateRecommendations(rng, positions, candidates, *top)
+	slog.Info("recommendations generated", "count", len(recommendations), "duration", time.Since(stage))
+
+	stage = time.Now()
+	WriteRecommendationsJSONL(recommendations, filepath.Join(*out, "recommendations.jsonl"))
+	slog.Info("recommendations written", "path", filepath.Join(*out, "recommendations.jsonl"), "duration", time.Since(stage))
+
+	stage = time.Now()
+	WriteJSON(filepath.Join(*out, "meta.json"), Meta{
+		Description: "Low-quality, high-variety dataset for basic recommendation engine tests and evaluations.",
+		Methods:     []GenerationMethod{{Type: "synthetic-template", Stage: 0, Model: ""}},
+	})
+	slog.Debug("meta written", "path", filepath.Join(*out, "meta.json"), "duration", time.Since(stage))
+
+	stage = time.Now()
+	if err := Validate(*out, *nPositions, *nCandidates); err != nil {
+		slog.Error("validation failed", "err", err)
+		panic(fmt.Errorf("failed to validate: %w", err))
+	}
+	slog.Info("validate finished", "duration", time.Since(stage))
+
+	slog.Info("dataset generation complete", "duration", time.Since(start).Round(time.Millisecond), "out", *out)
+}
+
 type Position struct {
-	PositionID  string `json:"position_id"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Skill1      string `json:"skill_1"`
@@ -31,14 +106,15 @@ type Position struct {
 	Skill3      string `json:"skill_3"`
 	Skill4      string `json:"skill_4"`
 	Skill5      string `json:"skill_5"`
+	ID          int    `json:"position_id"`
 	IsRemote    int    `json:"is_remote"`
 	DomainIndex int    `json:"-"`
 }
 
 func WritePositionsJSONL(positions []Position, path string) {
-	logger.Debug("writing positions", "path", path, "count", len(positions))
+	slog.Debug("writing positions", "path", path, "count", len(positions))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
+		slog.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	file, err := os.Create(path)
@@ -62,7 +138,6 @@ func WritePositionsJSONL(positions []Position, path string) {
 }
 
 type CandidateExperience struct {
-	ExperienceID   string `json:"experience_id"`
 	Title          string `json:"title"`
 	StartedAt      string `json:"started_at"`
 	EndedAt        string `json:"ended_at"`
@@ -79,19 +154,18 @@ type CandidateExperience struct {
 type Candidate struct {
 	CandidateExperiences []CandidateExperience `json:"candidate_experiences"`
 	SkillSet             map[string]bool       `json:"-"`
-	CandidateID          string                `json:"candidate_id"`
 	About                string                `json:"about"`
-	ID                   string                `json:"-"`
 	MostRecentTitle      string                `json:"-"`
 	MostRecentCompany    string                `json:"-"`
 	PrimaryIndex         int                   `json:"-"`
 	SecondaryIndex       int                   `json:"-"`
+	ID                   int                   `json:"candidate_id"`
 }
 
 func WriteCandidatesJSONL(candidates []Candidate, path string) {
-	logger.Debug("writing candidates", "path", path, "count", len(candidates))
+	slog.Debug("writing candidates", "path", path, "count", len(candidates))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
+		slog.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	file, err := os.Create(path)
@@ -111,22 +185,22 @@ func WriteCandidatesJSONL(candidates []Candidate, path string) {
 }
 
 type RankedPosition struct {
-	PositionID string  `json:"position_id"`
 	Reasoning  string  `json:"reasoning"`
 	Score      float64 `json:"score"`
 	Rank       int     `json:"rank"`
+	PositionID int     `json:"position_id"`
 }
 
 type Recommendation struct {
 	Positions   []RankedPosition `json:"positions"`
-	ID          string           `json:"id"`
-	CandidateID string           `json:"candidate_id"`
+	CandidateID int              `json:"candidate_id"`
+	ID          int              `json:"id"`
 }
 
 func WriteRecommendationsJSONL(recommendations []Recommendation, path string) {
-	logger.Debug("writing recommendations", "path", path, "count", len(recommendations))
+	slog.Debug("writing recommendations", "path", path, "count", len(recommendations))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
+		slog.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	file, err := os.Create(path)
@@ -153,7 +227,6 @@ type GenerationMethod struct {
 
 type Meta struct {
 	Methods     []GenerationMethod `json:"methods"`
-	CreatedAt   string             `json:"created_at"`
 	Description string             `json:"description"`
 }
 
@@ -427,87 +500,13 @@ var Traits = []string{
 	"safety awareness", "initiative", "punctuality",
 }
 
-func main() {
-	out := flag.String("out", "data/recommendations/evals/1", "output directory for the dataset")
-	seed := flag.Int64("seed", 42, "RNG seed (deterministic output per seed)")
-	nPositions := flag.Int("positions", 30000, "number of positions")
-	nCandidates := flag.Int("candidates", 100, "number of candidates")
-	top := flag.Int("top", 10, "top-N positions per candidate recommendation")
-	verbose := flag.Bool("verbose", false, "enable debug-level logging")
-	flag.Parse()
-
-	SetupLogger(*verbose)
-	start := time.Now()
-
-	if *nPositions < 1 || *nCandidates < 1 || *top < 1 {
-		logger.Error("invalid flags", "positions", *nPositions, "candidates", *nCandidates, "top", *top)
-		panic("positions, candidates and top must all be >= 1")
-	}
-	logger.Info("generating dataset",
-		"out", *out,
-		"seed", *seed,
-		"positions", *nPositions,
-		"candidates", *nCandidates,
-		"top", *top,
-	)
-
-	rng := rand.New(rand.NewSource(*seed))
-
-	stage := time.Now()
-	positions := GeneratePositions(rng, *nPositions)
-	logger.Info("positions generated", "count", len(positions), "duration", time.Since(stage))
-	stage = time.Now()
-	WritePositionsJSONL(positions, filepath.Join(*out, "positions.jsonl"))
-	logger.Info("positions written", "path", filepath.Join(*out, "positions.jsonl"), "duration", time.Since(stage))
-
-	stage = time.Now()
-	candidates := GenerateCandidates(rng, *nCandidates)
-	logger.Info("candidates generated", "count", len(candidates), "duration", time.Since(stage))
-	stage = time.Now()
-	WriteCandidatesJSONL(candidates, filepath.Join(*out, "candidates.jsonl"))
-	logger.Info("candidates written", "path", filepath.Join(*out, "candidates.jsonl"), "duration", time.Since(stage))
-
-	stage = time.Now()
-	recommendations := GenerateRecommendations(rng, positions, candidates, *top)
-	logger.Info("recommendations generated", "count", len(recommendations), "duration", time.Since(stage))
-	stage = time.Now()
-	WriteRecommendationsJSONL(recommendations, filepath.Join(*out, "recommendations.jsonl"))
-	logger.Info("recommendations written", "path", filepath.Join(*out, "recommendations.jsonl"), "duration", time.Since(stage))
-
-	stage = time.Now()
-	WriteJSON(filepath.Join(*out, "meta.json"), Meta{
-		Description: "Low-quality, high-variety dataset for basic recommendation engine tests and evaluations.",
-		Methods:     []GenerationMethod{{Type: "synthetic-template", Stage: 0, Model: ""}},
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-	})
-	logger.Debug("meta written", "path", filepath.Join(*out, "meta.json"), "duration", time.Since(stage))
-
-	stage = time.Now()
-	if err := Validate(*out, *nPositions, *nCandidates); err != nil {
-		logger.Error("validation failed", "err", err)
-		panic(fmt.Errorf("failed to validate: %w", err))
-	}
-	logger.Info("validate finished", "duration", time.Since(stage))
-
-	logger.Info("dataset generation complete", "duration", time.Since(start).Round(time.Millisecond), "out", *out)
-}
-
-var logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-
-func SetupLogger(verbose bool) {
-	level := slog.LevelInfo
-	if verbose {
-		level = slog.LevelDebug
-	}
-	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
-}
-
 func GeneratePositions(rng *rand.Rand, n int) []Position {
 	perDomain := n / len(Domains)
 	remainder := n % len(Domains)
 
 	var positions []Position
 	perDomainCounts := make(map[string]int, len(Domains))
+	positionIndex := 0
 	for domainIndex, domain := range Domains {
 		quota := perDomain
 		if domainIndex < remainder {
@@ -515,11 +514,10 @@ func GeneratePositions(rng *rand.Rand, n int) []Position {
 		}
 		perDomainCounts[domain.Name] = quota
 		for k := 0; k < quota; k++ {
-			positions = append(positions, NewPosition(rng, domainIndex, domain))
+			positions = append(positions, NewPosition(rng, domainIndex, domain, positionIndex))
+			positionIndex++
 		}
 	}
-	logger.Debug("positions per domain", "counts", perDomainCounts)
-
 	rng.Shuffle(len(positions), func(i, j int) { positions[i], positions[j] = positions[j], positions[i] })
 
 	remoteCount := 0
@@ -531,12 +529,12 @@ func GeneratePositions(rng *rand.Rand, n int) []Position {
 			managerCount++
 		}
 	}
-	logger.Debug("position mix", "remote", remoteCount, "managers", managerCount)
+	slog.Debug("position mix", "remote", remoteCount, "managers", managerCount)
 
 	return positions
 }
 
-func NewPosition(rng *rand.Rand, domainIndex int, domain Domain) Position {
+func NewPosition(rng *rand.Rand, domainIndex int, domain Domain, positionIndex int) Position {
 	isManager := rng.Intn(100) < 18
 	var senior, title string
 	if isManager {
@@ -612,7 +610,7 @@ func NewPosition(rng *rand.Rand, domainIndex int, domain Domain) Position {
 	)
 
 	return Position{
-		PositionID:  uuid.NewV7().String(),
+		ID:          positionIndex,
 		Title:       fullTitle,
 		Description: description,
 		IsRemote:    isRemote,
@@ -655,8 +653,9 @@ func GenerateCandidates(rng *rand.Rand, n int) []Candidate {
 			}
 		}
 		secondary := Pick(rng, eligible)
-		candidate := NewCandidate(rng, primary, secondary)
-		logger.Debug("candidate primary/secondary domains",
+		candidate := NewCandidate(rng, primary, secondary, i)
+		slog.Debug(
+			"candidate primary/secondary domains",
 			"index", i,
 			"primary", Domains[primary].Name,
 			"secondary", Domains[secondary].Name,
@@ -666,7 +665,7 @@ func GenerateCandidates(rng *rand.Rand, n int) []Candidate {
 	return candidates
 }
 
-func NewCandidate(rng *rand.Rand, primary, secondary int) Candidate {
+func NewCandidate(rng *rand.Rand, primary int, secondary int, candidateIndex int) Candidate {
 	primaryDomain, secondaryDomain := Domains[primary], Domains[secondary]
 
 	primarySkills := PickN(rng, primaryDomain.Skills, 5+rng.Intn(3))
@@ -689,7 +688,6 @@ func NewCandidate(rng *rand.Rand, primary, secondary int) Candidate {
 	if rng.Intn(100) < 40 {
 		certificateStart := AsOf.AddDate(-years, 3+rng.Intn(12), 0)
 		candidateExperience = append(candidateExperience, CandidateExperience{
-			ExperienceID:   uuid.NewV7().String(),
 			Title:          Pick(rng, primaryDomain.Certs),
 			StartedAt:      certificateStart.Format(time.RFC3339),
 			EndedAt:        certificateStart.AddDate(0, 1+rng.Intn(6), 0).Format(time.RFC3339),
@@ -708,7 +706,6 @@ func NewCandidate(rng *rand.Rand, primary, secondary int) Candidate {
 				educationTitle = Pick(rng, primaryDomain.Titles) + " Apprentice"
 			}
 			candidateExperience = append(candidateExperience, CandidateExperience{
-				ExperienceID:   uuid.NewV7().String(),
 				Title:          educationTitle,
 				StartedAt:      start.Format(time.RFC3339),
 				EndedAt:        end.Format(time.RFC3339),
@@ -733,7 +730,6 @@ func NewCandidate(rng *rand.Rand, primary, secondary int) Candidate {
 			description = fmt.Sprintf("Worked in a team of %d, focusing on %s and %s.", 5+rng.Intn(25), jobSkills[0], jobSkills[1])
 		}
 		candidateExperience = append(candidateExperience, CandidateExperience{
-			ExperienceID:   uuid.NewV7().String(),
 			Title:          SeniorityRoll(rng) + Pick(rng, primaryDomain.Titles),
 			StartedAt:      cursor.Format(time.RFC3339),
 			EndedAt:        end.Format(time.RFC3339),
@@ -768,7 +764,6 @@ func NewCandidate(rng *rand.Rand, primary, secondary int) Candidate {
 	workCompany := Pick(rng, primaryDomain.Companies)
 
 	candidateExperience = append(candidateExperience, CandidateExperience{
-		ExperienceID:   uuid.NewV7().String(),
 		Title:          workTitle,
 		StartedAt:      cursor.Format(time.RFC3339),
 		Company:        workCompany,
@@ -798,13 +793,10 @@ func NewCandidate(rng *rand.Rand, primary, secondary int) Candidate {
 		Pick(rng, Traits),
 	)
 
-	candidateID := uuid.NewV7().String()
-
 	return Candidate{
-		CandidateID:          candidateID,
 		About:                about,
 		CandidateExperiences: candidateExperience,
-		ID:                   candidateID,
+		ID:                   candidateIndex,
 		PrimaryIndex:         primary,
 		SecondaryIndex:       secondary,
 		SkillSet:             skillSet,
@@ -833,7 +825,7 @@ type PositionScore struct {
 
 func PositionScoreLess(a, b PositionScore) bool {
 	return a.Score > b.Score ||
-		(a.Score == b.Score && a.Position.PositionID < b.Position.PositionID)
+		(a.Score == b.Score && a.Position.ID < b.Position.ID)
 }
 
 var SkillBits = func() map[string]uint16 {
@@ -873,7 +865,7 @@ func CandidateSkillList(c Candidate) []string {
 	return skills
 }
 
-func (m SkillMask) PopcountAnd(other SkillMask) int {
+func (m SkillMask) PopCountAnd(other SkillMask) int {
 	n := 0
 	for i := range m {
 		n += bits.OnesCount64(m[i] & other[i])
@@ -881,150 +873,87 @@ func (m SkillMask) PopcountAnd(other SkillMask) int {
 	return n
 }
 
-func PushTop(buf []PositionScore, e PositionScore, cap int) []PositionScore {
-	if cap == 0 {
-		return buf
+func PushTop(scores []PositionScore, score PositionScore, limit int) []PositionScore {
+	if limit == 0 {
+		return scores
 	}
-	if n := len(buf); n == cap {
-		if !PositionScoreLess(e, buf[n-1]) {
-			return buf
+	if n := len(scores); n == limit {
+		if !PositionScoreLess(score, scores[n-1]) {
+			return scores
 		}
-		buf[n-1] = e
+		scores[n-1] = score
 	} else {
-		buf = append(buf, e)
+		scores = append(scores, score)
 	}
-	for j := len(buf) - 1; j > 0 && PositionScoreLess(buf[j], buf[j-1]); j-- {
-		buf[j], buf[j-1] = buf[j-1], buf[j]
+	for j := len(scores) - 1; j > 0 && PositionScoreLess(scores[j], scores[j-1]); j-- {
+		scores[j], scores[j-1] = scores[j-1], scores[j]
 	}
-	return buf
+	return scores
 }
 
 func GenerateRecommendations(rng *rand.Rand, positions []Position, candidates []Candidate, top int) []Recommendation {
-	byScore := func(a, b PositionScore) bool {
-		return PositionScoreLess(a, b)
+	positionMasks := make([]SkillMask, len(positions))
+	for i, p := range positions {
+		positionMasks[i] = SkillMaskOf(p.Skill1, p.Skill2, p.Skill3, p.Skill4, p.Skill5)
 	}
 
-	posMasks := make([]SkillMask, len(positions))
-	for i, p := range positions {
-		posMasks[i] = SkillMaskOf(p.Skill1, p.Skill2, p.Skill3, p.Skill4, p.Skill5)
-	}
-	domainCounts := make([]int, len(Domains))
-	for _, p := range positions {
-		domainCounts[p.DomainIndex]++
-	}
+	needPrimaries := max(top-2, 0)
+	needSecondaries := min(2, top)
 
 	recommendations := make([]Recommendation, 0, len(candidates))
-	fastPathCount, fallbackCount := 0, 0
-	for ci, candidateInfo := range candidates {
-		candidateMask := SkillMaskOf(CandidateSkillList(candidateInfo)...)
-		needPrimaries := max(top-2, 0)
-		needSecondaries := min(2, top)
-		fastPath := domainCounts[candidateInfo.PrimaryIndex] >= needPrimaries &&
-			domainCounts[candidateInfo.SecondaryIndex] >= needSecondaries
-		if fastPath {
-			fastPathCount++
-		} else {
-			fallbackCount++
-			logger.Debug("degenerate domain sizes; using full sort fallback",
-				"candidate_index", ci,
-				"primary_positions", domainCounts[candidateInfo.PrimaryIndex],
-				"secondary_positions", domainCounts[candidateInfo.SecondaryIndex],
-			)
+	recommendationsIndex := 0
+
+	for i, candidate := range candidates {
+		candidateMask := SkillMaskOf(slices.Collect(maps.Keys(candidate.SkillSet))...)
+
+		var primaries, secondaries []PositionScore
+
+		for j, p := range positions {
+			matched := candidateMask.PopCountAnd(positionMasks[j])
+
+			var base float64
+			switch p.DomainIndex {
+			case candidate.PrimaryIndex:
+				base = 0.65
+			case candidate.SecondaryIndex:
+				base = 0.56
+			default:
+				base = 0.04
+			}
+
+			score := base + 0.05*float64(matched) + (rng.Float64()-0.5)*0.06
+			capped := PositionScore{Position: p, Score: min(score, 0.98)}
+
+			switch p.DomainIndex {
+			case candidate.PrimaryIndex:
+				primaries = PushTop(primaries, capped, needPrimaries)
+			case candidate.SecondaryIndex:
+				secondaries = PushTop(secondaries, capped, needSecondaries)
+			}
 		}
 
-		var pool []PositionScore
-		if fastPath {
-			var primaries, secondaries []PositionScore
-			for i, p := range positions {
-				matched := candidateMask.PopcountAnd(posMasks[i])
-				var base float64
-				switch p.DomainIndex {
-				case candidateInfo.PrimaryIndex:
-					base = 0.65
-				case candidateInfo.SecondaryIndex:
-					base = 0.56
-				default:
-					base = 0.04
-				}
-				score := base + 0.05*float64(matched) + (rng.Float64()-0.5)*0.06
-				capped := PositionScore{Position: p, Score: min(score, 0.98)}
-				switch p.DomainIndex {
-				case candidateInfo.PrimaryIndex:
-					primaries = PushTop(primaries, capped, needPrimaries)
-				case candidateInfo.SecondaryIndex:
-					secondaries = PushTop(secondaries, capped, needSecondaries)
-				}
-			}
-			pool = append(pool, primaries...)
-			pool = append(pool, secondaries...)
-		} else {
-			var primaries, secondaries []PositionScore
-			all := make([]PositionScore, 0, len(positions))
-			for _, p := range positions {
-				skills := [5]string{p.Skill1, p.Skill2, p.Skill3, p.Skill4, p.Skill5}
-				matched := 0
-				for _, skill := range skills {
-					if skill != "" && candidateInfo.SkillSet[skill] {
-						matched++
-					}
-				}
-				var base float64
-				switch p.DomainIndex {
-				case candidateInfo.PrimaryIndex:
-					base = 0.65
-				case candidateInfo.SecondaryIndex:
-					base = 0.56
-				default:
-					base = 0.04
-				}
-				score := base + 0.05*float64(matched) + (rng.Float64()-0.5)*0.06
-				all = append(all, PositionScore{Position: p, Score: min(score, 0.98)})
-			}
-			sort.Slice(all, func(i, j int) bool { return byScore(all[i], all[j]) })
+		pool := make([]PositionScore, 0, needPrimaries+needSecondaries)
+		pool = append(pool, primaries...)
+		pool = append(pool, secondaries...)
 
-			for _, s := range all {
-				switch s.Position.DomainIndex {
-				case candidateInfo.PrimaryIndex:
-					primaries = append(primaries, s)
-				case candidateInfo.SecondaryIndex:
-					secondaries = append(secondaries, s)
-				}
-			}
-
-			maxPrimaries := max(top-2, 0)
-			pCount := min(maxPrimaries, len(primaries))
-			pool = append(pool, primaries[:pCount]...)
-			sCount := min(top-pCount, len(secondaries))
-			pool = append(pool, secondaries[:sCount]...)
-			if len(pool) < top && pCount < len(primaries) {
-				remaining := primaries[pCount:]
-				pool = append(pool, remaining[:min(top-len(pool), len(remaining))]...)
-			}
-			if len(pool) < top {
-				chosen := map[string]bool{}
-				for _, s := range pool {
-					chosen[s.Position.PositionID] = true
-				}
-				for _, s := range all {
-					if len(pool) >= top {
-						break
-					}
-					if !chosen[s.Position.PositionID] {
-						chosen[s.Position.PositionID] = true
-						pool = append(pool, s)
-					}
-				}
-			}
-		}
-		sort.Slice(pool, func(i, j int) bool { return byScore(pool[i], pool[j]) })
+		sort.Slice(pool, func(i, j int) bool {
+			return PositionScoreLess(pool[i], pool[j])
+		})
 
 		ranked := make([]RankedPosition, 0, top)
 		for rank := 0; rank < top && rank < len(pool); rank++ {
 			positionScore := pool[rank]
-			skills := [5]string{positionScore.Position.Skill1, positionScore.Position.Skill2, positionScore.Position.Skill3, positionScore.Position.Skill4, positionScore.Position.Skill5}
+			skills := [5]string{
+				positionScore.Position.Skill1,
+				positionScore.Position.Skill2,
+				positionScore.Position.Skill3,
+				positionScore.Position.Skill4,
+				positionScore.Position.Skill5,
+			}
+
 			var matched []string
 			for _, skill := range skills {
-				if skill != "" && candidateInfo.SkillSet[skill] {
+				if skill != "" && candidate.SkillSet[skill] {
 					matched = append(matched, skill)
 				}
 			}
@@ -1035,40 +964,59 @@ func GenerateRecommendations(rng *rand.Rand, positions []Position, candidates []
 			} else if len(matched) == 1 {
 				skill1 = matched[0]
 			}
+
 			domains := Domains[positionScore.Position.DomainIndex]
 
 			var reasoning string
 			switch {
 			case positionScore.Score >= 0.80 && skill1 != "" && skill2 != "":
-				reasoning = fmt.Sprintf("Strong overlap on %s and %s; the candidate's background as %s %s at %s fits the %s role directly.", skill1, skill2, Article(candidateInfo.MostRecentTitle), candidateInfo.MostRecentTitle, candidateInfo.MostRecentCompany, positionScore.Position.Title)
+				reasoning = fmt.Sprintf(
+					"Strong overlap on %s and %s; the candidate's background as %s %s at %s fits the %s role directly.",
+					skill1, skill2,
+					Article(candidate.MostRecentTitle),
+					candidate.MostRecentTitle,
+					candidate.MostRecentCompany,
+					positionScore.Position.Title,
+				)
 			case positionScore.Score >= 0.65 && skill1 != "":
-				reasoning = fmt.Sprintf("Solid %s experience including %s, matching the day-to-day responsibilities of %s.", domains.Name, skill1, positionScore.Position.Title)
+				reasoning = fmt.Sprintf(
+					"Solid %s experience including %s, matching the day-to-day responsibilities of %s.",
+					domains.Name, skill1, positionScore.Position.Title,
+				)
 			case positionScore.Score >= 0.50:
-				reasoning = fmt.Sprintf("Relevant %s background with transferable skills; the candidate is a plausible fit for %s.", domains.Name, positionScore.Position.Title)
+				reasoning = fmt.Sprintf(
+					"Relevant %s background with transferable skills; the candidate is a plausible fit for %s.",
+					domains.Name, positionScore.Position.Title,
+				)
 			default:
-				reasoning = fmt.Sprintf("Limited direct overlap, but the candidate's experience as %s %s could transfer to %s.", Article(candidateInfo.MostRecentTitle), candidateInfo.MostRecentTitle, positionScore.Position.Title)
+				reasoning = fmt.Sprintf(
+					"Limited direct overlap, but the candidate's experience as %s %s could transfer to %s.",
+					Article(candidate.MostRecentTitle),
+					candidate.MostRecentTitle,
+					positionScore.Position.Title,
+				)
 			}
 
 			ranked = append(ranked, RankedPosition{
 				Rank:       rank + 1,
 				Score:      float64(int(positionScore.Score*100+0.5)) / 100,
-				PositionID: positionScore.Position.PositionID,
+				PositionID: positionScore.Position.ID,
 				Reasoning:  reasoning,
 			})
 		}
+
 		recommendations = append(recommendations, Recommendation{
-			ID:          uuid.NewV7().String(),
-			CandidateID: candidateInfo.ID,
+			ID:          recommendationsIndex,
+			CandidateID: candidate.ID,
 			Positions:   ranked,
 		})
-		if (ci+1)%100 == 0 {
-			logger.Debug("recommendations progress", "done", ci+1, "total", len(candidates))
+		recommendationsIndex++
+
+		if (i+1)%100 == 0 {
+			slog.Debug("recommendations progress", "done", i+1, "total", len(candidates))
 		}
 	}
-	logger.Debug("recommendation pool strategy",
-		"fast_path", fastPathCount,
-		"fallback", fallbackCount,
-	)
+
 	return recommendations
 }
 
@@ -1084,13 +1032,13 @@ func Validate(out string, wantPositions, wantCandidates int) error {
 		return fmt.Errorf("validation failed: candidates: got %d, want %d", len(candidates), wantCandidates)
 	}
 
-	positionIDs := map[string]bool{}
+	positionIDs := map[int]bool{}
 	for _, p := range positions {
-		positionIDs[p.PositionID] = true
+		positionIDs[p.ID] = true
 	}
-	candidateIDs := map[string]bool{}
+	candidateIDs := map[int]bool{}
 	for _, c := range candidates {
-		candidateIDs[c.CandidateID] = true
+		candidateIDs[c.ID] = true
 	}
 	if len(positionIDs) != len(positions) || len(candidateIDs) != len(candidates) {
 		return fmt.Errorf("duplicate ids detected")
@@ -1098,20 +1046,20 @@ func Validate(out string, wantPositions, wantCandidates int) error {
 
 	for _, r := range recommendations {
 		if !candidateIDs[r.CandidateID] {
-			return fmt.Errorf("recommendation references unknown candidate %s", r.CandidateID)
+			return fmt.Errorf("recommendation references unknown candidate %v", r.CandidateID)
 		}
 		if len(r.Positions) == 0 {
-			return fmt.Errorf("empty recommendation for candidate %s", r.CandidateID)
+			return fmt.Errorf("empty recommendation for candidate %v", r.CandidateID)
 		}
 		for i, rp := range r.Positions {
 			if rp.Rank != i+1 {
-				return fmt.Errorf("broken rank sequence (%d at index %d) for candidate %s", rp.Rank, i, r.CandidateID)
+				return fmt.Errorf("broken rank sequence (%d at index %d) for candidate %v", rp.Rank, i, r.CandidateID)
 			}
 			if !positionIDs[rp.PositionID] {
-				return fmt.Errorf("recommendation references unknown position %s", rp.PositionID)
+				return fmt.Errorf("recommendation references unknown position %v", rp.PositionID)
 			}
 			if i > 0 && rp.Score > r.Positions[i-1].Score {
-				return fmt.Errorf("scores not descending at rank %d for candidate %s", rp.Rank, r.CandidateID)
+				return fmt.Errorf("scores not descending at rank %d for candidate %v", rp.Rank, r.CandidateID)
 			}
 		}
 	}
@@ -1120,17 +1068,12 @@ func Validate(out string, wantPositions, wantCandidates int) error {
 		return fmt.Errorf("validation failed: recommendations: got %d, want %d", len(recommendations), len(candidates))
 	}
 
-	logger.Info("validation passed",
+	slog.Info(
+		"validation passed",
 		"positions", len(positions),
 		"candidates", len(candidates),
 		"recommendations", len(recommendations),
 		"max_top", MaxTopOf(recommendations),
-	)
-	logger.Debug("checks performed",
-		"rank_sequence", "contiguous 1..N",
-		"ids", "unique across positions and candidates",
-		"scores", "descending per recommendation",
-		"references", "all recommendation IDs resolve",
 	)
 
 	return nil
@@ -1148,7 +1091,7 @@ func MaxTopOf(recommendations []Recommendation) int {
 
 func WriteJSON(path string, v any) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		logger.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
+		slog.Error("failed to create output dir", "path", filepath.Dir(path), "err", err)
 		panic(err)
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
